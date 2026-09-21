@@ -112,6 +112,7 @@ internal/modelsdev/   models.dev 抓取、白名单映射与真实 fixture
 internal/storage/     SQLite 连接、事务迁移、注册表持久化
 configs/              示例配置
 docs/                 架构边界与阶段计划
+docs/tasks/           各阶段的交付与验收记录
 ```
 
 ## 开发
