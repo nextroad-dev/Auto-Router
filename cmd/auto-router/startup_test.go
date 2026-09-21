@@ -114,7 +114,9 @@ func TestRunFailsBeforeListeningOnNewerSchema(t *testing.T) {
 	if err := storage.Migrate(t.Context(), db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO schema_migrations (version, name, checksum) VALUES (1, 'future', 'future')"); err != nil {
+	// One version newer than this binary knows about. Stage 2 ships migration
+	// version 1, so version 2 must be rejected before the listener is bound.
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO schema_migrations (version, name, checksum) VALUES (2, 'future', 'future')"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {

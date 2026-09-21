@@ -39,6 +39,7 @@ type Config struct {
 	HTTP     HTTPConfig     `json:"http"`
 	Database DatabaseConfig `json:"database"`
 	Log      LogConfig      `json:"log"`
+	Registry RegistryConfig `json:"registry"`
 }
 
 type HTTPConfig struct {
@@ -71,7 +72,8 @@ func Defaults() Config {
 			Path:        "data/auto-router.db",
 			BusyTimeout: Duration(5 * time.Second),
 		},
-		Log: LogConfig{Level: "info"},
+		Log:      LogConfig{Level: "info"},
+		Registry: defaultRegistryConfig(),
 	}
 }
 
@@ -89,6 +91,9 @@ func load(path string, lookup func(string) (string, bool)) (Config, error) {
 		if err := loadFile(path, &cfg); err != nil {
 			return Config{}, err
 		}
+	}
+	if err := cfg.Registry.normalize(lookup); err != nil {
+		return Config{}, err
 	}
 	stringsToSet := []struct {
 		name   string
@@ -193,6 +198,9 @@ func (c Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return errors.New("log.level must be debug, info, warn or error")
+	}
+	if err := c.Registry.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

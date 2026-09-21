@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 	}
 
 	name := ":memory:"
+	databasePath := ""
 	if opts.Path != ":memory:" {
 		absolute, err := filepath.Abs(opts.Path)
 		if err != nil {
@@ -47,6 +49,7 @@ func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 		if err := prepareFile(absolute); err != nil {
 			return nil, err
 		}
+		databasePath = absolute
 		// A file URI prevents #, %, spaces or query-like path components from
 		// being mistaken for SQLite connection options. Prefix Windows drives
 		// with / to obtain file:///C:/... rather than a URI authority.
@@ -72,7 +75,7 @@ func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("connect SQLite: %w", err)
 	}
-	if opts.Path != ":memory:" {
+	if databasePath != "" {
 		var mode string
 		if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
 			db.Close()
@@ -82,8 +85,34 @@ func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 			db.Close()
 			return nil, errors.New("SQLite did not enable WAL mode")
 		}
+		// The database stores provider API keys in plaintext, so the file and
+		// its WAL sidecars must not be group/world readable. Sidecars do not
+		// necessarily exist yet: SQLite creates them on the first write
+		// transaction, so callers run HardenDatabaseFiles again after
+		// migrations. Windows has no equivalent mode bits; there the default
+		// ACL applies (a documented residual risk).
+		if err := HardenDatabaseFiles(databasePath); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return db, nil
+}
+
+// HardenDatabaseFiles narrows the database file and its -wal/-shm sidecars to
+// owner-only access on platforms with POSIX mode bits. Missing sidecars are
+// fine: SQLite creates them lazily, so callers invoke this again after the first
+// write transaction (migrations) to tighten files that did not exist earlier.
+func HardenDatabaseFiles(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(candidate, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("restrict permissions on %s: %w", filepath.Base(candidate), err)
+		}
+	}
+	return nil
 }
 
 func prepareFile(path string) error {
@@ -92,7 +121,7 @@ func prepareFile(path string) error {
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if errors.Is(err, os.ErrExist) {
-		return nil // Do not change permissions on pre-existing user files.
+		return nil // Open narrows pre-existing files to 0600 after connecting.
 	}
 	if err != nil {
 		return fmt.Errorf("create database file: %w", err)

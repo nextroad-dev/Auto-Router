@@ -4,7 +4,7 @@
 
 ## 当前范围
 
-阶段 1 仅交付可运行、可测试的基础服务：Go 入口、运行配置、SQLite 连接与事务迁移、存活/就绪检查和优雅退出。`/v1/chat/completions`、`/v1/responses`、路由、Provider 调用和管理后台尚未实现，不提供假成功的占位接口。
+阶段 1 交付可运行、可测试的基础服务：Go 入口、运行配置、SQLite 连接与事务迁移、存活/就绪检查和优雅退出。阶段 2 交付模型注册表：models.dev 元数据同步、本地覆盖、持久化与只读快照。`/v1/chat/completions`、`/v1/responses`、路由、Provider 调用和管理后台尚未实现，不提供假成功的占位接口。
 
 阶段与验收门槛见 [ROADMAP.md](ROADMAP.md)。后续代码随对应阶段加入，不预先堆放空实现。
 
@@ -37,11 +37,12 @@ API ── requested_model != auto ───────────────
 
 | 模块 | 职责 | 不负责 |
 | --- | --- | --- |
-| `cmd/auto-router` | 配置、依赖装配、进程生命周期 | 路由规则、SQL、协议转换 |
+| `cmd/auto-router` | 配置、依赖装配、进程生命周期、`-sync-models` 维护模式 | 路由规则、SQL、协议转换 |
 | `internal/api` | HTTP 边界、健康检查；后续请求/管理 API | 模型打分、Provider 协议实现 |
-| `internal/config` | 启动配置、默认值、环境覆盖与校验 | HTTP 请求、数据库访问 |
-| `internal/storage` | SQLite 连接、事务迁移；后续持久化实现 | Jev 调用、路由决策 |
-| `internal/models`（阶段 2） | 模型目录、能力、Provider 映射、配置快照 | HTTP 代理、Jev SDK |
+| `internal/config` | 启动配置、默认值、环境覆盖、`registry` 段与 `${VAR}` 展开、校验 | HTTP 请求、数据库访问 |
+| `internal/storage` | SQLite 连接、事务迁移、注册表导入/禁用/加载 | Jev 调用、路由决策 |
+| `internal/models`（阶段 2） | 注册表领域类型、校验、确定性排序契约、只读快照与代次 | SQL、HTTP、models.dev 字段 |
+| `internal/modelsdev`（阶段 2） | models.dev 抓取与白名单映射 | SQL、路由决策 |
 | `internal/proxy`（阶段 3） | 请求转发、取消、流式原样返回 | OpenAI/Anthropic/Gemini 转换 |
 | `internal/providers`（阶段 3） | 可替换的 Provider 层契约 | 路由算法 |
 | `internal/providers/bifrost`（阶段 3） | Bifrost Gateway 适配 | 读写 Bifrost 内部数据库 |
@@ -67,12 +68,27 @@ type RouteDecision struct {
 
 ## Model Registry 与 Provider
 
-- 模型记录覆盖 `id`、`provider`、`display_name`、`context_window`、`max_output`、tools/vision/reasoning 能力、输入/输出价格、`enabled` 和 `priority`。
-- 同一逻辑模型可以映射多个 Provider。区分逻辑模型 ID、Provider 名称与上游模型标识，不能只用裸模型名定位唯一 Provider。
-- Provider 包含 `name`、`base_url`、API Key 配置、`enabled` 和 `priority`。
-- 价格统一采用明确币种与计量单位（例如 USD / 百万 token），不能存储没有单位的裸价格。
-- 新增模型、能力、价格与映射只更新配置/数据，不修改路由核心。
-- 模型注册表是 Auto Router 的配置，不是 Bifrost 内部数据结构。Provider 凭据的配置/同步方式在 Bifrost 接入阶段依据其公开接口核验，不假定任意请求头都能选择 Provider。
+注册表以 **Provider × 逻辑模型（Pair）** 为单位保存能力，不把不同 Provider 的能力合并后猜测。
+
+- `providers`：`key`、`display_name`、`base_url`、`api_key`、`enabled`、`priority`、`source`。
+- `models`：逻辑模型 `id`、`display_name`、`enabled`、`priority`、`source`。
+- `provider_models`：`(provider, model)` 主键、`upstream_model_id`、`context_window`、`max_output`、tools/vision/reasoning 能力、`enabled`、`priority`、`source`。
+- `registry_sync_state`：最近一次 models.dev 同步的 URL、时间、白名单指纹、导入/跳过条数与告警。
+
+来源只有两种：`modelsdev`（同步）与 `local`（配置文件）。
+
+- **models.dev 只提供元数据与能力**，不提供 `base_url` 或凭据；同步**只写** `display_name`、能力、`upstream_model_id` 与容量。
+- 新建的同步 Provider 默认 `enabled=0` 且无 `base_url`/`api_key`，因此在本地配置之前不可能被转发。
+- 本地配置对 `base_url`、`api_key`、`enabled`、`priority`、`upstream_model_id` 具有权威性：同步永不改写 `source='local'` 的行；本地条目从配置中移除时置 `enabled=0` 而不删除，避免残留凭据被继续使用。
+- 同步时从白名单移除的 pair 同样只置 `enabled=0`，永不删除；删除只由后续 Admin API 执行。
+- 白名单是精确到模型的显式运维意图：条目以**第一个 `/`** 分隔为 `provider/model`（允许模型名内含 `/`），任何条目在源数据中找不到都会让**整次同步失败并回滚**，不会“部分成功”。上下文窗口不可用的上游记录会跳过并记入告警。
+- **不存价格**：`cost`、`open_weights`、`knowledge`、`release_date`、`temperature` 等字段同步时丢弃，表结构里没有价格/成本列。
+
+排序契约（阶段 6 直接复用，保证确定性）：`pair.priority` 升序 → `provider.priority` 升序 → `provider.key` 升序 → `model.id` 升序。数值小者优先。
+
+路由只读 `internal/models.Catalog` 快照：`Provider(key)`、`Lookup(modelID)`、`PairsForModel(modelID)`。`PairsForModel` 只返回 **pair、Provider、逻辑模型三者都启用** 的项。快照由 `internal/models.Store` 原子发布并递增 `Generation`，在途请求继续使用旧快照。
+
+同步的触发方式只有 `-sync-models` 一个显式进程模式：启动与请求路径**不做网络访问**、不做后台同步；目录为空时启动只记 `WARN` 并继续提供服务，`/readyz` 不依赖注册表内容。
 
 ## Analyzer、Jev 与 Policy
 
@@ -83,7 +99,7 @@ Jev 接入需求指定的 TypeSafe `POST /v1/systemone`。在阶段 4 实现前�
 Policy 保留最终决定权：
 
 1. 先过滤禁用/不可用 Provider、黑名单、白名单限制、上下文不足、缺少 tools/vision 等硬性不兼容候选。
-2. 再综合 Jev、用户偏好、能力、价格和明确的排序/平局规则。
+2. 再综合 Jev、用户偏好、能力与明确的排序/平局规则（阶段 2 的优先级契约为其基础）。
 3. 高 confidence 使用合格的 Jev 推荐；中 confidence 与静态规则综合；低 confidence、Jev 超时或无效输出按配置 fallback。
 4. 高低阈值、默认模型、fallback 列表和路由偏好均配置化，校验 `0 <= low < high <= 1`。
 5. fallback 也必须满足硬性约束；没有合格候选时明确失败，不强行选择默认模型。
@@ -103,12 +119,23 @@ Policy 保留最终决定权：
 
 - V1 使用单进程 SQLite；纯 Go 驱动，支持 `CGO_ENABLED=0`。
 - 开启 WAL、foreign keys 与有界 busy timeout；初始连接池为单连接，优先正确性。
-- 迁移按版本递增、事务执行，记录名称与校验和，拒绝未知的较新版本或已修改的历史迁移。首阶段仅初始化迁移记录表，业务表随对应阶段加入。
+- 迁移按版本递增、事务执行，记录名称与校验和，拒绝未知的较新版本或已修改的历史迁移。阶段 1 仅建迁移记录表，阶段 2 追加迁移 v1 建注册表 4 张 `STRICT` 表；业务表随对应阶段追加，历史迁移永不改写。
 - 默认仅监听 `127.0.0.1`。阶段 1 没有身份认证，只能用于本机开发或受信任网络；管理 API 加入前必须完成鉴权。不得将未鉴权服务直接暴露到公网。
 - 配置文件和环境变量中的凭据不得进入日志。后续 Provider/Jev 密钥不回传到管理 API 明文响应。
-- 路由日志覆盖 request ID、时间、协议、原始/最终模型、Provider、Jev confidence、原因、latency、status、usage 和 cost。
+- 路由日志覆盖 request ID、时间、协议、原始/最终模型、Provider、Jev confidence、原因、latency、status 和 usage；V1 不计算 cost。
 - Jev 原始输入/输出与决策轨迹默认关闭，显式开启后仍脱敏。不得把 prompt、API Key 或请求体写进普通运行日志。
-- usage 缺失时保留为未知，不伪装成 0；cost 依据实际 usage 和带单位的价格计算。观察流式 usage 不得改变转发字节。
+- usage 缺失时保留为未知，不伪装成 0；观察流式 usage 不得改变转发字节。
+
+## 凭据与残余风险
+
+Provider 的 `api_key` **明文存储在 SQLite 中**（无静态加密），这是已接受的设计选择，不是被假装保护好的资产。已经实现的缓解：
+
+- POSIX 上数据库与 `-wal`/`-shm` 收紧为 `0600`，新建数据库目录为 `0700`；
+- `models.Provider` 实现 `slog.LogValuer`，`api_key` 一律输出掩码，错误信息与日志不包含完整密钥；
+- `api_key` 支持 `${VAR}`，可避免把明文写进受版本控制的配置文件；变量未设置直接报错，不静默使用空密钥；
+- `.gitignore` 覆盖 `*.db*`。
+
+仍未解决（明确记为残余风险）：磁盘/备份泄漏、Windows ACL 未加固、无静态加密、无密钥轮换。静态加密与 Windows ACL 加固推迟到后续阶段。
 
 ## 非目标
 

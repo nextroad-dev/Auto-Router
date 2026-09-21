@@ -15,11 +15,67 @@ type migration struct {
 	SQL     string
 }
 
+// businessMigrations are append-only. Never edit or reorder an applied
+// migration: the journal records a checksum and startup refuses to continue
+// when the SQL differs from history.
+var businessMigrations = []migration{
+	{
+		Version: 1,
+		Name:    "create_registry_tables",
+		SQL: `
+			CREATE TABLE providers (
+				key TEXT PRIMARY KEY,
+				display_name TEXT NOT NULL,
+				base_url TEXT NOT NULL DEFAULT '',
+				api_key TEXT NOT NULL DEFAULT '',
+				enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+				priority INTEGER NOT NULL,
+				source TEXT NOT NULL CHECK (source IN ('modelsdev', 'local')),
+				updated_at TEXT NOT NULL
+			) STRICT;
+			CREATE TABLE models (
+				id TEXT PRIMARY KEY,
+				display_name TEXT NOT NULL,
+				enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+				priority INTEGER NOT NULL,
+				source TEXT NOT NULL CHECK (source IN ('modelsdev', 'local')),
+				updated_at TEXT NOT NULL
+			) STRICT;
+			CREATE TABLE provider_models (
+				provider_key TEXT NOT NULL REFERENCES providers(key) ON DELETE RESTRICT,
+				model_id TEXT NOT NULL REFERENCES models(id) ON DELETE RESTRICT,
+				upstream_model_id TEXT NOT NULL,
+				context_window INTEGER NOT NULL CHECK (context_window > 0),
+				max_output INTEGER CHECK (max_output IS NULL OR (max_output > 0 AND max_output <= context_window)),
+				supports_tools INTEGER NOT NULL CHECK (supports_tools IN (0, 1)),
+				supports_vision INTEGER NOT NULL CHECK (supports_vision IN (0, 1)),
+				supports_reasoning INTEGER NOT NULL CHECK (supports_reasoning IN (0, 1)),
+				enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+				priority INTEGER NOT NULL,
+				source TEXT NOT NULL CHECK (source IN ('modelsdev', 'local')),
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (provider_key, model_id)
+			) STRICT;
+			CREATE INDEX provider_models_model_id_idx ON provider_models (model_id);
+			CREATE TABLE registry_sync_state (
+				source TEXT PRIMARY KEY CHECK (source IN ('modelsdev')),
+				url TEXT NOT NULL,
+				fetched_at TEXT NOT NULL,
+				allowlist_digest TEXT NOT NULL,
+				imported_pairs INTEGER NOT NULL,
+				skipped_pairs INTEGER NOT NULL,
+				warnings TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			) STRICT;
+		`,
+	},
+}
+
 // Migrate initializes the migration journal and applies this binary's schema.
-// Stage 1 has no business tables; subsequent stages add append-only migrations
-// here without changing callers or pretending a registry already exists.
+// History is verified before anything is written, so a database created by a
+// newer binary or tampered with is rejected instead of partially upgraded.
 func Migrate(ctx context.Context, db *sql.DB) error {
-	return applyMigrations(ctx, db, nil)
+	return applyMigrations(ctx, db, businessMigrations)
 }
 
 func applyMigrations(ctx context.Context, db *sql.DB, migrations []migration) error {

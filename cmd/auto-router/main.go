@@ -34,11 +34,11 @@ func main() {
 func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 }
-
 func run(ctx context.Context, args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("auto-router", flag.ContinueOnError)
 	flags.SetOutput(output)
 	configPath := flags.String("config", "", "optional JSON configuration file")
+	syncModels := flags.Bool("sync-models", false, "synchronize the model registry from models.dev, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -66,6 +66,23 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	defer db.Close()
 	if err := storage.Migrate(ctx, db); err != nil {
+		return err
+	}
+	// Migrations are the first write transaction, so the WAL sidecars (which
+	// hold recent registry writes, including credentials) appear here and need
+	// the same owner-only permissions as the database file.
+	if err := storage.HardenDatabaseFiles(cfg.Database.Path); err != nil {
+		return err
+	}
+	for _, warning := range cfg.Warnings() {
+		logger.Warn("configuration warning", "detail", warning)
+	}
+	if *syncModels {
+		// Synchronization is an explicit offline maintenance mode: it never
+		// starts the HTTP server.
+		return syncRegistry(ctx, cfg, db, logger)
+	}
+	if _, err := applyLocalRegistry(ctx, cfg, db, logger); err != nil {
 		return err
 	}
 

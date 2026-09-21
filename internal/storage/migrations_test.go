@@ -23,19 +23,31 @@ func tableCount(t *testing.T, db *sql.DB, table string) int {
 	return count
 }
 
-func TestMigrateInitializesOnlyJournal(t *testing.T) {
+func TestMigrateAppliesRegistrySchemaIdempotently(t *testing.T) {
 	db := testDB(t)
 	for i := 0; i < 2; i++ {
 		if err := Migrate(t.Context(), db); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if tableCount(t, db, "schema_migrations") != 1 {
-		t.Fatal("migration journal is missing")
+	for _, table := range []string{"providers", "models", "provider_models", "registry_sync_state"} {
+		if tableCount(t, db, table) != 1 {
+			t.Fatalf("registry migration did not create %q", table)
+		}
 	}
 	var count int
-	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("unexpected business migration at stage 1: count=%d err=%v", count, err)
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != len(businessMigrations) {
+		t.Fatalf("unexpected migration count: %d, err=%v", count, err)
+	}
+	var name, sum string
+	if err := db.QueryRowContext(t.Context(), "SELECT name, checksum FROM schema_migrations WHERE version = 1").Scan(&name, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if name != businessMigrations[0].Name || sum != checksum(businessMigrations[0].SQL) {
+		t.Fatal("recorded migration does not match the compiled schema")
+	}
+	if tableCount(t, db, "schema_migrations") != 1 {
+		t.Fatal("migration journal is missing")
 	}
 }
 
@@ -75,9 +87,6 @@ func TestMigrationsUpgradeAndAreIdempotent(t *testing.T) {
 
 func TestMigrationFailureRollsBackEntireBatch(t *testing.T) {
 	db := testDB(t)
-	if err := Migrate(t.Context(), db); err != nil {
-		t.Fatal(err)
-	}
 	migrations := []migration{
 		{Version: 1, Name: "first", SQL: "CREATE TABLE first_table (id INTEGER)"},
 		{Version: 2, Name: "broken", SQL: "CREATE TABLE partial_table (id INTEGER); INVALID SQL"},
@@ -88,9 +97,10 @@ func TestMigrationFailureRollsBackEntireBatch(t *testing.T) {
 	if tableCount(t, db, "first_table") != 0 || tableCount(t, db, "partial_table") != 0 {
 		t.Fatal("failed batch left a partially applied schema")
 	}
-	var count int
-	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("failed batch left migration records: count=%d err=%v", count, err)
+	// The journal itself is part of the same transaction, so a batch that fails
+	// before any migration is recorded leaves no journal at all.
+	if tableCount(t, db, "schema_migrations") != 0 {
+		t.Fatal("failed batch left a migration journal")
 	}
 	migrations[1].SQL = "CREATE TABLE partial_table (id INTEGER)"
 	if err := applyMigrations(t.Context(), db, migrations); err != nil {

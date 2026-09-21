@@ -1,0 +1,293 @@
+{
+  "openai": {
+    "id": "openai",
+    "env": [
+      "OPENAI_API_KEY"
+    ],
+    "npm": "@ai-sdk/openai",
+    "name": "OpenAI",
+    "doc": "https://platform.openai.com/docs/models",
+    "models": {
+      "gpt-4o-mini": {
+        "id": "gpt-4o-mini",
+        "name": "GPT-4o mini",
+        "description": "Small omni GPT for cheap multimodal assistance and production-scale traffic",
+        "family": "gpt-mini",
+        "attachment": true,
+        "reasoning": false,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2023-09",
+        "release_date": "2024-07-18",
+        "last_updated": "2024-07-18",
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.075
+        }
+      },
+      "gpt-4.1-nano": {
+        "id": "gpt-4.1-nano",
+        "name": "GPT-4.1 nano",
+        "description": "Tiny GPT-4.1 option for classification, routing, and very high-volume tasks",
+        "family": "gpt-nano",
+        "attachment": true,
+        "reasoning": false,
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "knowledge": "2024-04",
+        "release_date": "2025-04-14",
+        "last_updated": "2025-04-14",
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 1047576,
+          "output": 32768
+        },
+        "status": "deprecated",
+        "cost": {
+          "input": 0.1,
+          "output": 0.4,
+          "cache_read": 0.025
+        }
+      },
+      "gpt-3.5-turbo": {
+        "id": "gpt-3.5-turbo",
+        "name": "GPT-3.5-turbo",
+        "description": "Compact GPT model for low-latency assistance and high-volume workloads",
+        "family": "gpt",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": false,
+        "structured_output": false,
+        "temperature": true,
+        "knowledge": "2021-09-01",
+        "release_date": "2023-03-01",
+        "last_updated": "2023-11-06",
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 16385,
+          "output": 4096
+        },
+        "status": "deprecated",
+        "cost": {
+          "input": 0.5,
+          "output": 1.5,
+          "cache_read": 0
+        }
+      }
+    }
+  },
+  "helicone": {
+    "id": "helicone",
+    "env": [
+      "HELICONE_API_KEY"
+    ],
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://ai-gateway.helicone.ai/v1",
+    "name": "Helicone",
+    "doc": "https://helicone.ai/models",
+    "models": {
+      "gpt-4.1-nano": {
+        "id": "gpt-4.1-nano",
+        "name": "OpenAI GPT-4.1 Nano",
+        "description": "Compact GPT model for low-latency assistance and high-volume workloads",
+        "family": "gpt-nano",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "temperature": true,
+        "knowledge": "2025-04",
+        "release_date": "2025-04-14",
+        "last_updated": "2025-04-14",
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 1047576,
+          "output": 32768
+        },
+        "cost": {
+          "input": 0.09999999999999999,
+          "output": 0.39999999999999997,
+          "cache_read": 0.024999999999999998
+        }
+      },
+      "gpt-4o-mini": {
+        "id": "gpt-4o-mini",
+        "name": "OpenAI GPT-4o-mini",
+        "description": "Compact GPT model for low-latency assistance and high-volume workloads",
+        "family": "gpt-mini",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "temperature": true,
+        "knowledge": "2024-07",
+        "release_date": "2024-07-18",
+        "last_updated": "2024-07-18",
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.075
+        }
+      }
+    }
+  },
+  "groq": {
+    "id": "groq",
+    "env": [
+      "GROQ_API_KEY"
+    ],
+    "npm": "@ai-sdk/groq",
+    "name": "Groq",
+    "doc": "https://console.groq.com/docs/models",
+    "models": {
+      "llama-3.3-70b-versatile": {
+        "id": "llama-3.3-70b-versatile",
+        "name": "Llama 3.3 70B",
+        "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
+        "family": "llama",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "temperature": true,
+        "knowledge": "2023-12",
+        "release_date": "2024-12-06",
+        "last_updated": "2024-12-06",
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": true,
+        "limit": {
+          "context": 131072,
+          "output": 32768
+        },
+        "cost": {
+          "input": 0.59,
+          "output": 0.79
+        }
+      },
+      "groq/compound-mini": {
+        "id": "groq/compound-mini",
+        "name": "Compound Mini",
+        "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+        "family": "groq",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": false,
+        "temperature": true,
+        "release_date": "2025-09-04",
+        "last_updated": "2025-09-04",
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 131072,
+          "output": 8192
+        }
+      }
+    }
+  },
+  "qiniu-ai": {
+    "id": "qiniu-ai",
+    "env": [
+      "QINIU_API_KEY"
+    ],
+    "npm": "@ai-sdk/openai-compatible",
+    "api": "https://api.qnaigc.com/v1",
+    "name": "Qiniu",
+    "doc": "https://developer.qiniu.com/aitokenapi",
+    "models": {
+      "meituan/longcat-flash-lite": {
+        "id": "meituan/longcat-flash-lite",
+        "name": "Meituan/Longcat-Flash-Lite",
+        "description": "Efficient model for low-latency assistance, extraction, and routine automation",
+        "attachment": false,
+        "reasoning": false,
+        "tool_call": true,
+        "structured_output": false,
+        "temperature": true,
+        "release_date": "2026-02-06",
+        "last_updated": "2026-02-06",
+        "modalities": {
+          "input": [
+            "text"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "open_weights": false,
+        "limit": {
+          "context": 256000,
+          "output": 320000
+        }
+      }
+    }
+  }
+}

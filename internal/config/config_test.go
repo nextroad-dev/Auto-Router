@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestDefaultsAndExample(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg != Defaults() {
+		if !reflect.DeepEqual(cfg, Defaults()) {
 			t.Fatalf("configuration from %q differs from defaults: %+v", path, cfg)
 		}
 	}
@@ -62,7 +63,7 @@ func TestConfigurationPrecedence(t *testing.T) {
 	want.Database.Path = "from-env.db"
 	want.Database.BusyTimeout = Duration(250 * time.Millisecond)
 	want.Log.Level = "debug"
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 }

@@ -12,5 +12,14 @@
   },
   "log": {
     "level": "info"
+  },
+  "registry": {
+    "sync": {
+      "url": "https://models.dev/api.json",
+      "timeout": "30s",
+      "include": []
+    },
+    "providers": [],
+    "models": []
   }
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -184,5 +185,75 @@ func TestSQLiteWriterLockIsBounded(t *testing.T) {
 	}
 	if ctx.Err() != nil {
 		t.Fatal("busy timeout should expire before the request deadline")
+	}
+}
+
+// The registry stores provider API keys in plaintext, so POSIX platforms must
+// keep the database and its WAL sidecars owner-only. Windows has no equivalent
+// mode bits and is excluded rather than falsely asserted.
+func TestDatabaseFilesAreOwnerOnlyOnPOSIX(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows has no POSIX mode bits")
+	}
+	path := filepath.Join(t.TempDir(), "router.db")
+	// A pre-existing file with loose permissions must be tightened, not trusted.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(t.Context(), Options{Path: path, BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(t.Context(), db); err != nil {
+		t.Fatal(err)
+	}
+	// Mirror the real startup order: migrations are the first write, then the
+	// sidecars they created are tightened.
+	if err := HardenDatabaseFiles(path); err != nil {
+		t.Fatal(err)
+	}
+	// Force the sidecars to exist: on SQLite versions that already created them
+	// during the migrations this changes nothing.
+	if _, err := db.ExecContext(t.Context(), "CREATE TABLE example (id INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s should exist after a write transaction", filepath.Base(candidate))
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+			t.Fatalf("%s mode is %04o, want no group/other bits", filepath.Base(candidate), mode)
+		}
+	}
+	// The sidecars survive a close only until the last connection releases them;
+	// after reopening they must still be tightened.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(t.Context(), Options{Path: path, BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := Migrate(t.Context(), reopened); err != nil {
+		t.Fatal(err)
+	}
+	if err := HardenDatabaseFiles(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.ExecContext(t.Context(), "INSERT INTO example VALUES (1)"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Fatalf("reopened -wal mode is %04o, want no group/other bits", mode)
 	}
 }
