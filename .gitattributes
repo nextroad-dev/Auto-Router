@@ -1,0 +1,8 @@
+# Keep line endings stable across Windows and Linux checkouts so that
+# gofmt, go vet and diffs do not flip between CRLF and LF.
+* text=auto eol=lf
+*.exe binary
+*.db binary
+*.db-wal binary
+*.db-shm binary
+*.sqlite binary

@@ -1,0 +1,16 @@
+{
+  "http": {
+    "address": "127.0.0.1:8080",
+    "read_header_timeout": "5s",
+    "idle_timeout": "60s",
+    "readiness_timeout": "2s",
+    "shutdown_timeout": "10s"
+  },
+  "database": {
+    "path": "data/auto-router.db",
+    "busy_timeout": "5s"
+  },
+  "log": {
+    "level": "info"
+  }
+}
