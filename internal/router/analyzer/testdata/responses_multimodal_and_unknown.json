@@ -1,0 +1,21 @@
+{
+  "model": "sample-model",
+  "input": [
+    {"type": "message", "role": "user", "content": [
+      {"type": "input_text", "text": "Describe this scan."},
+      {"type": "input_image", "image_url": "data:image/png;base64,CANARY-BASE64-PAYLOAD", "detail": "high"},
+      {"type": "input_image", "image_url": "https://example.test/scan.png"}
+    ]},
+    {"type": "message", "role": "user", "content": [
+      {"type": "input_file", "file_id": "file_123", "filename": "report.pdf"},
+      {"type": "input_file", "file_url": "https://example.test/report.pdf"},
+      {"type": "input_audio", "input_audio": {"data": "CANARY-AUDIO-PAYLOAD", "format": "mp3"}}
+    ]},
+    {"type": "message", "role": "user", "content": [
+      {"type": "text", "text": "Unknown part types must not break the analysis."},
+      {"type": "vendor_future_part", "payload": {"nested": {"deep": true}}}
+    ]},
+    {"type": "vendor_future_item", "payload": {"nested": {"deep": true}}}
+  ],
+  "vendor_extension": {"untouched": [1, 2, 3]}
+}

@@ -14,6 +14,26 @@ import (
 // overwritten by a sync.
 type Source string
 
+// ProviderKind selects the upstream wire protocol used by a provider.
+type ProviderKind string
+
+const (
+	ProviderOpenAI           ProviderKind = "openai"
+	ProviderOpenAICompatible ProviderKind = "openai_compatible"
+	ProviderAnthropic        ProviderKind = "anthropic"
+	ProviderGemini           ProviderKind = "gemini"
+)
+
+// Valid reports whether k names a supported provider protocol.
+func (k ProviderKind) Valid() bool {
+	switch k {
+	case ProviderOpenAI, ProviderOpenAICompatible, ProviderAnthropic, ProviderGemini:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	SourceModelsDev Source = "modelsdev"
 	SourceLocal     Source = "local"
@@ -25,15 +45,30 @@ func (s Source) Valid() bool {
 }
 
 // Provider is a routable upstream endpoint. BaseURL and APIKey are local
-// overrides: a models.dev sync never fills or replaces them.
+// overrides: a models.dev sync never fills or replaces them, and the direct
+// executor uses them for the selected provider request. GatewayProvider is kept
+// only for compatibility with pre-migration registry rows; direct routing ignores
+// it.
 type Provider struct {
-	Key         string
-	DisplayName string
-	BaseURL     string
-	APIKey      string
-	Enabled     bool
-	Priority    int
-	Source      Source
+	Key             string
+	Kind            ProviderKind
+	DisplayName     string
+	BaseURL         string
+	APIKey          string
+	Enabled         bool
+	Priority        int
+	Source          Source
+	GatewayProvider *string
+}
+
+// GatewayKey is a deprecated compatibility helper for callers that still read
+// migrated gateway metadata. Direct execution never calls it and always selects
+// the provider by Key.
+func (p Provider) GatewayKey() string {
+	if p.GatewayProvider != nil && *p.GatewayProvider != "" {
+		return *p.GatewayProvider
+	}
+	return p.Key
 }
 
 // Model is a logical model exposed to clients. A single logical model can be
@@ -50,17 +85,22 @@ type Model struct {
 // that combination. Capabilities are deliberately not merged across providers:
 // the same model can support tools through one provider and not another.
 type Pair struct {
-	ProviderKey       string
-	ModelID           string
-	UpstreamModelID   string
-	ContextWindow     int
-	MaxOutput         *int
-	SupportsTools     bool
-	SupportsVision    bool
-	SupportsReasoning bool
-	Enabled           bool
-	Priority          int
-	Source            Source
+	ProviderKey     string
+	ModelID         string
+	UpstreamModelID string
+	ContextWindow   int
+	MaxOutput       *int
+	SupportsTools   bool
+	SupportsVision  bool
+	// SupportsAudioInput is an independent capability, never a synonym for
+	// SupportsVision: a text-and-audio model does not accept images, and an image
+	// model does not accept audio. A missing flag means "not supported", which is
+	// the fail-closed reading of an unknown capability.
+	SupportsAudioInput bool
+	SupportsReasoning  bool
+	Enabled            bool
+	Priority           int
+	Source             Source
 }
 
 // Catalog is an immutable registry snapshot. Every slice is sorted according to
@@ -75,9 +115,10 @@ type Catalog struct {
 	Models     []Model
 	Pairs      []Pair
 
-	providerIndex map[string]Provider
-	modelIndex    map[string]Model
-	pairsByModel  map[string][]Pair
+	providerIndex   map[string]Provider
+	modelIndex      map[string]Model
+	pairsByModel    map[string][]Pair
+	pairsByProvider map[string][]Pair
 }
 
 // NewCatalog validates and sorts a snapshot. It rejects duplicate keys and
@@ -144,6 +185,10 @@ func (c *Catalog) buildIndexes() {
 	for _, pair := range c.Pairs {
 		c.pairsByModel[pair.ModelID] = append(c.pairsByModel[pair.ModelID], pair)
 	}
+	c.pairsByProvider = make(map[string][]Pair, len(c.Providers))
+	for _, pair := range c.Pairs {
+		c.pairsByProvider[pair.ProviderKey] = append(c.pairsByProvider[pair.ProviderKey], pair)
+	}
 }
 
 // Sort applies the deterministic ordering contract shared by the router and the
@@ -205,17 +250,37 @@ func (c *Catalog) PairsForModel(modelID string) []Pair {
 	if !ok || !model.Enabled {
 		return nil
 	}
-	var pairs []Pair
-	for _, pair := range c.pairsByModel[modelID] {
+	return c.routablePairs(c.pairsByModel[modelID])
+}
+
+// PairsForProvider returns the routable pairs for one provider, in the ordering
+// contract order. It backs the explicit provider override, which selects a
+// destination the registry already declares rather than inventing one.
+func (c *Catalog) PairsForProvider(providerKey string) []Pair {
+	provider, ok := c.providerIndex[providerKey]
+	if !ok || !provider.Enabled {
+		return nil
+	}
+	return c.routablePairs(c.pairsByProvider[providerKey])
+}
+
+// routablePairs filters disabled pairs and pairs whose logical model is
+// disabled, preserving the order produced by Sort.
+func (c *Catalog) routablePairs(pairs []Pair) []Pair {
+	var routable []Pair
+	for _, pair := range pairs {
 		if !pair.Enabled {
 			continue
 		}
 		if provider, ok := c.providerIndex[pair.ProviderKey]; !ok || !provider.Enabled {
 			continue
 		}
-		pairs = append(pairs, pair)
+		if model, ok := c.modelIndex[pair.ModelID]; !ok || !model.Enabled {
+			continue
+		}
+		routable = append(routable, pair)
 	}
-	return pairs
+	return routable
 }
 
 // Warnings reports catalog states that are valid but almost certainly a

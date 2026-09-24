@@ -1,0 +1,17 @@
+services:
+  auto-router:
+    image: ghcr.io/nextroad-dev/auto-router:${AUTO_ROUTER_VERSION:-latest}
+    container_name: auto-router
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${AUTO_ROUTER_BIND:-127.0.0.1}:${AUTO_ROUTER_PORT:-8080}:8080"
+    volumes:
+      - auto-router-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  auto-router-data:

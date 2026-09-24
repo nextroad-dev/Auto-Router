@@ -13,29 +13,34 @@ import (
 	"github.com/nextroad-dev/Auto-Router/internal/storage"
 )
 
-// applyLocalRegistry writes the configured providers, models and pairs into the
-// registry, then publishes the resulting snapshot. It performs no network I/O:
-// a process with an empty registry still starts and reports itself ready, but
-// logs a warning telling the operator to run -sync-models.
-func applyLocalRegistry(ctx context.Context, cfg config.Config, db *sql.DB, logger *slog.Logger) (*models.Store, error) {
-	catalogModels, pairs := cfg.Registry.LocalCatalog()
-	summary, err := storage.ApplyRegistryImport(ctx, db, models.SourceLocal, storage.Import{
-		Providers: cfg.Registry.LocalProviders(),
-		Models:    catalogModels,
-		Pairs:     pairs,
-	})
-	if err != nil {
+type registrySyncGate struct{ slot chan struct{} }
+
+func newRegistrySyncGate() *registrySyncGate {
+	return &registrySyncGate{slot: make(chan struct{}, 1)}
+}
+
+// Do serializes a WebUI-triggered registry import and lets a waiting request
+// abandon the queue when its HTTP context is canceled.
+func (g *registrySyncGate) Do(ctx context.Context, run func(context.Context) (any, error)) (any, error) {
+	if g == nil || g.slot == nil {
+		return nil, errors.New("registry sync gate is unavailable")
+	}
+	if run == nil {
+		return nil, errors.New("registry sync callback is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	catalog, err := storage.LoadCatalog(ctx, db)
-	if err != nil {
+	select {
+	case g.slot <- struct{}{}:
+		defer func() { <-g.slot }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	store := models.NewStore()
-	snapshot := store.Swap(catalog)
-	logImportSummary(logger, "local registry overrides applied", summary)
-	logCatalogSnapshot(logger, snapshot, true)
-	return store, nil
+	return run(ctx)
 }
 
 // syncRegistry fetches the models.dev catalog, imports the allowlisted models
@@ -96,10 +101,16 @@ func syncRegistry(ctx context.Context, cfg config.Config, db *sql.DB, logger *sl
 
 func logImportSummary(logger *slog.Logger, message string, summary storage.ImportSummary) {
 	logger.Info(message,
-		slog.Group("providers", "added", summary.ProvidersAdded, "updated", summary.ProvidersUpdated, "disabled", summary.ProvidersDisabled),
-		slog.Group("models", "added", summary.ModelsAdded, "updated", summary.ModelsUpdated, "disabled", summary.ModelsDisabled),
-		slog.Group("pairs", "added", summary.PairsAdded, "updated", summary.PairsUpdated, "disabled", summary.PairsDisabled),
+		slog.Group("providers", "added", summary.ProvidersAdded, "updated", summary.ProvidersUpdated, "disabled", summary.ProvidersDisabled, "admin_owned", summary.ProvidersAdminOwned),
+		slog.Group("models", "added", summary.ModelsAdded, "updated", summary.ModelsUpdated, "disabled", summary.ModelsDisabled, "admin_owned", summary.ModelsAdminOwned),
+		slog.Group("pairs", "added", summary.PairsAdded, "updated", summary.PairsUpdated, "disabled", summary.PairsDisabled, "admin_owned", summary.PairsAdminOwned),
 	)
+	if summary.ProvidersAdminOwned+summary.ModelsAdminOwned+summary.PairsAdminOwned > 0 {
+		// This is not a warning: skipping administrator-owned rows is the documented
+		// behavior. Report it at INFO to make the source-of-truth boundary visible.
+		logger.Info("registry rows owned by the Admin API were left untouched",
+			"providers", summary.ProvidersAdminOwned, "models", summary.ModelsAdminOwned, "pairs", summary.PairsAdminOwned)
+	}
 }
 
 func logCatalogSnapshot(logger *slog.Logger, catalog *models.Catalog, includeWarnings bool) {
@@ -118,7 +129,7 @@ func logCatalogSnapshot(logger *slog.Logger, catalog *models.Catalog, includeWar
 	}
 	logger.Info("model registry loaded", attributes...)
 	if catalog.Empty() {
-		logger.Warn("model registry is empty; run the service once with -sync-models and configure registry.providers before routing can select a model")
+		logger.Warn("model registry is empty; configure a Provider and model in the WebUI before routing can select a model")
 	}
 	if includeWarnings {
 		for _, warning := range catalog.Warnings() {

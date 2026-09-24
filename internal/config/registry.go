@@ -26,7 +26,10 @@ type RegistrySyncConfig struct {
 }
 
 // RegistryProvider is a local provider override. BaseURL and APIKey are never
-// supplied by a models.dev sync, so an enabled provider always needs both here.
+// supplied by a models.dev sync; the direct executor uses them for provider
+// requests. GatewayProvider remains a legacy registry field for databases and
+// configurations created before the direct-provider migration, but is ignored by
+// the serving path.
 type RegistryProvider struct {
 	Key         string `json:"key"`
 	DisplayName string `json:"display_name"`
@@ -34,6 +37,10 @@ type RegistryProvider struct {
 	APIKey      string `json:"api_key"`
 	Enabled     bool   `json:"enabled"`
 	Priority    int    `json:"priority"`
+	// GatewayProvider is a legacy compatibility field. It is accepted so older
+	// registry files can be loaded, but direct execution always uses Key only for
+	// routing/logging and sends the pair's provider-native model ID.
+	GatewayProvider string `json:"gateway_provider"`
 }
 
 // RegistryModel is a local provider/model pair with explicit capabilities. It
@@ -51,8 +58,12 @@ type RegistryModel struct {
 	SupportsTools     bool   `json:"supports_tools"`
 	SupportsVision    bool   `json:"supports_vision"`
 	SupportsReasoning bool   `json:"supports_reasoning"`
-	Enabled           bool   `json:"enabled"`
-	Priority          int    `json:"priority"`
+	// SupportsAudioInput defaults to false. The mapping is fail-closed: an
+	// unknown capability is read as "not supported", so a request that carries
+	// audio is never sent to a pair whose audio input was never declared.
+	SupportsAudioInput bool `json:"supports_audio_input"`
+	Enabled            bool `json:"enabled"`
+	Priority           int  `json:"priority"`
 }
 
 func defaultRegistryConfig() RegistryConfig {
@@ -184,14 +195,25 @@ func (p RegistryProvider) Domain() models.Provider {
 		displayName = p.Key
 	}
 	return models.Provider{
-		Key:         p.Key,
-		DisplayName: displayName,
-		BaseURL:     p.BaseURL,
-		APIKey:      p.APIKey,
-		Enabled:     p.Enabled,
-		Priority:    p.Priority,
-		Source:      models.SourceLocal,
+		Key:             p.Key,
+		DisplayName:     displayName,
+		BaseURL:         p.BaseURL,
+		APIKey:          p.APIKey,
+		Enabled:         p.Enabled,
+		Priority:        p.Priority,
+		Source:          models.SourceLocal,
+		GatewayProvider: normalizeGatewayProvider(p.GatewayProvider),
 	}
+}
+
+// normalizeGatewayProvider maps an empty (or whitespace-only) mapping to nil,
+// which means "use the provider key" in the registry.
+func normalizeGatewayProvider(value string) *string {
+	if value == "" {
+		return nil
+	}
+	mapped := value
+	return &mapped
 }
 
 // Domain converts a configured pair to its registry representation. The
@@ -219,17 +241,18 @@ func (m RegistryModel) Domain() (models.Model, models.Pair) {
 		maxOutput = &value
 	}
 	pair := models.Pair{
-		ProviderKey:       m.Provider,
-		ModelID:           m.Model,
-		UpstreamModelID:   upstream,
-		ContextWindow:     m.ContextWindow,
-		MaxOutput:         maxOutput,
-		SupportsTools:     m.SupportsTools,
-		SupportsVision:    m.SupportsVision,
-		SupportsReasoning: m.SupportsReasoning,
-		Enabled:           m.Enabled,
-		Priority:          m.Priority,
-		Source:            models.SourceLocal,
+		ProviderKey:        m.Provider,
+		ModelID:            m.Model,
+		UpstreamModelID:    upstream,
+		ContextWindow:      m.ContextWindow,
+		MaxOutput:          maxOutput,
+		SupportsTools:      m.SupportsTools,
+		SupportsVision:     m.SupportsVision,
+		SupportsReasoning:  m.SupportsReasoning,
+		SupportsAudioInput: m.SupportsAudioInput,
+		Enabled:            m.Enabled,
+		Priority:           m.Priority,
+		Source:             models.SourceLocal,
 	}
 	return model, pair
 }
@@ -274,8 +297,12 @@ func (c Config) Warnings() []string {
 	var warnings []string
 	for _, provider := range c.Registry.Providers {
 		if provider.Enabled && provider.APIKey == "" {
-			warnings = append(warnings, fmt.Sprintf("registry provider %q is enabled without an api_key; requests will be forwarded without credentials", provider.Key))
+			warnings = append(warnings, fmt.Sprintf("registry provider %q is enabled without an api_key; requests will be sent without credentials", provider.Key))
 		}
 	}
-	return warnings
+	warnings = append(warnings, c.analyzerWarnings()...)
+	warnings = append(warnings, c.policyWarnings()...)
+	warnings = append(warnings, c.routingLogWarnings()...)
+	warnings = append(warnings, c.jevWarnings()...)
+	return append(warnings, c.adminWarnings()...)
 }

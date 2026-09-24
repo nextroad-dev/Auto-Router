@@ -1,0 +1,7 @@
+{
+  "model": "sample-model",
+  "instructions": "You are a careful assistant.",
+  "input": "What changed in the last release?",
+  "stream": true,
+  "max_output_tokens": 1024
+}

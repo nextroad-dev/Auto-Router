@@ -23,6 +23,24 @@ var modelIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@~+-]{0,127}$
 
 const maxUpstreamModelIDLength = 256
 
+// providerOverridePrefix introduces the explicit "provider:<provider>/<model>"
+// request syntax. It is reserved: a logical model ID may not start with it, so
+// a client can never be sent to an unintended target by a registry entry.
+const providerOverridePrefix = "provider:"
+
+// AutoModelID is the reserved automatic-routing target. Automatic routing is
+// implemented in stage 7; until then the value is recognized and refused
+// explicitly instead of being treated as an unknown model.
+const AutoModelID = "auto"
+
+// ProviderOverridePrefix returns the reserved request-syntax prefix.
+func ProviderOverridePrefix() string { return providerOverridePrefix }
+
+// gatewayProviderPattern validates the historical provider identity stored for
+// compatibility with old routing records. It is intentionally the same shape
+// as a registry provider key so old "<provider>/<model>" values stay predictable.
+var gatewayProviderPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
 // ValidateProviderKey reports whether key is a valid registry provider key.
 func ValidateProviderKey(key string) error {
 	if !providerKeyPattern.MatchString(key) {
@@ -31,8 +49,25 @@ func ValidateProviderKey(key string) error {
 	return nil
 }
 
-// ValidateModelID reports whether id is a valid logical model ID.
+// ValidateGatewayProvider reports whether name is a valid historical provider
+// identity. Case is preserved for compatibility with old Bifrost records.
+func ValidateGatewayProvider(name string) error {
+	if !gatewayProviderPattern.MatchString(name) {
+		return errors.New("gateway_provider must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+	}
+	return nil
+}
+
+// ValidateModelID reports whether id is a valid logical model ID. Two names are
+// reserved: "auto" (stage 7 automatic routing) and the "provider:" prefix
+// (explicit provider override), so no registry entry can shadow either syntax.
 func ValidateModelID(id string) error {
+	if id == AutoModelID {
+		return fmt.Errorf("model id %q is reserved for automatic routing", AutoModelID)
+	}
+	if strings.HasPrefix(id, providerOverridePrefix) {
+		return fmt.Errorf("model id must not start with the reserved prefix %q", providerOverridePrefix)
+	}
 	if !modelIDPattern.MatchString(id) {
 		return errors.New("model id must match ^[A-Za-z0-9][A-Za-z0-9._:/-@~+]{0,127}$")
 	}
@@ -69,36 +104,49 @@ func ValidateBaseURL(raw string) error {
 // loopback host may use plain http so integration tests can run a local server
 // without certificates.
 func ValidateSourceURL(raw string) error {
+	return ValidateSecureURL("registry.sync.url", raw)
+}
+
+// ValidateSecureURL accepts an outbound service endpoint: an absolute http(s)
+// URL without userinfo, query string or fragment. Plain http is accepted only
+// for loopback hosts, where the traffic never leaves the machine, so a
+// credential sent there cannot be read off the network. field names the setting
+// in every error so an operator knows which value to fix; it never includes the
+// raw (possibly credentialed) value.
+func ValidateSecureURL(field string, raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return errors.New("registry.sync.url must be an absolute http(s) URL")
+		return fmt.Errorf("%s must be an absolute http(s) URL", field)
 	}
 	if parsed.Host == "" {
-		return errors.New("registry.sync.url must include a host")
+		return fmt.Errorf("%s must include a host", field)
 	}
 	if parsed.User != nil {
-		return errors.New("registry.sync.url must not contain userinfo")
+		return fmt.Errorf("%s must not contain userinfo", field)
 	}
 	if parsed.RawQuery != "" || parsed.ForceQuery {
-		return errors.New("registry.sync.url must not contain a query string")
+		return fmt.Errorf("%s must not contain a query string", field)
 	}
 	if parsed.Fragment != "" {
-		return errors.New("registry.sync.url must not contain a fragment")
+		return fmt.Errorf("%s must not contain a fragment", field)
 	}
 	switch parsed.Scheme {
 	case "https":
 		return nil
 	case "http":
-		if !isLoopbackHost(parsed.Hostname()) {
-			return errors.New("registry.sync.url must use https unless the host is loopback")
+		if !IsLoopbackHost(parsed.Hostname()) {
+			return fmt.Errorf("%s must use https unless the host is loopback", field)
 		}
 		return nil
 	default:
-		return errors.New("registry.sync.url must use the http or https scheme")
+		return fmt.Errorf("%s must use the http or https scheme", field)
 	}
 }
 
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host names the local machine. It is exported
+// so configuration sections can explain a plain-http exception the same way
+// ValidateSecureURL implements it.
+func IsLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
@@ -138,7 +186,13 @@ func ValidateProvider(p Provider) error {
 	if err := ValidateProviderKey(p.Key); err != nil {
 		return err
 	}
+	if p.Kind != "" && !p.Kind.Valid() {
+		return fmt.Errorf("kind must be openai, openai_compatible, anthropic, or gemini")
+	}
 	if err := validateDisplayName(p.DisplayName); err != nil {
+		return err
+	}
+	if err := validateGatewayProviderField(p.GatewayProvider); err != nil {
 		return err
 	}
 	if !p.Source.Valid() {
@@ -154,6 +208,19 @@ func ValidateProvider(p Provider) error {
 		return nil
 	}
 	return ValidateBaseURL(p.BaseURL)
+}
+
+// validateGatewayProviderField accepts a nil (unmapped) pointer and rejects an
+// empty or malformed explicit mapping. Storing an empty string instead of NULL
+// would make "no mapping" indistinguishable from "mapped to nothing".
+func validateGatewayProviderField(value *string) error {
+	if value == nil {
+		return nil
+	}
+	if *value == "" {
+		return errors.New("gateway_provider must not be empty; omit it to fall back to the provider key")
+	}
+	return ValidateGatewayProvider(*value)
 }
 
 // ValidateModel validates a logical model record in isolation.

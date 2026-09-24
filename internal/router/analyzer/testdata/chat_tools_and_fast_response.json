@@ -1,0 +1,16 @@
+{
+  "model": "sample-model",
+  "messages": [
+    {"role": "user", "content": "Look up the weather in Paris and summarize it."}
+  ],
+  "tools": [
+    {"type": "function", "function": {"name": "get_weather", "description": "Weather lookup", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}},
+    {"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}},
+    {"type": "function", "function": {"name": "get_weather"}},
+    {"type": "file_search"}
+  ],
+  "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+  "stream": true,
+  "max_completion_tokens": 512,
+  "temperature": 0.2
+}

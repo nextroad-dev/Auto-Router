@@ -21,6 +21,14 @@ Included on purpose:
 | Model without image input | `openai/gpt-3.5-turbo` | `supports_vision=false` from `modalities.input` |
 | Fields to discard | every model: `cost`, `open_weights`, `knowledge`, `release_date`, `temperature`, `structured_output`, `attachment`, `family`, `description`, ... | lenient decode plus explicit "no pricing stored" |
 
+Known limitation (stage 6): **this capture contains no model whose
+`modalities.input` lists `audio`**, so `supportsAudioInput` cannot be exercised
+from the fixture. The mapping is therefore covered by an inline document in
+`TestAudioAndImageModalitiesAreIndependent` / `TestAudioOnlyModelIsUsableThroughTheWholeImportChain`,
+and the fixture is deliberately left byte-faithful instead of being edited to
+contain a synthetic audio entry. Re-capturing a payload that does list `audio`
+should extend the cases above rather than remove this note.
+
 Observed upstream shape (2026-09-21):
 
 ```json

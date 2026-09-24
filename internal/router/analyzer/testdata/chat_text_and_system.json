@@ -1,0 +1,8 @@
+{
+  "model": "sample-model",
+  "messages": [
+    {"role": "system", "content": "Be concise."},
+    {"role": "developer", "content": "Reply in English."},
+    {"role": "user", "content": "What is Auto Router?"}
+  ]
+}

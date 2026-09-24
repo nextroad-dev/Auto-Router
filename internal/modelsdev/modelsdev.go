@@ -159,10 +159,11 @@ type Result struct {
 // allowlist entry leaves the operator believing a model is routable.
 //
 // Model references are matched by exact map key first, then by
-// "<provider>/<model>", because some upstream providers key their models with
-// the provider prefix. Entries that resolve to a model without a usable context
-// window are skipped with a warning so one bad upstream record cannot block the
-// rest of the allowlist.
+// "<provider>/<model>", and finally by a unique prefix/keyword match. The final
+// fallback handles upstreams that expose deployment-specific prefixes while
+// models.dev catalogs the underlying model. Ambiguous matches are treated as
+// missing rather than importing capabilities from the wrong model. Entries that
+// resolve to a model without a usable context window are skipped with a warning.
 func Map(document Document, include []string) (*Result, error) {
 	result := &Result{}
 	missing := make([]string, 0)
@@ -183,7 +184,7 @@ func Map(document Document, include []string) (*Result, error) {
 			missing = append(missing, entry)
 			continue
 		}
-		upstream, ok := lookupModel(provider, providerKey, modelRef)
+		upstream, ok, matchBy := lookupModel(provider, providerKey, modelRef)
 		if !ok {
 			missing = append(missing, entry)
 			continue
@@ -234,17 +235,26 @@ func Map(document Document, include []string) (*Result, error) {
 				Source:      models.SourceModelsDev,
 			})
 		}
+		upstreamModelID := logicalID
+		if matchBy == "prefix" || matchBy == "keyword" {
+			// Preserve the ID actually exposed by this provider even when its
+			// prefix differed from the models.dev record used for capabilities.
+			upstreamModelID = modelRef
+		}
 		result.Pairs = append(result.Pairs, models.Pair{
 			ProviderKey:       providerKey,
 			ModelID:           logicalID,
-			UpstreamModelID:   logicalID,
+			UpstreamModelID:   upstreamModelID,
 			ContextWindow:     contextWindow,
 			MaxOutput:         maxOutput,
 			SupportsTools:     upstream.ToolCall,
 			SupportsVision:    supportsImageInput(upstream),
 			SupportsReasoning: upstream.Reasoning,
-			Enabled:           true,
-			Source:            models.SourceModelsDev,
+			// Audio input is mapped from the same modalities list but into its own
+			// capability bit: the two never substitute for each other.
+			SupportsAudioInput: supportsAudioInput(upstream),
+			Enabled:            true,
+			Source:             models.SourceModelsDev,
 		})
 	}
 	if len(missing) > 0 {
@@ -267,26 +277,79 @@ func providerDisplayName(key string, provider Provider) string {
 	return key
 }
 
+// supportsImageInput reports whether the upstream model accepts image input.
+// Only the declared modalities are read, and only when the list is present: an
+// absent `modalities` object means "not observed", which is mapped to false
+// rather than guessed at.
 func supportsImageInput(model Model) bool {
+	return declaresInputModality(model, "image")
+}
+
+// supportsAudioInput reports whether the upstream model accepts audio input.
+// Audio and image are independent bits: a model that accepts both reports both,
+// and a model that accepts neither reports neither. Pricing and every other
+// unsupported upstream field continue to be discarded by the mapper, so audio
+// support does not become a second reason to widen what is stored.
+func supportsAudioInput(model Model) bool {
+	return declaresInputModality(model, "audio")
+}
+
+// declaresInputModality reports whether `modalities.input` lists a modality,
+// case-insensitively. A missing modalities object or a missing input list is
+// false, so an unknown capability can never be read as support.
+func declaresInputModality(model Model, modality string) bool {
 	if model.Modalities == nil {
 		return false
 	}
-	for _, modality := range model.Modalities.Input {
-		if strings.EqualFold(modality, "image") {
+	for _, declared := range model.Modalities.Input {
+		if strings.EqualFold(declared, modality) {
 			return true
 		}
 	}
 	return false
 }
 
-func lookupModel(provider Provider, providerKey, modelRef string) (Model, bool) {
+func lookupModel(provider Provider, providerKey, modelRef string) (Model, bool, string) {
 	if model, ok := provider.Models[modelRef]; ok {
-		return model, true
+		return model, true, "exact"
 	}
 	// Some providers key the model by its full upstream ID, which already
 	// includes the provider prefix (for example "groq/compound-mini").
-	model, ok := provider.Models[providerKey+"/"+modelRef]
-	return model, ok
+	if model, ok := provider.Models[providerKey+"/"+modelRef]; ok {
+		return model, true, "exact"
+	}
+	bestScore, bestMethod := 0, ""
+	var best Model
+	ambiguous := false
+	for key, candidate := range provider.Models {
+		score, method := bestModelMatch(modelRef, key, candidate.ID, candidate.Name)
+		if score > bestScore {
+			best, bestScore, bestMethod, ambiguous = candidate, score, method, false
+			continue
+		}
+		if score == bestScore && score > 0 && !sameModelCatalogRecord(best, candidate) {
+			ambiguous = true
+		}
+	}
+	if bestScore == 0 || ambiguous {
+		return Model{}, false, ""
+	}
+	return best, true, bestMethod
+}
+
+func sameModelCatalogRecord(left, right Model) bool {
+	leftLimit, rightLimit := left.Limit, right.Limit
+	if left.ToolCall != right.ToolCall || left.Reasoning != right.Reasoning ||
+		supportsImageInput(left) != supportsImageInput(right) || supportsAudioInput(left) != supportsAudioInput(right) {
+		return false
+	}
+	if leftLimit == nil || rightLimit == nil {
+		return leftLimit == nil && rightLimit == nil
+	}
+	if leftLimit.Context != rightLimit.Context || leftLimit.Output == nil || rightLimit.Output == nil {
+		return leftLimit.Context == rightLimit.Context && leftLimit.Output == nil && rightLimit.Output == nil
+	}
+	return *leftLimit.Output == *rightLimit.Output
 }
 
 const maxListedMissing = 20

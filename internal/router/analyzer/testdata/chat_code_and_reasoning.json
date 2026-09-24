@@ -1,0 +1,9 @@
+{
+  "model": "sample-model",
+  "messages": [
+    {"role": "user", "content": "Refactor this function. Think step by step and explain the trade-offs.\n```go\nfunc add(a, b int) int { return a + b }\n```"},
+    {"role": "assistant", "content": "Here is the patch:\ndiff --git a/add.go b/add.go\n--- a/add.go\n+++ b/add.go\n@@ -1 +1 @@\n-func add(a, b int) int { return a + b }\n+func add(a, b int) int { return a + b }", "reasoning_content": "The user wants a refactor."},
+    {"role": "user", "content": "Now prove that the diff is minimal.", "max_tokens": 4096, "reasoning_effort": "high"}
+  ],
+  "stream": true
+}

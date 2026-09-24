@@ -1,0 +1,17 @@
+{
+  "model": "sample-model",
+  "messages": [
+    {"role": "user", "content": [
+      {"type": "text", "text": "Summarize the attachment."},
+      {"type": "vendor_future_part", "payload": {"nested": {"deep": true}}}
+    ]},
+    {"role": "auditor", "content": "An unknown role still counts."},
+    {"role": "assistant", "content": {"unexpected": "object content"}},
+    {"role": "user", "content": null},
+    {"role": "user"}
+  ],
+  "x-vendor-extension": {"untouched": ["a", "b"], "nested": {"three": true}},
+  "metadata": {"tenant": "acme"},
+  "stream_options": {"include_usage": true},
+  "unknown_top_level": [1, 2, {"three": [true, null, "x"]}]
+}

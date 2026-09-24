@@ -1,0 +1,3592 @@
+openapi: 3.1.0
+info:
+  title: Auto Router API
+  version: 0.10.0
+  summary: Single-user LLM gateway with named inference keys, provider configuration, fallback groups and usage metrics.
+  description: |
+    Auto Router is a single-user model gateway with provider-level upstream credentials, named client
+    inference keys, and ordered fallback groups (simple, medium and complex). The first owner password
+    is set once through the local setup endpoint; later access uses a password-backed browser session.
+
+    Management APIs use the `auto_router_admin_session` cookie. Inference calls use a named inference
+    key as `Authorization: Bearer <key>`. Provider secrets are write-only. Groups reference enabled
+    provider/model pairs, and each group's array order is the fallback order.
+
+    OpenAI-compatible ingress is available at `/v1/chat/completions` and `/v1/responses`; native
+    Anthropic ingress is available at `/v1/messages`, and native Gemini ingress at
+    `/v1beta/models/{model}:generateContent`. Native Anthropic and Gemini ingress requires the
+    matching upstream protocol. OpenAI Chat text-only requests can be translated to Anthropic or
+    Gemini for a limited supported subset; unsupported fields are rejected before upstream delivery.
+
+    `GET /admin/v1/logs/summary` reports final client request success rate, token observations and
+    60-second completed upstream output-token TPS. `GET /admin/v1/logs/stats` can aggregate actual
+    upstream attempts by model or configured group.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://127.0.0.1:8080
+    description: The fixed loopback listener. TLS is expected to be terminated by a reverse proxy in front of it.
+tags:
+  - name: Health
+    description: Unauthenticated liveness and readiness probes.
+  - name: Models
+    description: Read-only catalogue of routable logical models.
+  - name: Inference
+    description: OpenAI-compatible and native provider protocols.
+  - name: Debug
+    description: Opt-in, loopback-only offline tools. They never call a provider.
+  - name: Setup
+    description: First-run owner password setup.
+  - name: Admin
+    description: The authenticated management API.
+  - name: Dashboard
+    description: Browser page shells and static assets. They contain no deployment data.
+security: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      operationId: getHealthz
+      description: |
+        Reports that the process is running. It answers one word and carries no data, which is why
+        it is permanently unauthenticated.
+        The `GET` pattern also matches `HEAD`, which returns the same headers and no body.
+      security: []
+      responses:
+        '200':
+          description: The process is running.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HealthStatus'}
+              examples:
+                alive:
+                  value: {status: ok}
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      operationId: getReadyz
+      description: |
+        Performs one bounded database ping. Failure is reported as `503` with `not_ready` and never
+        exposes a database path, driver error or configuration value.
+
+        The `GET` pattern also matches `HEAD`.
+      security: []
+      responses:
+        '200':
+          description: The database answered within the readiness timeout (default 2s).
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HealthStatus'}
+              examples:
+                ready:
+                  value: {status: ready}
+        '503':
+          description: The database did not answer.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HealthStatus'}
+              examples:
+                notReady:
+                  value: {status: not_ready}
+
+  /v1/models:
+    get:
+      tags: [Models]
+      summary: List routable logical models
+      operationId: listModels
+      description: |
+        Lists the enabled logical models that currently have at least one routable binding, in
+        registry order (model priority ascending, then model ID ascending). A model without an
+        enabled pair is not advertised, so the listing never promises a target the router would
+        refuse. `created` is deliberately absent: the registry has no creation timestamps and
+        inventing one would be a fabricated fact. `data` is always an array, so an empty registry
+        reads as an empty catalogue rather than a decode error.
+      security:
+        - inferenceKey: []
+      responses:
+        '200':
+          description: The current catalogue.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+            Cache-Control:
+              description: Always `no-store`.
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelList'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+    head:
+      tags: [Models]
+      summary: Head-check the model catalogue
+      operationId: headModels
+      description: Identical status and headers to `GET /v1/models`, with no response body.
+      security:
+        - inferenceKey: []
+      responses:
+        '200':
+          description: The catalogue exists and is readable.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+
+  /v1/chat/completions:
+    post:
+      tags: [Inference]
+      summary: Forward a Chat Completions request
+      operationId: postChatCompletions
+      description: |
+        Resolves the client's `model` to exactly one provider/model binding, replaces the top-level
+        `model` with that binding's provider-native `upstream_model_id`, and forwards the request to
+        the selected provider's `<base_url>/v1/chat/completions`. Nothing else in the body is
+        interpreted: prompt, tools, reasoning, usage and unknown fields are preserved.
+
+        Model resolution order is fixed and has no heuristics:
+
+        1. `auto` — automatic routing. The policy engine chooses the pair from the eligible
+           candidates; the analyzer and the configured Jev recommender contribute.
+        2. Anything else — a logical model ID, resolved to the first routable binding in the
+           documented ordering contract (`pair.priority`, `provider.priority`, `provider.key`,
+           `model.id` ascending).
+
+        Responses are relayed transparently: the status line, end-to-end headers and body all come
+        from the provider, streamed in 16 KiB chunks with a flush after every write when the client
+        asked for `stream: true`. A provider error body is passed through byte-for-byte rather than
+        being reshaped into the envelope below; only failures generated by this process use it.
+
+        Check order is fixed: an unconfigured executor (`503`) precedes the body read, then media
+        type (`415`) and size (`413`), then the router-owned preference header (`400`), then model
+        parsing (`400`/`403`/`404`), then routing (`422`/`500`/`503` for `auto`), then upstream
+        failures (`502`/`504`).
+      security:
+        - inferenceKey: []
+      parameters:
+        - $ref: '#/components/parameters/RoutingPreferenceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChatCompletionsRequest'}
+      responses:
+        '200':
+          $ref: '#/components/responses/UpstreamResponse'
+        '400':
+          $ref: '#/components/responses/OpenAIError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/OpenAIError'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          $ref: '#/components/responses/OpenAIError'
+        '415':
+          $ref: '#/components/responses/OpenAIError'
+        '422':
+          $ref: '#/components/responses/OpenAIError'
+        '500':
+          $ref: '#/components/responses/OpenAIError'
+        '502':
+          $ref: '#/components/responses/OpenAIError'
+        '503':
+          $ref: '#/components/responses/OpenAIError'
+        '504':
+          $ref: '#/components/responses/OpenAIError'
+
+  /v1/responses:
+    post:
+      tags: [Inference]
+      summary: Forward a Responses API request
+      operationId: postResponses
+      description: |
+        Uses the Responses protocol at the selected provider's `<base_url>/v1/responses`; the
+        request body is otherwise forwarded as received apart from the selected upstream model ID.
+        A `base_url` that already ends in `/v1` is not given a second `/v1` prefix.
+      security:
+        - inferenceKey: []
+      parameters:
+        - $ref: '#/components/parameters/RoutingPreferenceHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResponsesRequest'}
+      responses:
+        '200':
+          $ref: '#/components/responses/UpstreamResponse'
+        '400':
+          $ref: '#/components/responses/OpenAIError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/OpenAIError'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '413':
+          $ref: '#/components/responses/OpenAIError'
+        '415':
+          $ref: '#/components/responses/OpenAIError'
+        '422':
+          $ref: '#/components/responses/OpenAIError'
+        '500':
+          $ref: '#/components/responses/OpenAIError'
+        '502':
+          $ref: '#/components/responses/OpenAIError'
+        '503':
+          $ref: '#/components/responses/OpenAIError'
+        '504':
+          $ref: '#/components/responses/OpenAIError'
+
+  /debug/analyze:
+    post:
+      tags: [Debug]
+      summary: Report the routing features of a request body
+      operationId: postDebugAnalyze
+      description: |
+        Runs the same analyzer the forwarding path uses over a caller-supplied body and returns the
+        extracted features. It performs exactly one analysis and zero upstream calls, and it never
+        touches the registry, the database or a provider executor.
+
+        It is mounted only when `routing.analyzer_debug_endpoint` is enabled **and** the listener is
+        loopback; otherwise the path answers `404`. It requires the owner management session.
+
+        The response never echoes the request body and never returns an inline payload: an image
+        reference is reported as the bounded `http(s)` URL it arrived with, or as `[redacted]` for
+        an inline base64 payload.
+
+        Unlike `POST /debug/route`, this handler does not reject unknown fields — a newer protocol
+        revision must remain analyzable.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DebugAnalyzeRequest'}
+      responses:
+        '200':
+          description: The extracted features.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DebugAnalyzeResponse'}
+        '400':
+          $ref: '#/components/responses/OpenAIError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          $ref: '#/components/responses/OpenAIError'
+        '413':
+          $ref: '#/components/responses/OpenAIError'
+
+  /debug/route:
+    post:
+      tags: [Debug]
+      summary: Evaluate the routing policy over a supplied request, candidates and recommendation
+      operationId: postDebugRoute
+      description: |
+        Evaluates the compiled policy engine over a caller-supplied request body, candidate list and
+        Jev recommendation. It is deliberately not a second routing path:
+
+        * the candidate list comes from the caller, because deriving candidates is the routing
+          layer's job and a debug endpoint that derived its own would answer a different question;
+        * the recommendation comes from the caller, so nothing here calls TypeSafe and the endpoint
+          works with no credential and no network;
+        * it performs exactly one analysis and one policy evaluation, and touches no registry,
+          database or provider executor.
+
+        It is mounted only when `routing.policy_debug_endpoint` is enabled **and** the listener is
+        loopback; otherwise the path answers `404`. It requires the owner management session.
+
+        A refused evaluation is `422` and carries the same explanation shape a successful decision
+        uses (`decision.excluded`, `decision.excluded_count`, `decision.fallback.reason`), so an
+        error answer is as explainable as a successful one. The request body is never echoed.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DebugRouteRequest'}
+      responses:
+        '200':
+          description: The decision, its exclusions and the features it was derived from.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DebugRouteResponse'}
+        '400':
+          $ref: '#/components/responses/OpenAIError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          $ref: '#/components/responses/OpenAIError'
+        '413':
+          $ref: '#/components/responses/OpenAIError'
+        '422':
+          description: |
+            The request was well formed but no candidate can serve it
+            (`no_eligible_candidate`, `truncated_evidence`), or the candidate list itself is
+            unusable (`invalid_request`). The OpenAI envelope carries the refusal, and the
+            top-level `decision` object repeats the exclusions.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DebugRouteRefusal'}
+
+
+  /v1/messages:
+    post:
+      tags: [Inference]
+      summary: Create an Anthropic Messages response
+      operationId: createAnthropicMessage
+      description: Native Anthropic Messages ingress. The selected upstream must support the Anthropic Messages protocol.
+      security:
+        - inferenceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, max_tokens, messages]
+              properties:
+                model: {type: string}
+                max_tokens: {type: integer, minimum: 1}
+                messages: {type: array, items: {type: object, additionalProperties: true}}
+              additionalProperties: true
+      responses:
+        '200':
+          description: Anthropic Messages response.
+          content:
+            application/json: {schema: {type: object, additionalProperties: true}}
+        '400': {$ref: '#/components/responses/OpenAIError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '404': {$ref: '#/components/responses/OpenAIError'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '413': {$ref: '#/components/responses/OpenAIError'}
+        '415': {$ref: '#/components/responses/OpenAIError'}
+        '422': {$ref: '#/components/responses/OpenAIError'}
+        '500': {$ref: '#/components/responses/OpenAIError'}
+        '502': {$ref: '#/components/responses/UpstreamResponse'}
+        '503': {$ref: '#/components/responses/OpenAIError'}
+        '504': {$ref: '#/components/responses/OpenAIError'}
+
+  /v1beta/models/{model}:generateContent:
+    post:
+      tags: [Inference]
+      summary: Generate Gemini content
+      operationId: generateGeminiContent
+      description: Native Gemini ingress. The selected upstream must support the matching Gemini protocol.
+      security:
+        - inferenceKey: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200':
+          description: Gemini content response.
+          content:
+            application/json: {schema: {type: object, additionalProperties: true}}
+        '400': {$ref: '#/components/responses/OpenAIError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '404': {$ref: '#/components/responses/OpenAIError'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '413': {$ref: '#/components/responses/OpenAIError'}
+        '415': {$ref: '#/components/responses/OpenAIError'}
+        '422': {$ref: '#/components/responses/OpenAIError'}
+        '500': {$ref: '#/components/responses/OpenAIError'}
+        '502': {$ref: '#/components/responses/UpstreamResponse'}
+        '503': {$ref: '#/components/responses/OpenAIError'}
+        '504': {$ref: '#/components/responses/OpenAIError'}
+
+  /v1beta/models/{model}:streamGenerateContent:
+    post:
+      tags: [Inference]
+      summary: Stream Gemini content
+      operationId: streamGeminiContent
+      description: Native Gemini streaming ingress. The selected upstream must support the matching Gemini protocol.
+      security:
+        - inferenceKey: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: {type: string}
+        - name: alt
+          in: query
+          required: false
+          schema: {type: string, enum: [sse]}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true}
+      responses:
+        '200':
+          description: Gemini streaming response.
+          content:
+            text/event-stream: {schema: {type: string}}
+        '400': {$ref: '#/components/responses/OpenAIError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '404': {$ref: '#/components/responses/OpenAIError'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '413': {$ref: '#/components/responses/OpenAIError'}
+        '415': {$ref: '#/components/responses/OpenAIError'}
+        '422': {$ref: '#/components/responses/OpenAIError'}
+        '500': {$ref: '#/components/responses/OpenAIError'}
+        '502': {$ref: '#/components/responses/UpstreamResponse'}
+        '503': {$ref: '#/components/responses/OpenAIError'}
+        '504': {$ref: '#/components/responses/OpenAIError'}
+
+
+  /admin/v1/setup/status:
+    get:
+      tags: [Setup]
+      summary: Check whether the owner password has been set
+      operationId: getSetupStatus
+      security: []
+      responses:
+        '200':
+          description: Setup status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [password_set]
+                properties:
+                  password_set: {type: boolean}
+        '503':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/setup/password:
+    post:
+      tags: [Setup]
+      summary: Set the initial owner password
+      operationId: setInitialPassword
+      description: Available only before a password exists and only from loopback with a same-origin request. Password length is 12–1024 bytes.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+      responses:
+        '201':
+          description: Initial password set.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [password_set]
+                properties:
+                  password_set: {type: boolean, const: true}
+        '400': {$ref: '#/components/responses/AdminError'}
+        '403': {$ref: '#/components/responses/AdminError'}
+        '409': {$ref: '#/components/responses/AdminError'}
+        '429': {$ref: '#/components/responses/AdminError'}
+        '503': {$ref: '#/components/responses/AdminError'}
+
+  /admin/v1/password:
+    patch:
+      tags: [Admin]
+      summary: Change the owner password
+      operationId: changeOwnerPassword
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, password]
+              properties:
+                current_password: {type: string, writeOnly: true}
+                password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+      responses:
+        '200':
+          description: Password changed; existing browser sessions are revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changed]
+                properties:
+                  changed: {type: boolean, const: true}
+        '400': {$ref: '#/components/responses/AdminError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+
+  /admin/v1/dashboard:
+    get:
+      tags: [Admin]
+      summary: Read dashboard usage metrics
+      operationId: getAdminDashboard
+      security:
+        - adminSession: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          description: Reporting period, defaulting to 24h.
+          schema: {type: string, enum: [1h, 24h, 7d, 30d], default: 24h}
+      responses:
+        '200':
+          description: Final client success rate, model and group upstream attempt usage, and output TPS.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [window, success_rate, models, groups, output_tps_60s]
+                properties:
+                  window:
+                    type: object
+                    required: [key, from, to]
+                    properties:
+                      key: {type: string, enum: [1h, 24h, 7d, 30d]}
+                      from: {type: string, format: date-time}
+                      to: {type: string, format: date-time}
+                  success_rate: {$ref: '#/components/schemas/DashboardMetric'}
+                  models:
+                    type: array
+                    items: {$ref: '#/components/schemas/DashboardCountRow'}
+                  groups:
+                    type: array
+                    items: {$ref: '#/components/schemas/DashboardCountRow'}
+                  output_tps_60s: {type: [number, 'null'], format: double}
+        '400': {$ref: '#/components/responses/AdminError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '500': {$ref: '#/components/responses/AdminError'}
+
+  /admin/v1/groups:
+    get:
+      tags: [Admin]
+      summary: Read the fixed routing model groups
+      operationId: getModelGroups
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: Three ordered provider/model fallback lists.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelGroups'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+    put:
+      tags: [Admin]
+      summary: Replace all routing model groups
+      operationId: putModelGroups
+      description: All three groups are required. Array order is fallback order; each group accepts up to eight distinct enabled provider/model pairs.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelGroups'}
+      responses:
+        '200':
+          description: The saved ordered groups.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelGroups'}
+        '400': {$ref: '#/components/responses/AdminError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+
+
+  /admin/v1/health:
+    get:
+      tags: [Admin]
+      summary: Management health report
+      operationId: getAdminHealth
+      description: |
+        A management-scoped counterpart of `/readyz`. It is **always `200`**: readiness is a field
+        (`status`, and `storage`) rather than a status code, because an administrator asking "why is
+        the service not ready" needs the answer to arrive with the diagnosis.
+
+        The report also carries the published catalogue's generation and row counts, the routing
+        log writer's queue state and counters, the settings version and overlay flag, and the live
+        browser session count. It never reports a token, a key name or a key value.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The health report.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminHealth'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+
+  /admin/v1/models:
+    get:
+      tags: [Admin]
+      summary: List logical models
+      operationId: listAdminModels
+      description: |
+        Returns logical models from the database (the authority the published snapshot is built
+        from) in contract order: priority ascending, then ID ascending. `next_cursor` is an opaque
+        position key rather than an offset, so a concurrent write cannot make a row appear twice or
+        disappear.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Search'
+        - name: enabled
+          in: query
+          required: false
+          description: Filter by the row's enabled flag. Anything other than a boolean is `400 invalid_filter`.
+          schema: {type: boolean}
+        - name: source
+          in: query
+          required: false
+          description: Filter by where the row came from. `local` is an administrator-owned row; `modelsdev` came from a models.dev synchronization.
+          schema:
+            type: string
+            enum: [local, modelsdev]
+      responses:
+        '200':
+          description: One page of models.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelPage'
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+    post:
+      tags: [Admin]
+      summary: Create a logical model
+      operationId: createAdminModel
+      description: |
+        Inserts an administrator-owned local model. The `auto` identifier and the reserved
+        `provider:` prefix are rejected, so no registry entry can shadow either request syntax.
+
+        There is no corresponding `DELETE`: a model is disabled, never removed, so a stored log row
+        never references a row that vanished.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelCreate'}
+      responses:
+        '201':
+          description: The created model, as it will be reported from now on.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Model'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          description: A model with this ID already exists (`model_exists`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/models/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ModelId'
+    get:
+      tags: [Admin]
+      summary: Read one logical model with its bindings
+      operationId: getAdminModel
+      description: |
+        Returns the model together with every binding that references it, so an operator can see
+        what disabling it would affect without a second request. The binding list is bounded by
+        `admin.max_page_size` and carries no cursor or truncation indicator.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The model and its bindings.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelDetail'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such model (`unknown_model`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '500':
+          $ref: '#/components/responses/AdminError'
+    patch:
+      tags: [Admin]
+      summary: Update a logical model
+      operationId: patchAdminModel
+      description: |
+        A partial update. At least one field must be present, and `display_name`, `enabled` and
+        `priority` cannot be explicitly `null`; a body that carries none of them is
+        `400 invalid_request`. A successful write marks the row administrator-owned and republishes
+        the routing snapshot.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelPatch'}
+      responses:
+        '200':
+          description: The updated model.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Model'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such model (`unknown_model`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/providers:
+    get:
+      tags: [Admin]
+      summary: List providers
+      operationId: listAdminProviders
+      description: |
+        Returns providers in contract order (priority ascending, then key ascending). A provider's
+        credential is never returned, not even masked: the row reports `api_key_set` only.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Search'
+        - name: enabled
+          in: query
+          required: false
+          description: Filter by the row's enabled flag.
+          schema: {type: boolean}
+      responses:
+        '200':
+          description: One page of providers.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderPage'
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+    post:
+      tags: [Admin]
+      summary: Create a provider
+      operationId: createAdminProvider
+      description: |
+        Creates an administrator-owned local provider. An empty `display_name` defaults to the key.
+        `base_url` is optional only while the provider is disabled; enabling a provider without one
+        is refused, because such a row could never serve a request. `api_key` is write-only.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProviderCreate'}
+      responses:
+        '201':
+          description: The created provider.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Provider'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          description: A provider with this key already exists (`provider_exists`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/providers/{key}:
+    parameters:
+      - $ref: '#/components/parameters/ProviderKey'
+    get:
+      tags: [Admin]
+      summary: Read one provider with its bindings
+      operationId: getAdminProvider
+      description: Returns the provider together with every binding it serves.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The provider and its bindings.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProviderDetail'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such provider (`unknown_provider`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '500':
+          $ref: '#/components/responses/AdminError'
+    patch:
+      tags: [Admin]
+      summary: Update a provider
+      operationId: patchAdminProvider
+      description: |
+        A partial update. At least one field must be present. `display_name`, `enabled` and
+        `priority` cannot be explicitly `null`; an explicit `null` for `gateway_provider`,
+        `base_url` or `api_key` clears that column (a cleared mapping is stored as SQL NULL).
+
+        The merged row is validated before it is written, so a patch cannot leave an enabled
+        provider without an executable endpoint. Rotating `api_key` rebuilds that provider's
+        executor atomically: requests already holding the old connection finish, new requests use
+        the new credential.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProviderPatch'}
+      responses:
+        '200':
+          description: The updated provider.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Provider'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such provider (`unknown_provider`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+    delete:
+      tags: [Admin]
+      summary: Delete an administrator-owned provider
+      operationId: deleteAdminProvider
+      description: |
+        Deletes only administrator-owned providers. Their provider/model bindings and matching
+        routing-group entries are removed atomically; remaining group entries keep their order.
+        Historical routing events and attempts are retained.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The provider was deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key, deleted]
+                properties:
+                  key: {type: string}
+                  deleted: {type: boolean, enum: [true]}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '404':
+          description: No such provider (`unknown_provider`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '409':
+          description: Provider is not administrator-owned (`provider_not_deletable`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '500': {$ref: '#/components/responses/AdminError'}
+
+  /admin/v1/providers/{key}/discover:
+    get:
+      tags: [Admin]
+      summary: Discover available upstream models
+      operationId: discoverProviderModels
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/ProviderKey'
+      responses:
+        '200':
+          description: Discovered model identifiers; discovery does not add them to the registry.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, truncated]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, label]
+                      properties:
+                        id: {type: string}
+                        label: {type: string}
+                  truncated: {type: boolean}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502': {$ref: '#/components/responses/AdminError'}
+  /admin/v1/providers/{key}/models:
+    post:
+      tags: [Admin]
+      summary: Select or refresh a discovered model for a provider
+      operationId: selectProviderModel
+      description: Capability metadata is looked up in models.dev by exact ID and then by custom-prefix/keyword matching. Ambiguous or missing matches use conservative defaults for a new binding; existing administrator edits are preserved.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/ProviderKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model: {type: string}
+      responses:
+        '200':
+          description: The selected provider/model identifiers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, model, metadata_source, metadata_applied, metadata_match, metadata_model]
+                properties:
+                  provider: {type: string}
+                  model: {type: string}
+                  metadata_source:
+                    type: string
+                    enum: [models.dev, local-default, admin-override]
+                  metadata_applied: {type: boolean}
+                  metadata_match:
+                    type: string
+                    enum: ['', exact, prefix, keyword]
+                  metadata_model: {type: string, description: Matching models.dev provider/model ID, empty when no match.}
+        '400': {$ref: '#/components/responses/AdminError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/InsufficientScope'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '502':
+          description: The models.dev catalog could not be fetched (`metadata_lookup_failed`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+
+  /admin/v1/pairs:
+    get:
+      tags: [Admin]
+      summary: List provider/model bindings
+      operationId: listAdminPairs
+      description: |
+        Returns bindings in contract order: pair priority, provider priority, provider key, model ID
+        ascending. `missing` answers the operator's "what could serve this kind of request" question
+        by selecting rows that do **not** declare a capability.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: provider
+          in: query
+          required: false
+          description: Filter by provider key. A value that is not a valid provider key is `400 invalid_filter`.
+          schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'}
+        - name: model
+          in: query
+          required: false
+          description: Filter by logical model ID. A value that is not a valid model identifier is `400 invalid_filter`.
+          schema: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@~+-]{0,127}$'}
+        - name: enabled
+          in: query
+          required: false
+          description: Filter by the binding's own enabled flag.
+          schema: {type: boolean}
+        - name: missing
+          in: query
+          required: false
+          description: Select bindings that do not support this capability.
+          schema:
+            type: string
+            enum: [tools, vision, audio_input, reasoning]
+      responses:
+        '200':
+          description: One page of bindings.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairPage'
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+    post:
+      tags: [Admin]
+      summary: Bind an existing provider to an existing logical model
+      operationId: createAdminPair
+      description: |
+        Creates a binding between a provider and a logical model that **already exist**: this
+        endpoint binds, it does not create either side. An unknown provider or model is `404`; an
+        existing binding is `409 pair_exists` (patch it instead).
+
+        An empty `upstream_model_id` defaults to the logical model ID. `max_output` may be `null`
+        for "no declared ceiling", while `context_window` must be positive and `max_output` at most
+        the context window.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PairCreate'}
+      responses:
+        '200':
+          description: The created binding.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Pair'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: The provider (`unknown_provider`) or the model (`unknown_model`) is not registered.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '409':
+          description: This provider already serves this model (`pair_exists`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/pairs/{provider}/{model}:
+    parameters:
+      - $ref: '#/components/parameters/PairProviderKey'
+      - $ref: '#/components/parameters/PairModelId'
+    get:
+      tags: [Admin]
+      summary: Read one binding
+      operationId: getAdminPair
+      description: Returns the single binding identified by the two coordinates.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The binding.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Pair'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such binding (`unknown_pair`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '500':
+          $ref: '#/components/responses/AdminError'
+    patch:
+      tags: [Admin]
+      summary: Update one binding
+      operationId: patchAdminPair
+      description: |
+        A partial update. An explicit `null` for `max_output` clears the declared ceiling, which is
+        a real state: "this pair has no declared output limit".
+
+        The fields that can be checked on their own are checked here so the response names the
+        offending field; the merged row is validated afterwards, and a merged state that would be
+        unusable is `400 invalid_request` with `field: body`.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PairPatch'}
+      responses:
+        '200':
+          description: The updated binding.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Pair'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such binding (`unknown_pair`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/logs:
+    get:
+      tags: [Admin]
+      summary: Query the routing log
+      operationId: listAdminLogs
+      description: |
+        Reads `routing_events` — the same schema the writer writes and the `-logs-check` maintenance
+        mode reads, so there is no second definition of "what an event is". Results are newest
+        first and paginated with a `(started_at, id)` keyset cursor.
+
+        Every closed-set filter is validated before it reaches SQL, and a refused value names the
+        parameter without repeating it. A query that matches nothing is a `200` with an empty page,
+        which is a different answer from a refused query.
+
+        When `request_id` is supplied, any event whose Jev status is not `disabled` carries its
+        stored Jev trace inline under `jev_trace`.
+
+        Only requests that reached the forwarding path are recorded: `/healthz`, `/readyz`,
+        `GET /v1/models`, `POST /debug/*` and every `/admin/*` request are deliberately absent.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/ProviderFilter'
+        - $ref: '#/components/parameters/ModelFilter'
+        - $ref: '#/components/parameters/RequestIdFilter'
+        - $ref: '#/components/parameters/ErrorCodeFilter'
+        - $ref: '#/components/parameters/ProtocolFilter'
+        - $ref: '#/components/parameters/RoutingModeFilter'
+        - $ref: '#/components/parameters/SelectionModeFilter'
+        - $ref: '#/components/parameters/JevStatusFilter'
+        - $ref: '#/components/parameters/ConfidenceBandFilter'
+        - $ref: '#/components/parameters/FallbackReasonFilter'
+        - $ref: '#/components/parameters/UsageStatusFilter'
+        - $ref: '#/components/parameters/StatusClassFilter'
+        - $ref: '#/components/parameters/HttpStatusFilter'
+        - $ref: '#/components/parameters/StreamFilter'
+        - $ref: '#/components/parameters/FromFilter'
+        - $ref: '#/components/parameters/ToFilter'
+      responses:
+        '200':
+          description: One page of routing events.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEventPage'
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/logs/stats:
+    get:
+      tags: [Admin]
+      summary: Aggregate the routing log
+      operationId: getAdminLogStats
+      description: |
+        Accepts the same filters as `GET /admin/v1/logs` plus `group_by`, and returns one row per
+        group (or a single total row when `group_by` is empty).
+
+        Every aggregate is reported as a pair of facts: the count it was computed over and the value
+        itself. A token sum over zero observed rows is `null`, never `0`, because "nobody reported
+        tokens" and "everybody reported zero tokens" are different findings. The group count is
+        bounded, so a high-cardinality column cannot make one request allocate without limit.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/ProviderFilter'
+        - $ref: '#/components/parameters/ModelFilter'
+        - $ref: '#/components/parameters/RequestIdFilter'
+        - $ref: '#/components/parameters/ErrorCodeFilter'
+        - $ref: '#/components/parameters/ProtocolFilter'
+        - $ref: '#/components/parameters/RoutingModeFilter'
+        - $ref: '#/components/parameters/SelectionModeFilter'
+        - $ref: '#/components/parameters/JevStatusFilter'
+        - $ref: '#/components/parameters/ConfidenceBandFilter'
+        - $ref: '#/components/parameters/FallbackReasonFilter'
+        - $ref: '#/components/parameters/UsageStatusFilter'
+        - $ref: '#/components/parameters/StatusClassFilter'
+        - $ref: '#/components/parameters/HttpStatusFilter'
+        - $ref: '#/components/parameters/StreamFilter'
+        - $ref: '#/components/parameters/FromFilter'
+        - $ref: '#/components/parameters/ToFilter'
+        - name: group_by
+          in: query
+          required: false
+          description: |
+            Omit for a single total row. `attempt_group` and `attempt_model` aggregate actual
+            upstream tries separately from client request events.
+          schema:
+            type: string
+            enum: [model, provider, routing_mode, selection_mode, usage_status, status_class, effective_model, attempt_group, attempt_model]
+      responses:
+        '200':
+          description: The aggregate report.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [group_by, groups]
+                properties:
+                  group_by:
+                    type: string
+                    description: Echoes the requested grouping, or an empty string for a total.
+                  granularity:
+                    type: string
+                    description: Present with the value upstream_attempt for attempt_group and attempt_model.
+                  groups:
+                    type: array
+                    items: {$ref: '#/components/schemas/LogStatsGroup'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/logs/summary:
+    get:
+      tags: [Admin]
+      summary: Windowed dashboard metrics
+      operationId: getAdminLogSummary
+      description: |
+        The single endpoint that owns the dashboard's metric definitions: every ratio is computed
+        here from the log's own columns, so a page cannot define a rate differently from the API.
+
+        Five numerator/denominator ratios are reported, including final client request success.
+        There is intentionally **no single "hit
+        rate"** key: no ground truth exists for the correct model, so one number would be read as a
+        routing-accuracy claim that nothing in this system can measure.
+
+        * `auto_usage_rate` — automatic requests over requests that reached the forwarding path.
+        * `client_request_success_rate` — final 2xx client responses over recorded client requests.
+        * `auto_decision_success_rate` — automatic requests that produced a model over automatic
+          requests.
+        * `jev_invocation_rate` — automatic requests whose Jev call succeeded over automatic
+          requests.
+        * `jev_top1_adoption_rate` — decisions whose final model equaled the Jev top-1 over
+          decisions with a recorded top-1. Adoption is a strict equality, so a `blend` selection
+          counts only when it happened to land on the top-1.
+
+        **A denominator of zero yields `value: null`, never `0`**: an empty window and a perfect
+        score are different findings. Token sums keep the same semantics and travel with their
+        observation counts.
+
+        The response also carries token totals, the 60-second completed upstream output-token TPS,
+        request distribution, latency, status counts and recent events.
+      security:
+        - adminSession: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          description: The reporting window. An unknown value is refused rather than clamped.
+          schema:
+            type: string
+            enum: [1h, 24h, 7d, 30d]
+            default: 24h
+      responses:
+        '200':
+          description: The windowed report.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LogSummary'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/settings:
+    get:
+      tags: [Admin]
+      summary: Report the effective settings
+      operationId: getAdminSettings
+      description: |
+        Returns the runtime-mutable settings only: a flat `settings` list with each value's
+        provenance, plus the masked `effective` document and the current validation warnings.
+        Fixed runtime constraints and inbound credentials are not part of the document.
+
+        `source` is `default` or `runtime` for settings the serving runtime owns; a mutable value
+        with a stored SQLite overlay is reported as `runtime` and reflected in `overlay`. A
+        credential is reported as its masked rendering plus a `set` flag, never in the clear.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The settings report.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingsReport'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          description: The runtime settings store is not assembled (`read_only_state`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+    patch:
+      tags: [Admin]
+      summary: Apply a runtime settings change
+      operationId: patchAdminSettings
+      description: |
+        The body is a nested JSON document shaped like the configuration, restricted to
+        runtime-mutable paths. A change is a **candidate, never an edit**: it is merged onto the
+        current effective configuration, validated and compiled, and only a candidate that passes
+        both steps is stored and published. A refused change therefore leaves the running process
+        exactly as it was.
+
+        The catalogue is consulted before the merge, so a request that mixes a mutable and an
+        immutable setting changes nothing at all rather than applying the half it is allowed to.
+        An immutable path is `422 restart_required`, an unknown name is `422 unsupported_setting`,
+        and a stored-version mismatch is `409 settings_conflict` (re-read and retry).
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              description: A nested partial configuration document using the configuration's own field names.
+              additionalProperties: true
+              examples:
+                enableFailover:
+                  value: {routing: {auto: {failover: {enabled: true}}}}
+      responses:
+        '200':
+          description: The change was applied and published.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingsApplied'}
+        '400':
+          $ref: '#/components/responses/AdminError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          description: The stored settings changed since they were read (`settings_conflict`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '422':
+          description: The patch named an immutable path (`restart_required`) or an unknown name (`unsupported_setting`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '500':
+          $ref: '#/components/responses/AdminError'
+    delete:
+      tags: [Admin]
+      summary: Reset runtime settings to the code defaults
+      operationId: deleteAdminSettings
+      description: |
+        Removes every runtime override and clears the stored Jev credential, returning the process to
+        its code defaults. Registry provider/model/binding rows and all inbound credentials are
+        preserved: this endpoint resets settings, not data.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The reset result.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SettingsReset'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/sync-state:
+    get:
+      tags: [Admin]
+      summary: Report the last models.dev synchronization
+      operationId: getAdminSyncState
+      description: |
+        Reports the stored outcome of the last models.dev synchronization. "Never synchronized" is a
+        fact worth a `200` (`{"synchronized": false}`): the remedy is the explicit sync action, and a
+        `404` would wrongly suggest the endpoint itself is missing.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The synchronization state.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SyncState'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/sync:
+    post:
+      tags: [Admin]
+      summary: Synchronize the models.dev allowlist now
+      operationId: postAdminSync
+      description: |
+        Fetches models.dev and imports the configured allowlist into the registry. Synchronizations
+        are serialized: a second request while one is running waits rather than starting a second
+        import. An empty allowlist is refused before any network call, and a failed import changes
+        nothing — the snapshot is republished only after the transaction commits.
+
+        No request body is read.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The synchronization outcome.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SyncResult'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '422':
+          description: The models.dev allowlist is empty (`empty_allowlist`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '502':
+          description: The synchronization failed and the registry was not changed (`sync_failed`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '503':
+          description: Registry synchronization is not available in this process (`sync_unavailable`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+
+  /admin/v1/keys:
+    get:
+      tags: [Admin]
+      summary: List inbound credentials
+      operationId: listAdminKeys
+      description: |
+        Reports the audit name, scopes, active flag and timestamps of every configured credential.
+        The credential value is never returned, not even masked: `key_set` reports whether one is
+        stored. A credential's name is not a secret and is what the process log records.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: Every configured inbound credential.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/InboundKey'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/AdminError'
+    post:
+      tags: [Admin]
+      summary: Create an inbound credential
+      operationId: createAdminKey
+      description: |
+        Creates a credential and returns its value **exactly once**, in this response. Nothing else in
+        the API can retrieve it, because only the SHA-256 digest is persisted.
+
+        Every created key is a named inference key and cannot authenticate management requests.
+      security:
+        - adminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name:
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+                  description: The audit name recorded for every request this credential authenticates.
+                scopes:
+                  type: array
+                  minItems: 1
+                  maxItems: 1
+                  uniqueItems: true
+                  items:
+                    type: string
+                    enum: [inference]
+            examples:
+              inferenceKey:
+                value: {name: "dashboard-laptop", scopes: ["inference"]}
+      responses:
+        '201':
+          description: The credential. Its `key` field is shown once and cannot be retrieved again.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OneTimeKey'}
+        '400':
+          description: The credential name is invalid (`invalid_request`) or the scope combination is not accepted (`invalid_scopes`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          description: The audit name is taken (`key_name_exists`) or the credential limit is reached (`credential_limit`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '413':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/keys/{name}/rotate:
+    post:
+      tags: [Admin]
+      summary: Rotate an inbound credential
+      operationId: rotateAdminKey
+      description: |
+        Replaces the inference key behind an existing audit name and returns the new value exactly once.
+        A name that is unknown or inactive is `404`.
+
+        No request body is read.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/KeyName'
+      responses:
+        '200':
+          description: The new credential, shown once.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OneTimeKey'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: The active credential does not exist (`key_not_found`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '409':
+          $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/keys/{name}:
+    delete:
+      tags: [Admin]
+      summary: Disable an inbound credential
+      operationId: disableAdminKey
+      description: |
+        Marks the inference key inactive. The row is retained for audit history.
+      security:
+        - adminSession: []
+      parameters:
+        - $ref: '#/components/parameters/KeyName'
+      responses:
+        '200':
+          description: The credential is disabled.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [disabled]
+                properties:
+                  disabled: {type: boolean, const: true}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: The active credential does not exist (`key_not_found`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+  /admin/v1/session:
+    post:
+      tags: [Admin]
+      summary: Log in with the owner password
+      operationId: createAdminSession
+      description: Checks the single owner's password and sets an in-memory HttpOnly, SameSite=Strict browser session cookie. Login is same-origin and rate limited.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: {type: string, writeOnly: true}
+      responses:
+        '200':
+          description: Session created.
+          headers:
+            Set-Cookie:
+              description: "The `auto_router_admin_session` cookie, scoped to `/admin`."
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [expires_at]
+                properties:
+                  expires_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/AdminError'}
+        '401': {$ref: '#/components/responses/AdminError'}
+        '403': {$ref: '#/components/responses/AdminError'}
+        '413': {$ref: '#/components/responses/AdminError'}
+        '429': {$ref: '#/components/responses/AdminError'}
+    get:
+      tags: [Admin]
+      summary: Probe the current session
+      operationId: getAdminSession
+      description: |
+        Reports the single authenticated owner identity. A `401` means the browser should show the login form.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The authenticated identity.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SessionProbe'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+    delete:
+      tags: [Admin]
+      summary: End the current session
+      operationId: deleteAdminSession
+      description: |
+        Destroys the session the request was authenticated with and clears the cookie with
+        `Max-Age=0` on the same `Path` it was issued with.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The session was ended.
+          headers:
+            Set-Cookie:
+              description: The cleared session cookie.
+              schema: {type: string}
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [logged_out]
+                properties:
+                  logged_out: {type: boolean, const: true}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+
+  /admin:
+    get:
+      tags: [Dashboard]
+      summary: Redirect to the dashboard root
+      operationId: redirectAdminRoot
+      description: |
+        Answers `301` with `Location: /admin/`. The bare path is registered without a method pattern
+        so this handler's permanent redirect is the one a browser sees and caches, rather than the
+        mux's own temporary trailing-slash redirect.
+      security: []
+      responses:
+        '301':
+          description: Permanent redirect to `/admin/`.
+          headers:
+            Location:
+              schema: {type: string, const: /admin/}
+
+  /admin/:
+    get:
+      tags: [Dashboard]
+      summary: Serve the dashboard shell
+      operationId: getDashboardPage
+      description: |
+        Serves the bundled Vue SPA shell (`text/html`). The same bytes are served for `/admin/`,
+        `/admin/login`, `/admin/providers`, `/admin/pairs`,
+        `/admin/settings` and `/admin/keys`:
+        the shell is structurally independent of the database, and every number on a page is fetched
+        by the browser from an authenticated `/admin/v1/*` endpoint. That is why these paths can be
+        served without a credential and why they disclose nothing.
+
+        An unknown path under `/admin/` is a `404`: this is an exact route lookup, not an SPA
+        wildcard fallback.
+
+        Registered only when the management surface is mounted. With `auth.enabled` or
+        `admin.enabled` off, every `/admin/*` path answers `404` exactly as it did before the
+        surface existed.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          headers:
+            Cache-Control:
+              description: Always `no-store`.
+              schema: {type: string}
+            Content-Security-Policy:
+              schema: {type: string}
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: Unknown page, or the management surface is not mounted.
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+
+  /admin/login:
+    get:
+      tags: [Dashboard]
+      summary: Serve the login shell
+      operationId: getDashboardLoginPage
+      description: See `GET /admin/`. The shell reads `GET /admin/v1/session` and redirects to this path on `401`.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: The management surface is not mounted.
+
+  /admin/providers:
+    get:
+      tags: [Dashboard]
+      summary: Serve the providers page shell
+      operationId: getDashboardProvidersPage
+      description: See `GET /admin/`.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: The management surface is not mounted.
+
+  /admin/pairs:
+    get:
+      tags: [Dashboard]
+      summary: Serve the route bindings page shell
+      operationId: getDashboardPairsPage
+      description: See `GET /admin/`. This exact, data-free shell route supports GET and HEAD; binding data comes from `/admin/v1/pairs`.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: The management surface is not mounted.
+
+  /admin/settings:
+    get:
+      tags: [Dashboard]
+      summary: Serve the settings page shell
+      operationId: getDashboardSettingsPage
+      description: See `GET /admin/`.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: The management surface is not mounted.
+
+  /admin/keys:
+    get:
+      tags: [Dashboard]
+      summary: Serve the credentials page shell
+      operationId: getDashboardKeysPage
+      description: See `GET /admin/`. This exact, data-free shell route supports GET and HEAD; credential data comes from `/admin/v1/keys`.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: The management surface is not mounted.
+
+  /admin/static/{path}:
+    get:
+      tags: [Dashboard]
+      summary: Serve a dashboard static asset
+      operationId: getDashboardAsset
+      description: |
+        Serves one file from the embedded `dashboard/static` filesystem. The path is validated
+        against traversal (a leading slash, `..`, or any value that does not survive `path.Clean`
+        unchanged is `404`) and restricted to known extensions: `.css` and `.js`.
+        Assets are served with `Cache-Control: no-cache` and a content `ETag`, so a browser
+        revalidates instead of refetching.
+
+        Like the page shells, these files contain no deployment data.
+      security: []
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: The asset path relative to the embedded static root. It may contain slashes; the value must already be clean.
+          schema: {type: string}
+      responses:
+        '200':
+          description: The asset.
+          headers:
+            ETag:
+              schema: {type: string}
+            Cache-Control:
+              description: Always `no-cache`.
+              schema: {type: string}
+          content:
+            text/css: {schema: {type: string}}
+            text/javascript: {schema: {type: string}}
+        '404':
+          description: The asset does not exist, the extension is not allowed, or the path is unsafe.
+
+components:
+  securitySchemes:
+    inferenceKey:
+      type: http
+      scheme: bearer
+      description: |
+        A named inference key sent as `Authorization: Bearer <key>`.
+    adminSession:
+      type: apiKey
+      in: cookie
+      name: auto_router_admin_session
+      description: |
+        The browser session issued by `POST /admin/v1/session`. Accepted only under `/admin/`; it
+        cannot authenticate inference requests.
+
+  headers:
+    XRequestId:
+      description: |
+        The correlation identifier for this request. An inbound value matching
+        `^[A-Za-z0-9._-]{1,128}$` is echoed; anything else is replaced by a generated identifier. The
+        same value is recorded in the process log and, for requests that reach the forwarding path,
+        in the routing log.
+      schema: {type: string}
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: |
+        Page size. Must be a positive whole number; a value above `admin.max_page_size` (default 200)
+        is clamped rather than refused, because the caller asked for "as much as possible". Absent
+        means `admin.page_size` (default 50).
+      schema: {type: integer, minimum: 1}
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        An opaque position key issued by this endpoint's own previous page. A cursor from a different
+        endpoint, or one this service did not issue, is refused with `400 invalid_cursor` rather than
+        reinterpreted.
+      schema: {type: string}
+    Search:
+      name: search
+      in: query
+      required: false
+      description: |
+        A literal substring match, not a SQL pattern: `%` and `_` are ordinary characters. ASCII
+        matching is case-insensitive; non-ASCII is matched literally. Control characters, invalid
+        UTF-8 and values longer than 128 bytes are refused with `400 invalid_filter`.
+
+        The fields it searches depend on the endpoint: model listings match the model ID and display
+        name, provider listings match the provider key and display name, and the routing-log
+        endpoints match the request ID and the provider, requested-model and effective-model
+        identifiers.
+      schema: {type: string, maxLength: 128}
+    ModelId:
+      name: id
+      in: path
+      required: true
+      description: |
+        The logical model ID. The route is a Go rest-wildcard (`{id...}`), so the value may contain
+        slashes — real model IDs do, for example `meta-llama/Llama-3.3-70B`. A single trailing slash
+        is removed before lookup. An unknown identifier is `404 unknown_model` rather than `400`,
+        because the answer must not depend on whether the identifier would have been valid.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@~+-]{0,127}$'
+    ProviderKey:
+      name: key
+      in: path
+      required: true
+      description: The registry provider key. An unknown key is `404 unknown_provider`.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+    PairProviderKey:
+      name: provider
+      in: path
+      required: true
+      description: The registry provider key of the binding. An unknown coordinate is `404 unknown_pair`.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+    PairModelId:
+      name: model
+      in: path
+      required: true
+      description: |
+        The logical model ID of the binding. The route is a Go rest-wildcard (`{model...}`), so the
+        value may contain slashes. An unknown coordinate is `404 unknown_pair`.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@~+-]{0,127}$'
+    KeyName:
+      name: name
+      in: path
+      required: true
+      description: The credential's audit name.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+    RoutingPreferenceHeader:
+      name: X-Routing-Preference
+      in: header
+      required: false
+      description: |
+        Router-owned control input that selects this request's routing preference. It is consumed and
+        stripped at the boundary, so it never reaches the provider.
+
+        Values are case-insensitive and may be repeated as a comma-separated list, but two *different*
+        values in one request are refused with `400 invalid_routing_preference` rather than resolved
+        by precedence. An absent or blank header uses `routing.default_preference`. The header has no
+        effect on `GET /v1/models`.
+      schema:
+        type: string
+        enum: [balanced, quality, cost, latency]
+    ProviderFilter:
+      name: provider
+      in: query
+      required: false
+      description: Exact provider key. A value that is not a valid provider key is `400 invalid_filter`.
+      schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'}
+    ModelFilter:
+      name: model
+      in: query
+      required: false
+      description: |
+        Exact logical model identifier, matched against the model the client requested. A value that
+        is not a valid model identifier is `400 invalid_filter`.
+      schema: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@~+-]{0,127}$'}
+    RequestIdFilter:
+      name: request_id
+      in: query
+      required: false
+      description: |
+        Exact request identifier, matched against the correlation identifier. When present, each
+        returned event that has a stored Jev trace carries it inline under `jev_trace`.
+      schema: {type: string, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$'}
+    ErrorCodeFilter:
+      name: error_code
+      in: query
+      required: false
+      description: Exact error code recorded for a failed request.
+      schema: {type: string, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$'}
+    ProtocolFilter:
+      name: protocol
+      in: query
+      required: false
+      description: The model protocol.
+      schema:
+        type: string
+        enum: [chat_completions, responses, native]
+    RoutingModeFilter:
+      name: routing_mode
+      in: query
+      required: false
+      description: Whether the client named a destination or asked the router to choose.
+      schema:
+        type: string
+        enum: [explicit, auto]
+    SelectionModeFilter:
+      name: selection_mode
+      in: query
+      required: false
+      description: The rule that produced the selected pair.
+      schema:
+        type: string
+        enum: [explicit, jev, blend, default_model, first_eligible]
+    JevStatusFilter:
+      name: jev_status
+      in: query
+      required: false
+      description: |
+        The Jev outcome. This includes the five literal statuses and the `failure:<reason>` form,
+        where `<reason>` is one of `jev_timeout`, `jev_unavailable`, `jev_rejected`,
+        `jev_invalid_result`, `jev_canceled`.
+      schema:
+        type: string
+        pattern: '^(disabled|skipped_single_model|skipped_insufficient_evidence|skipped_too_many_models|ok|failure:(jev_timeout|jev_unavailable|jev_rejected|jev_invalid_result|jev_canceled))$'
+    ConfidenceBandFilter:
+      name: confidence_band
+      in: query
+      required: false
+      description: The coarse band of the recommendation confidence.
+      schema:
+        type: string
+        enum: [high, medium, low]
+    FallbackReasonFilter:
+      name: fallback_reason
+      in: query
+      required: false
+      description: |
+        Why the decision did not simply adopt a recommendation. Besides the closed set, the
+        `not_eligible:<code>` form records an ineligible configured default model.
+      schema:
+        type: string
+        pattern: '^(none|not_requested|confidence_low|selected_model_ineligible|jev_timeout|jev_unavailable|jev_rejected|jev_invalid_result|jev_canceled|truncated_evidence|no_candidates|not_eligible:.+)$'
+    UsageStatusFilter:
+      name: usage_status
+      in: query
+      required: false
+      description: |
+        How passive usage observation ended. There is deliberately no "zero" member: an unknown token
+        count is stored as NULL, never as 0.
+      schema:
+        type: string
+        enum: [observed, absent, malformed, oversized, interrupted]
+    StatusClassFilter:
+      name: status_class
+      in: query
+      required: false
+      description: The coarse class of the recorded HTTP status.
+      schema:
+        type: string
+        enum: [success, client_error, server_error]
+    HttpStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: The exact recorded HTTP status. Must be a three-digit status code.
+      schema: {type: integer, minimum: 100, maximum: 599}
+    StreamFilter:
+      name: stream
+      in: query
+      required: false
+      description: Whether the client asked for a streamed response.
+      schema: {type: boolean}
+    FromFilter:
+      name: from
+      in: query
+      required: false
+      description: Lower time bound, inclusive. Accepts an RFC 3339 timestamp or Unix seconds.
+      schema: {type: string}
+    ToFilter:
+      name: to
+      in: query
+      required: false
+      description: |
+        Upper time bound. Accepts an RFC 3339 timestamp or Unix seconds. A `to` earlier than `from` is
+        `400 invalid_filter` rather than an empty page: answering it with "nothing happened" would
+        hide the mistake.
+      schema: {type: string}
+
+  responses:
+    Unauthorized:
+      description: |
+        No credential was presented, or the presented one was not accepted
+        (`401 invalid_api_key`). The response carries `WWW-Authenticate: Bearer`.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/OpenAIError'}
+    InsufficientScope:
+      description: The credential is valid but does not carry the scope this path requires (`403 insufficient_scope`).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/OpenAIError'}
+    NotFound:
+      description: The path is not registered in this process (for example an opt-in debug endpoint that is disabled, or the management surface when it is not mounted).
+    MethodNotAllowed:
+      description: The path exists but not for this method. The mux answers with an `Allow` header.
+      headers:
+        Allow:
+          schema: {type: string}
+    OpenAIError:
+      description: |
+        A locally generated failure. It uses the OpenAI envelope so every model client can parse one
+        shape. The message never contains a provider URL, a credential or an upstream response body.
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/OpenAIError'}
+    AdminError:
+      description: A management-surface failure, using the management envelope.
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AdminError'}
+    UpstreamResponse:
+      description: |
+        The selected provider's response, relayed unchanged apart from hop-by-hop and framing headers
+        (`Content-Length` is recomputed because the body is flushed in 16 KiB chunks). The status code,
+        end-to-end headers and body all come from the provider; a provider error body is passed
+        through byte-for-byte rather than being rewritten into the local envelope.
+
+        When the client asked for `stream: true`, the body is a `text/event-stream` relayed without
+        buffering, with a flush after every write. No `Client.Timeout` or idle truncation applies to a
+        stream, and once response headers have been sent this process will not change the status code,
+        append a second response or retry.
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+      content:
+        application/json:
+          schema:
+            type: object
+            description: The provider's JSON response, with no schema imposed by this service.
+            additionalProperties: true
+        text/event-stream:
+          schema:
+            type: string
+            description: The provider's server-sent event stream, relayed as received.
+
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, not_ready]
+
+    OpenAIError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type, code, param]
+          properties:
+            message:
+              type: string
+              description: Authored by this service and intentionally generic.
+            type:
+              type: string
+              enum: [invalid_request_error, permission_error, api_error]
+              description: |
+                `invalid_request_error` for 4xx, `permission_error` for 403, `api_error` for 5xx.
+            code:
+              type: string
+              description: |
+                A stable machine code, for example `invalid_request_error`, `model_not_found`,
+                `provider_not_configured`, `provider_override_disabled`, `invalid_model_identifier`,
+                `no_eligible_candidate`, `truncated_evidence`, `routing_unavailable`,
+                `upstream_unavailable`, `upstream_timeout`, `request_too_large`,
+                `unsupported_media_type`, `invalid_routing_preference`, `invalid_api_key`,
+                `insufficient_scope`.
+            param:
+              type: 'null'
+              description: Always `null`. This service does not attribute a failure to a named parameter.
+
+    AdminError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                A stable machine code, for example `invalid_request`, `invalid_filter`,
+                `invalid_cursor`, `invalid_scopes`, `invalid_api_key`, `insufficient_scope`,
+                `unknown_model`, `unknown_provider`, `unknown_pair`, `model_exists`,
+                `provider_exists`, `pair_exists`, `key_not_found`, `key_name_exists`,
+                `credential_limit`, `request_too_large`, `settings_conflict`,
+                `restart_required`, `unsupported_setting`, `read_only_state`, `storage_error`,
+                `snapshot_publish_failed`, `empty_allowlist`, `sync_failed`, `sync_unavailable`,
+                `too_many_attempts`, `cross_site_request`, `not_found`, `password_already_set`,
+                `password_not_set`, `invalid_password`.
+            message:
+              type: string
+              description: Authored by this service. It never repeats a submitted value.
+            field:
+              type: string
+              description: The offending field or setting path, when one can be named. Omitted otherwise.
+
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object: {type: string, const: list}
+        data:
+          type: array
+          description: Always an array, never `null`.
+          items: {$ref: '#/components/schemas/ModelObject'}
+    ModelObject:
+      type: object
+      required: [id, object, owned_by]
+      properties:
+        id:
+          type: string
+          description: The logical model identifier a client may send in `model`.
+        object: {type: string, const: model}
+        owned_by:
+          type: string
+          description: |
+            The provider key that a request for this model would currently select — the first
+            routable binding's provider. It is deliberately the effective owner rather than a
+            canonical one, so the listing never promises a target the router would refuse.
+
+    ChatCompletionsRequest:
+      type: object
+      required: [model]
+      description: |
+        The OpenAI-compatible request as the client sent it. Only `model` is read by this service;
+        every other member is forwarded unchanged.
+      properties:
+        model:
+          type: string
+          description: |
+            `auto` requests automatic routing; any other accepted value is a logical model ID.
+            `stream` is preserved as sent and only recorded, never rewritten.
+        stream:
+          type: boolean
+          default: false
+          description: |
+            Whether the client wants a server-sent event stream. This value is recorded and passed
+            through; the relay flushes after every 16 KiB chunk either way, so a non-streamed response
+            is also delivered incrementally.
+        messages:
+          type: array
+          description: Relayed unchanged. Listed only because it is the protocol's central member.
+          items: {type: object, additionalProperties: true}
+      additionalProperties: true
+
+    ResponsesRequest:
+      type: object
+      required: [model]
+      description: |
+        The Responses API request as the client sent it. Only `model` is read by this service; every
+        other member is forwarded unchanged.
+      properties:
+        model: {type: string}
+        stream: {type: boolean, default: false}
+        input:
+          description: Relayed unchanged.
+          oneOf:
+            - type: string
+            - type: array
+              items: {type: object, additionalProperties: true}
+      additionalProperties: true
+
+    DebugAnalyzeRequest:
+      type: object
+      required: [protocol, body]
+      properties:
+        protocol:
+          type: string
+          enum: [chat_completions, responses]
+        body:
+          type: object
+          description: The request object to analyze, exactly as a client would send it.
+          additionalProperties: true
+        preference:
+          type: string
+          description: An explicit routing preference for this analysis, overriding the configured default.
+          enum: [balanced, quality, cost, latency]
+      additionalProperties: true
+
+    DebugAnalyzeResponse:
+      type: object
+      required: [protocol, request_id, features]
+      properties:
+        protocol:
+          type: string
+          enum: [chat_completions, responses]
+        request_id:
+          type: string
+          description: The same value as the `X-Request-Id` response header.
+        features: {$ref: '#/components/schemas/RoutingFeatures'}
+
+    RoutingFeatures:
+      type: object
+      description: |
+        The normalized, protocol-independent facts the analyzer extracted. Every field is derived from
+        the request body plus the resolved preference, and the same bytes always produce the same
+        features. Counts and booleans only: no prompt text and no inline payload ever appears here.
+      properties:
+        preference:
+          type: string
+          enum: [balanced, quality, cost, latency]
+        preference_source:
+          type: string
+          enum: [default, header]
+        system_prompt_present: {type: boolean}
+        system_prompt_bytes:
+          type: integer
+          description: The size of the system/developer text that was seen.
+        message_count: {type: integer}
+        role_counts:
+          type: object
+          description: |
+            Counts by role bucket. All seven keys are always present, zero-filled, so a consumer can
+            read a role without a presence check; unknown or missing roles are counted as `other`, so
+            the counts always sum to `message_count`.
+          additionalProperties: {type: integer}
+        input_bytes:
+          type: integer
+          description: Bytes of the analyzed window, including JSON structure (at most 4 MiB).
+        input_tokens_estimate:
+          type: integer
+          description: A crude `ceil(bytes/4)` heuristic for classification only. It is never a billing or usage number.
+        length:
+          type: string
+          enum: [short, medium, long, very_long]
+        truncated:
+          type: boolean
+          description: |
+            The analyzer did not see the whole request. This is not the same as "the request does not
+            contain it", so an unobserved feature must never be treated as absent.
+        text_only: {type: boolean}
+        kinds:
+          type: array
+          description: The de-duplicated, sorted set of input kinds found.
+          items:
+            type: string
+            enum: [text, image, file, audio]
+        image_count: {type: integer}
+        images:
+          type: array
+          description: Bounded list of media references (images and files) in encounter order.
+          items:
+            type: object
+            required: [kind, location]
+            properties:
+              kind:
+                type: string
+                enum: [url, base64, file]
+              location:
+                type: string
+                description: An `http(s)` reference, an opaque file reference, or the literal `[redacted]` for an inline payload.
+        has_image_url: {type: boolean}
+        has_base64_image: {type: boolean}
+        has_file: {type: boolean}
+        has_audio: {type: boolean}
+        has_tools: {type: boolean}
+        tool_count: {type: integer}
+        tool_names:
+          type: array
+          description: De-duplicated, sorted and bounded. Each name is truncated to 128 bytes.
+          items: {type: string}
+        tools_truncated: {type: boolean}
+        forced_tool_choice:
+          type: boolean
+          description: The client named the tool to call. `auto`, `required` and `none` do not count.
+        has_code: {type: boolean}
+        reasoning_likely: {type: boolean}
+        chained_tool_use: {type: boolean}
+        file_search_used: {type: boolean}
+        stream_requested: {type: boolean}
+        max_output_tokens_requested:
+          type: [integer, 'null']
+          description: The client's output ceiling, or `null` when it did not ask for one.
+        unrecognized_parts:
+          type: integer
+          description: Content parts, shapes, message entries or input items the analyzer could not classify. A signal that the client used a newer protocol revision, not an error.
+
+    DebugRouteRequest:
+      type: object
+      required: [protocol, body, candidates]
+      description: |
+        Everything the policy evaluation needs, supplied by the caller. Unknown top-level fields are
+        rejected, and `body` must be a JSON object.
+      properties:
+        protocol:
+          type: string
+          enum: [chat_completions, responses]
+        body:
+          type: object
+          description: The request object to analyze.
+          additionalProperties: true
+        preference:
+          type: string
+          enum: [balanced, quality, cost, latency]
+        candidates:
+          type: array
+          minItems: 1
+          maxItems: 256
+          description: |
+            The pair-level candidate set. The endpoint adds no capabilities and infers no priorities:
+            it evaluates exactly what it is given, which is what makes the result comparable to a real
+            decision.
+          items: {$ref: '#/components/schemas/DebugRouteCandidate'}
+        jev:
+          $ref: '#/components/schemas/DebugRouteJev'
+
+    DebugRouteCandidate:
+      type: object
+      required: [provider, model]
+      properties:
+        provider: {type: string, description: The provider key.}
+        model: {type: string, description: The logical model ID.}
+        gateway_model:
+          type: string
+          description: |
+            A historical contract name for the provider-native model identifier the selected provider
+            would receive. It is carried, never derived here: the value is provider-native and is not
+            prefixed before direct execution.
+        context_window: {type: integer}
+        max_output:
+          type: [integer, 'null']
+          description: The pair's declared output ceiling, or `null` when it declares none.
+        supports_tools: {type: boolean}
+        supports_vision: {type: boolean}
+        supports_audio_input:
+          type: boolean
+          description: An independent capability, never a synonym for `supports_vision`.
+        supports_reasoning: {type: boolean}
+        pair_priority: {type: integer}
+        provider_priority: {type: integer}
+      additionalProperties: false
+
+    DebugRouteJev:
+      type: object
+      description: |
+        The recommendation the caller supplies. Nothing here fetches one: the endpoint never calls
+        TypeSafe, so it works with no credential and no network, and the request body never leaves the
+        machine's memory.
+      properties:
+        available:
+          type: boolean
+          description: When `false`, the recommendation is recorded as "not requested" unless `failure` names a classification.
+        failure:
+          type: [string, 'null']
+          description: A known failure classification, for example `jev_timeout` or `jev_unavailable`.
+        selected:
+          type: string
+          description: Required when `available` is true.
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        probabilities:
+          type: object
+          additionalProperties: {type: number, format: double}
+      additionalProperties: false
+
+    DebugRouteResponse:
+      type: object
+      required: [protocol, request_id, decision, evidence, features]
+      properties:
+        protocol:
+          type: string
+          enum: [chat_completions, responses]
+        request_id: {type: string}
+        decision: {$ref: '#/components/schemas/RouteDecision'}
+        evidence:
+          type: object
+          required: [excluded_count, features]
+          properties:
+            excluded_count: {type: integer}
+            features:
+              description: The same view the envelope carries, repeated so a consumer that only wants the facts need not reach into the decision.
+              allOf:
+                - $ref: '#/components/schemas/RoutingFeatures'
+        features: {$ref: '#/components/schemas/RoutingFeatures'}
+
+    DebugRouteRefusal:
+      description: |
+        A refused evaluation. The OpenAI envelope carries the error, and the top-level `decision` object
+        repeats the same vocabulary a successful decision uses, so a caller parses one shape rather than
+        two. Exclusions appear only when the engine recorded them.
+      allOf:
+        - $ref: '#/components/schemas/OpenAIError'
+        - type: object
+          properties:
+            decision:
+              type: object
+              required: [excluded, excluded_count, fallback]
+              properties:
+                excluded:
+                  type: array
+                  items: {$ref: '#/components/schemas/Exclusion'}
+                excluded_count: {type: integer}
+                fallback:
+                  type: object
+                  required: [reason]
+                  properties:
+                    reason: {type: string, description: A closed fallback reason.}
+
+    RouteDecision:
+      type: object
+      description: |
+        The complete, deterministic outcome of one routing question. It carries identifiers, numbers and
+        closed enumerations only: no prompt text, no tool schema and no credential ever appears in a
+        logged or returned decision.
+      required: [provider, model, gateway_model, confidence, confidence_band, reason, fallback, excluded, excluded_count, signals, evidence_hash]
+      properties:
+        provider: {type: string}
+        model: {type: string, description: The selected logical model ID.}
+        gateway_model:
+          type: string
+          description: The provider-native model identifier that will be sent upstream.
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Always finite and inside the unit interval on every path.
+        confidence_band:
+          type: string
+          enum: [high, medium, low]
+        reason:
+          type: string
+          description: |
+            A machine-readable token list: band, origin, fallback reason and up to three leading
+            exclusion codes.
+        fallback: {$ref: '#/components/schemas/FallbackInfo'}
+        excluded:
+          type: array
+          description: The hard-filter rejections that were recorded, in candidate order. The list is bounded; `excluded_count` reports the true total.
+          items: {$ref: '#/components/schemas/Exclusion'}
+        excluded_count: {type: integer}
+        signals:
+          type: array
+          description: Bounded, deterministically ordered explanation values, recorded for explanation rather than recomputation.
+          items:
+            type: object
+            required: [name, value]
+            properties:
+              name: {type: string}
+              value: {type: number, format: double}
+        evidence_hash:
+          type: string
+          description: |
+            A digest of the decision's inputs (protocol, preference, candidate metadata and exclusion
+            codes). It never covers request text, which is what lets a whole decision be stored.
+
+    FallbackInfo:
+      type: object
+      required: [used, reason]
+      properties:
+        used: {type: boolean}
+        reason:
+          type: string
+          description: A closed fallback reason.
+          enum: [none, not_requested, confidence_low, selected_model_ineligible, jev_timeout, jev_unavailable, jev_rejected, jev_invalid_result, jev_canceled, truncated_evidence, no_candidates]
+        requested_model:
+          type: string
+          description: The configured default model, empty when none is configured.
+        eligible:
+          type: boolean
+          description: Whether the configured default survived the hard filters. Meaningful only when `requested_model` is non-empty.
+        detail:
+          type: string
+          description: A bounded explanation built from enumerations and numbers, for example `not_configured` or `not_eligible:requires_tools`.
+
+    Exclusion:
+      type: object
+      required: [model_id, provider_key, code]
+      properties:
+        model_id: {type: string}
+        provider_key: {type: string}
+        code:
+          type: string
+          enum: [requires_tools, requires_vision, requires_audio_input, context_insufficient, max_output_too_small, not_in_allowlist, denied, truncated_evidence]
+        detail:
+          type: string
+          description: |
+            A bounded string of numbers and enumerations only, for example
+            `input_tokens=200000 context_window=128000`. Never request text.
+
+    AdminHealth:
+      type: object
+      required: [status, uptime_ms, started_at, catalog, routing_log, storage, settings, sessions]
+      properties:
+        status:
+          type: string
+          enum: [ok, not_ready]
+          description: Mirrors the readiness probe's verdict, but is reported as a field of a `200`.
+        uptime_ms: {type: integer, format: int64}
+        started_at:
+          type: string
+          description: Process start instant, in RFC 3339 with nanosecond precision.
+        catalog:
+          type: object
+          required: [generation, providers, models, pairs]
+          properties:
+            generation: {type: integer, format: uint64, description: Increments on every published snapshot.}
+            providers: {$ref: '#/components/schemas/CountPair'}
+            models: {$ref: '#/components/schemas/CountPair'}
+            pairs: {$ref: '#/components/schemas/CountPair'}
+        routing_log:
+          type: object
+          required: [enabled, queue_depth, queue_capacity, written, dropped, failed]
+          properties:
+            enabled:
+              type: boolean
+              description: |
+                Whether events are currently recorded. An administrator can turn this on without a
+                restart, which is why a writer exists even when recording starts disabled.
+            queue_depth: {type: integer}
+            queue_capacity: {type: integer}
+            written: {type: integer, format: uint64}
+            dropped: {type: integer, format: uint64, description: Events discarded because the queue was full.}
+            failed: {type: integer, format: uint64}
+        storage:
+          type: [string, 'null']
+          enum: [ready, not_ready, null]
+          description: The database ping result. `null` when no readiness checker is wired.
+        settings:
+          type: object
+          required: [version, overlay]
+          properties:
+            version: {type: integer, format: int64}
+            overlay:
+              type: boolean
+              description: Whether a stored runtime overlay is in effect.
+        sessions:
+          type: object
+          required: [live, ttl_ms, bound]
+          properties:
+            live: {type: integer, description: How many browser sessions are currently valid.}
+            ttl_ms: {type: integer, format: int64}
+            bound: {type: integer, description: The hard cap on live sessions.}
+          description: Counts and lifetimes only; never a token and never a key name.
+
+    DashboardMetric:
+      type: object
+      required: [numerator, denominator, value]
+      properties:
+        numerator: {type: integer, format: int64}
+        denominator: {type: integer, format: int64}
+        value: {type: [number, 'null'], format: double}
+
+    DashboardCountRow:
+      type: object
+      required: [id, requests, input_tokens, output_tokens, total_tokens]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        requests: {type: integer, format: int64}
+        input_tokens: {type: [integer, 'null'], format: int64}
+        output_tokens: {type: [integer, 'null'], format: int64}
+        total_tokens: {type: [integer, 'null'], format: int64}
+
+    ModelGroups:
+      type: object
+      required: [simple, medium, complex]
+      properties:
+        simple: {$ref: '#/components/schemas/ModelGroupMembers'}
+        medium: {$ref: '#/components/schemas/ModelGroupMembers'}
+        complex: {$ref: '#/components/schemas/ModelGroupMembers'}
+      additionalProperties: false
+
+    ModelGroupMembers:
+      type: array
+      maxItems: 8
+      description: Ordered fallback sequence of enabled provider/model pairs.
+      items:
+        type: object
+        required: [provider, model]
+        properties:
+          provider: {type: string}
+          model: {type: string}
+        additionalProperties: false
+
+    CountPair:
+      type: object
+      required: [total, enabled]
+      properties:
+        total: {type: integer}
+        enabled: {type: integer}
+
+    Model:
+      type: object
+      required: [id, display_name, enabled, priority, source, owner, pair_count]
+      properties:
+        id: {type: string}
+        display_name: {type: string}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+        source:
+          type: string
+          enum: [local, modelsdev]
+        owner:
+          type: string
+          enum: [admin, config, modelsdev]
+          description: |
+            The answer to "will the next synchronization undo this edit?". `admin` means the row is
+            administrator-owned and imports leave it alone.
+        pair_count:
+          type: integer
+          description: How many bindings reference this model.
+
+    ModelCreate:
+      type: object
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@~+-]{0,127}$'
+          description: |
+            The logical model ID. `auto` and the `provider:` prefix are reserved and rejected, so no
+            registry entry can shadow either request syntax.
+        display_name:
+          type: string
+          description: Non-empty, not padded with whitespace, no NUL. Defaults to the ID when empty.
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+      additionalProperties: false
+
+    ModelPatch:
+      type: object
+      description: A partial update. At least one field must be present, and no listed field may be explicitly `null`.
+      properties:
+        display_name: {type: string}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+      additionalProperties: false
+
+    ModelDetail:
+      type: object
+      required: [model, pairs]
+      properties:
+        model: {$ref: '#/components/schemas/Model'}
+        pairs:
+          type: array
+          description: Every binding that references this model, bounded by `admin.max_page_size`.
+          items: {$ref: '#/components/schemas/Pair'}
+
+    ModelPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Model'}
+        next_cursor:
+          type: [string, 'null']
+          description: The cursor for the next page, or `null` on the last page.
+
+    Provider:
+      type: object
+      required: [key, kind, display_name, enabled, priority, source, owner, gateway_provider, base_url, api_key_set, pair_count]
+      properties:
+        key:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+        kind:
+          type: string
+          enum: [openai, openai_compatible, anthropic, gemini]
+        display_name: {type: string}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+        source:
+          type: string
+          enum: [local, modelsdev]
+        owner:
+          type: string
+          enum: [admin, config, modelsdev]
+        gateway_provider:
+          type: [string, 'null']
+          description: A retained compatibility field for pre-migration registry rows. Direct routing ignores it.
+        base_url:
+          type: string
+          description: The provider endpoint prefix. It is not a secret and lets an operator tell two providers apart.
+        api_key_set:
+          type: boolean
+          description: Whether a provider credential is stored. The credential itself, including a masked rendering, is never returned.
+        pair_count: {type: integer}
+
+    ProviderCreate:
+      type: object
+      properties:
+        key:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'
+        kind:
+          type: string
+          enum: [openai, openai_compatible, anthropic, gemini]
+          default: openai_compatible
+        display_name:
+          type: string
+          description: Defaults to the key when empty.
+        base_url:
+          type: string
+          description: |
+            An absolute `http(s)` URL with an optional path prefix. Credentials, a query string and a
+            fragment are rejected. Required when `enabled` is true.
+        api_key:
+          type: string
+          description: Write-only. It is stored and used for upstream requests, and never returned.
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+      additionalProperties: false
+
+    ProviderPatch:
+      type: object
+      description: |
+        A partial update. At least one field must be present. `display_name`, `enabled` and `priority`
+        cannot be explicitly `null`; `null` for `gateway_provider`, `base_url` or `api_key` clears that
+        column.
+      properties:
+        kind:
+          type: string
+          enum: [openai, openai_compatible, anthropic, gemini]
+        display_name: {type: string}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+        gateway_provider: {type: [string, 'null']}
+        base_url: {type: [string, 'null']}
+        api_key: {type: [string, 'null'], description: Write-only; rotating it rebuilds this provider's executor atomically.}
+      additionalProperties: false
+
+    ProviderDetail:
+      type: object
+      required: [provider, pairs]
+      properties:
+        provider: {$ref: '#/components/schemas/Provider'}
+        pairs:
+          type: array
+          items: {$ref: '#/components/schemas/Pair'}
+
+    ProviderPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Provider'}
+        next_cursor: {type: [string, 'null']}
+
+    Pair:
+      type: object
+      required: [provider, model, upstream_model_id, context_window, max_output, supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, owner]
+      properties:
+        provider: {type: string}
+        model: {type: string, description: The logical model ID.}
+        upstream_model_id: {type: string, description: The provider-native identifier sent upstream.}
+        context_window: {type: integer}
+        max_output:
+          type: [integer, 'null']
+          description: The declared output ceiling, or `null` when the binding declares none.
+        supports_tools: {type: boolean}
+        supports_vision: {type: boolean}
+        supports_audio_input:
+          type: boolean
+          description: An independent capability. A text-and-audio model does not accept images, and an image model does not accept audio.
+        supports_reasoning: {type: boolean}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+        source:
+          type: string
+          enum: [local, modelsdev]
+        owner:
+          type: string
+          enum: [admin, config, modelsdev]
+
+    PairCreate:
+      type: object
+      properties:
+        provider:
+          type: string
+          description: Must already exist. An unknown provider is `404 unknown_provider`.
+        model:
+          type: string
+          description: Must already exist and must not be `auto`. An unknown model is `404 unknown_model`.
+        upstream_model_id:
+          type: string
+          description: Non-empty, not padded with whitespace, no NUL, at most 256 bytes. Defaults to `model` when empty.
+        context_window: {type: integer, minimum: 1}
+        max_output:
+          type: [integer, 'null']
+          description: Greater than zero and at most `context_window`, or `null` for no declared ceiling.
+        supports_tools: {type: boolean}
+        supports_vision: {type: boolean}
+        supports_audio_input: {type: boolean}
+        supports_reasoning: {type: boolean}
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+      additionalProperties: false
+
+    PairPatch:
+      type: object
+      description: A partial update. At least one field must be present; an explicit `null` for `max_output` clears the declared ceiling.
+      properties:
+        enabled: {type: boolean}
+        priority: {type: integer, minimum: 0}
+        upstream_model_id: {type: string}
+        context_window: {type: integer, minimum: 1}
+        max_output: {type: [integer, 'null']}
+        supports_tools: {type: boolean}
+        supports_vision: {type: boolean}
+        supports_audio_input: {type: boolean}
+        supports_reasoning: {type: boolean}
+      additionalProperties: false
+
+    PairPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Pair'}
+        next_cursor: {type: [string, 'null']}
+
+    LogEvent:
+      type: object
+      description: |
+        One stored routing event. Every nullable field is a column that can be NULL, and NULL is
+        reported as JSON `null` rather than as a zero: "the upstream did not report this" is not
+        "zero". Requests that never reached the forwarding path are deliberately absent from this
+        table.
+      required: [id, request_id, started_at, duration_ms, protocol, status, stream, bytes_written, gateway_attempts, failover_used, usage_status]
+      properties:
+        id: {type: integer, format: int64}
+        request_id: {type: string}
+        started_at: {type: string, description: RFC 3339 with nanosecond precision.}
+        duration_ms: {type: integer, format: int64}
+        protocol:
+          type: string
+          enum: [chat_completions, responses, native]
+        routing_mode:
+          type: [string, 'null']
+          enum: [explicit, auto, null]
+        selection_mode:
+          type: [string, 'null']
+          enum: [explicit, jev, blend, default_model, first_eligible, null]
+        requested_model:
+          type: [string, 'null']
+          description: The model value the client sent. It is `auto` on the automatic path.
+        effective_model:
+          type: [string, 'null']
+          description: The logical model that actually took effect. Empty until a destination resolved.
+        jev_top_model:
+          type: [string, 'null']
+          description: The top-1 entry of the recommendation. Empty unless the call succeeded.
+        provider:
+          type: [string, 'null']
+        upstream_model:
+          type: [string, 'null']
+        status: {type: integer}
+        upstream_status: {type: [integer, 'null']}
+        error_code: {type: [string, 'null']}
+        stream: {type: boolean}
+        bytes_written: {type: integer, format: int64}
+        client_ip:
+          type: [string, 'null']
+          description: Present only when `routing.log.store_client_ip` is enabled.
+        routing_preference:
+          type: [string, 'null']
+          enum: [balanced, quality, cost, latency, null]
+        preference_source:
+          type: [string, 'null']
+          enum: [default, header, null]
+        jev_status:
+          type: [string, 'null']
+          description: One of the five literal statuses, or `failure:<reason>`.
+        confidence:
+          type: [number, 'null']
+          format: double
+        confidence_band:
+          type: [string, 'null']
+          enum: [high, medium, low, null]
+        fallback_reason: {type: [string, 'null']}
+        evidence_hash:
+          type: [string, 'null']
+          description: A digest of the decision's inputs. It never covers request text.
+        gateway_attempts:
+          type: integer
+          description: How many upstream attempts were made — 1, or 2 after a failover.
+        failover_used: {type: boolean}
+        routing_latency_ms:
+          type: [integer, 'null']
+          format: int64
+          description: NULL when no decision happened, 0 when one happened within the same millisecond.
+        jev_latency_ms: {type: [integer, 'null'], format: int64}
+        input_tokens: {type: [integer, 'null'], format: int64}
+        output_tokens: {type: [integer, 'null'], format: int64}
+        total_tokens:
+          type: [integer, 'null']
+          format: int64
+          description: Never synthesized from the other two counts.
+        usage_status:
+          type: string
+          enum: [observed, absent, malformed, oversized, interrupted]
+        usage_source:
+          type: [string, 'null']
+          enum: [chat_completions, responses, stream_chat_completions, stream_responses, null]
+          description: Where a usage object was read. Only meaningful when usage was observed.
+        jev_trace:
+          description: Present only when a trace was stored for this request. Omitted otherwise.
+          allOf:
+            - $ref: '#/components/schemas/JevTrace'
+        attempts:
+          type: array
+          description: Present when upstream attempts were recorded for this request.
+          items: {$ref: '#/components/schemas/LogAttempt'}
+
+    LogAttempt:
+      type: object
+      required: [id, attempt_index, started_at, usage_status]
+      properties:
+        id: {type: integer, format: int64}
+        attempt_index: {type: integer}
+        group_name: {type: [string, 'null']}
+        provider: {type: [string, 'null']}
+        model_id: {type: [string, 'null']}
+        started_at: {type: string, description: RFC 3339 timestamp.}
+        completed_at: {type: [string, 'null'], description: RFC 3339 timestamp.}
+        status: {type: [integer, 'null']}
+        error_code: {type: [string, 'null']}
+        input_tokens: {type: [integer, 'null'], format: int64}
+        output_tokens: {type: [integer, 'null'], format: int64}
+        total_tokens: {type: [integer, 'null'], format: int64}
+        usage_status:
+          type: string
+          enum: [observed, absent, malformed, oversized, interrupted]
+
+    JevTrace:
+      type: object
+      description: |
+        The optional diagnostic trace of one Jev call. It carries identifiers, counts, durations and the
+        normalized distribution, and it has no field for a prompt, a system message, a tool description
+        or raw bytes, so enabling it cannot leak a conversation.
+      required: [status, input_mode, candidate_count, candidate_models, model_count, probabilities]
+      properties:
+        status: {type: string}
+        failure_reason: {type: [string, 'null']}
+        input_mode:
+          type: string
+          enum: [content, redacted, features_only]
+        latency_ms:
+          type: [integer, 'null']
+          format: int64
+          description: "`null` when no call was made."
+        candidate_count: {type: integer, description: How many eligible pair-level candidates the models were derived from.}
+        candidate_models:
+          type: array
+          description: The distinct logical model identifiers sent, sorted ascending. Empty when no call was made.
+          items: {type: string}
+        model_count: {type: integer, description: Always the length of `candidate_models`.}
+        selected_model: {type: [string, 'null']}
+        confidence: {type: [number, 'null'], format: double}
+        confidence_band: {type: [string, 'null']}
+        fallback_reason: {type: [string, 'null']}
+        evidence_hash: {type: [string, 'null']}
+        probabilities:
+          type: array
+          description: The normalized distribution, ordered by descending probability with model ID ascending as the tie-break.
+          items:
+            type: object
+            required: [model, probability]
+            properties:
+              model: {type: string}
+              probability: {type: number, format: double}
+
+    LogEventPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/LogEvent'}
+        next_cursor: {type: [string, 'null']}
+
+    LogStatsGroup:
+      type: object
+      description: |
+        One aggregate group. Every token sum is `null` when no row in the group reported that count, and
+        the observation counts say how many rows the sums cover.
+      required: [group, count, observed_usage_count, tokens_observed_count, status_success, status_client_error, status_server_error]
+      properties:
+        group:
+          type: [string, 'null']
+          description: The grouped value. `null` when no grouping was requested.
+        count: {type: integer, format: int64}
+        mean_duration_ms: {type: [number, 'null'], format: double}
+        p95_duration_ms: {type: [integer, 'null'], format: int64}
+        input_tokens: {type: [integer, 'null'], format: int64}
+        output_tokens: {type: [integer, 'null'], format: int64}
+        total_tokens: {type: [integer, 'null'], format: int64}
+        observed_usage_count: {type: integer, format: int64}
+        tokens_observed_count: {type: integer, format: int64}
+        status_success: {type: integer, format: int64}
+        status_client_error: {type: integer, format: int64}
+        status_server_error: {type: integer, format: int64}
+
+    MetricRate:
+      type: object
+      description: One measured ratio, reported as a numerator and a denominator with labels for both sides.
+      required: [name, numerator, denominator, value, numerator_label, denominator_label]
+      properties:
+        name: {type: string}
+        numerator: {type: integer, format: int64}
+        denominator: {type: integer, format: int64}
+        value:
+          type: [number, 'null']
+          format: double
+          description: The ratio, or `null` when the denominator is zero. Never `0` for an empty denominator.
+        numerator_label: {type: string}
+        denominator_label: {type: string}
+
+    LogSummary:
+      type: object
+      required: [window, requests, rates, latency, tokens, attempt_output_tokens_per_second_60s, statuses, models, recent, log_disabled]
+      properties:
+        window:
+          type: object
+          required: [key, from, to]
+          properties:
+            key:
+              type: string
+              enum: [1h, 24h, 7d, 30d]
+            from: {type: string}
+            to: {type: string}
+          description: The bounds the numbers were computed over, so two responses can be compared by their bounds rather than by the key they were requested with.
+        requests:
+          type: object
+          required: [total, auto, explicit]
+          properties:
+            total:
+              type: integer
+              format: int64
+              description: The sum of the two mode groups. A request rejected before its mode was known is in neither group, and so is excluded here too.
+            auto: {type: integer, format: int64}
+            explicit: {type: integer, format: int64}
+        rates:
+          type: array
+          description: |
+            Five measured ratios, including final client request success rate. There is intentionally no
+            single "hit rate": no ground truth exists for routing accuracy.
+          items: {$ref: '#/components/schemas/MetricRate'}
+        latency:
+          type: object
+          required: [all, auto]
+          properties:
+            all: {$ref: '#/components/schemas/LatencyClass'}
+            auto: {$ref: '#/components/schemas/LatencyClass'}
+        tokens: {$ref: '#/components/schemas/TokenTotals'}
+        attempt_output_tokens_per_second_60s:
+          type: [number, 'null']
+          format: double
+          description: Sum of known output tokens for attempts completed in the last 60 seconds, divided by 60.
+        statuses:
+          type: object
+          required: [success, client_error, server_error]
+          properties:
+            success: {type: integer, format: int64}
+            client_error: {type: integer, format: int64}
+            server_error: {type: integer, format: int64}
+        models:
+          type: array
+          description: The model scoreboard, bounded so a window with many models cannot make one request allocate without limit.
+          items:
+            type: object
+            required: [model, decisions, adopted_top1, recommended_top1]
+            properties:
+              model: {type: string}
+              decisions: {type: integer, format: int64}
+              adopted_top1: {type: integer, format: int64}
+              recommended_top1: {type: integer, format: int64}
+        recent:
+          type: array
+          description: The ten newest events, in the same shape the list endpoint returns.
+          items: {$ref: '#/components/schemas/LogEvent'}
+        log_disabled:
+          type: boolean
+          description: |
+            Whether the durable routing log is currently off. A page that shows empty numbers because
+            recording is off must say so rather than leave an operator to guess.
+
+    LatencyClass:
+      type: object
+      required: [count]
+      properties:
+        count: {type: integer, format: int64}
+        mean_duration_ms: {type: [number, 'null'], format: double}
+        p95_duration_ms: {type: [integer, 'null'], format: int64}
+
+    TokenTotals:
+      type: object
+      required: [observed_usage_count, input_observed_count, output_observed_count, total_observed_count]
+      properties:
+        input_tokens: {type: [integer, 'null'], format: int64}
+        output_tokens: {type: [integer, 'null'], format: int64}
+        total_tokens: {type: [integer, 'null'], format: int64}
+        observed_usage_count: {type: integer, format: int64}
+        input_observed_count: {type: integer, format: int64}
+        output_observed_count: {type: integer, format: int64}
+        total_observed_count: {type: integer, format: int64}
+
+    SettingField:
+      type: object
+      required: [path, value, source, mutable, restart_required]
+      properties:
+        path:
+          type: string
+          description: The dotted configuration path, for example `routing.default_preference`.
+        value:
+          description: The effective value. For a secret this is the masked rendering, or `null` when nothing is set.
+        source:
+          type: string
+          enum: [default, file, env, runtime]
+          description: Where the effective value comes from. `runtime` means the stored SQLite overlay.
+        mutable: {type: boolean}
+        restart_required: {type: boolean}
+        reason:
+          type: string
+          description: Explains a restart requirement. Empty for a mutable setting.
+        secret: {type: boolean}
+        set:
+          type: boolean
+          description: Whether a credential is configured. Present only for a secret field.
+
+    SettingsReport:
+      type: object
+      required: [version, overlay, settings, effective, warnings]
+      properties:
+        version: {type: integer, format: int64}
+        overlay: {type: boolean, description: Whether a stored runtime overlay exists.}
+        settings:
+          type: array
+          items: {$ref: '#/components/schemas/SettingField'}
+        effective:
+          type: object
+          description: The effective configuration, restricted to runtime-mutable paths and with credentials masked.
+          additionalProperties: true
+        warnings:
+          type: array
+          items: {type: string}
+
+    SettingsApplied:
+      type: object
+      required: [version, changed, settings, effective, warnings]
+      properties:
+        version: {type: integer, format: int64}
+        changed:
+          type: array
+          description: The dotted paths this request changed.
+          items: {type: string}
+        settings:
+          type: array
+          items: {$ref: '#/components/schemas/SettingField'}
+        effective:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items: {type: string}
+
+    SettingsReset:
+      type: object
+      required: [version, settings, effective, warnings]
+      properties:
+        version: {type: integer, format: int64}
+        settings:
+          type: array
+          items: {$ref: '#/components/schemas/SettingField'}
+        effective:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items: {type: string}
+
+    SyncState:
+      oneOf:
+        - type: object
+          title: NeverSynchronized
+          required: [synchronized]
+          properties:
+            synchronized: {type: boolean, const: false}
+        - type: object
+          title: Synchronized
+          required: [synchronized, url, fetched_at, allowlist_digest, imported_pairs, skipped_pairs, warnings]
+          properties:
+            synchronized: {type: boolean, const: true}
+            url: {type: string, description: The models.dev source URL that was fetched.}
+            fetched_at: {type: string}
+            allowlist_digest: {type: string, description: A digest of the allowlist the import ran with.}
+            imported_pairs: {type: integer}
+            skipped_pairs: {type: integer}
+            warnings:
+              type: array
+              items: {type: string}
+
+    SyncResult:
+      description: |
+        The outcome of a synchronization the caller just triggered. On failure, the registry was not
+        changed and the endpoint answers `502` instead of this object.
+      oneOf:
+        - type: object
+          title: NoStateRecorded
+          required: [synchronized]
+          properties:
+            synchronized: {type: boolean, const: false}
+        - type: object
+          title: Synchronized
+          required: [synchronized, url, fetched_at, imported_pairs, skipped_pairs, warnings]
+          properties:
+            synchronized: {type: boolean, const: true}
+            url: {type: string}
+            fetched_at: {type: string}
+            imported_pairs: {type: integer}
+            skipped_pairs: {type: integer}
+            warnings:
+              type: array
+              items: {type: string}
+
+    InboundKey:
+      type: object
+      required: [name, scopes, active, key_set, created_at, updated_at]
+      properties:
+        name:
+          type: string
+          description: The audit name recorded in the process log. It is not a secret.
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [inference]
+        active: {type: boolean}
+        key_set:
+          type: boolean
+          description: Whether a credential is stored. The value itself is never returned.
+        created_at: {type: string}
+        updated_at: {type: string}
+
+    OneTimeKey:
+      type: object
+      required: [name, key, scopes, one_time]
+      properties:
+        name: {type: string}
+        key:
+          type: string
+          description: |
+            The credential. This response is the only place it ever appears: only its SHA-256 digest is
+            persisted.
+        scopes:
+          type: array
+          items: {type: string, enum: [inference]}
+        one_time: {type: boolean, const: true}
+
+    SessionProbe:
+      type: object
+      required: [authenticated, name, scopes, expires_at]
+      properties:
+        authenticated: {type: boolean, const: true}
+        name: {type: string, description: The single owner identity name.}
+        scopes:
+          type: array
+          items: {type: string, enum: [management]}
+        expires_at:
+          type: string
+          description: The session's absolute expiry.

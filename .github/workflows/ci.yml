@@ -26,6 +26,28 @@ jobs:
       - run: go test -count=1 ./...
       - run: go build ./cmd/auto-router
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci
+        working-directory: webui
+      - run: npm run typecheck
+        working-directory: webui
+      - run: npm run build
+        working-directory: webui
+      - run: git diff --exit-code -- ../internal/api/dashboard/static/web
+        working-directory: webui
+
   race:
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,19 @@
+{
+  "model": "jev-1.13.0",
+  "answers": {
+    "routed_model": {
+      "type": "choice",
+      "choice": "o4-mini",
+      "confidence": 0.5,
+      "probabilities": {
+        "gpt-4o-mini": 0.3333332,
+        "claude-sonnet-4": 0.1666662,
+        "o4-mini": 0.5000002
+      }
+    }
+  },
+  "usage": {
+    "input_tokens": 812,
+    "output_tokens": 3
+  }
+}

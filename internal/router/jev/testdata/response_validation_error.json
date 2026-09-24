@@ -1,0 +1,14 @@
+{
+  "detail": [
+    {
+      "loc": ["body", "questions", "routed_model", "criteria"],
+      "msg": "Field required",
+      "type": "missing"
+    },
+    {
+      "loc": ["body", "model"],
+      "msg": "Field required",
+      "type": "missing"
+    }
+  ]
+}

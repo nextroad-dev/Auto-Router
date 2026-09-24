@@ -1,0 +1,44 @@
+{
+  "name": "auto-router-admin-webui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
+    "api:types": "openapi-typescript ../docs/openapi.yaml -o src/lib/generated-api.ts",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@nuxt/ui": "^4.11.2",
+    "@tailwindcss/vite": "^4.3.3",
+    "@unhead/vue": "^3.4.1",
+    "@unovis/ts": "^1.7.0",
+    "@unovis/vue": "^1.7.0",
+    "@vueuse/core": "^15.0.0",
+    "date-fns": "^4.4.0",
+    "tailwindcss": "^4.3.3",
+    "vue": "^3.5.43",
+    "vue-i18n": "^11.4.12",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@iconify-json/heroicons": "^1.2.3",
+    "@iconify-json/lucide": "^1.2.136",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.20.4",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^26.1.0",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^2.2.12"
+  }
+}

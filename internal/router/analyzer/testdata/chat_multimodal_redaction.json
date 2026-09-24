@@ -1,0 +1,22 @@
+{
+  "model": "sample-model",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this picture?"},
+        {"type": "image_url", "image_url": {"url": "https://example.test/cat.png", "detail": "low"}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,CANARY-BASE64-PAYLOAD"}},
+        {"type": "input_audio", "input_audio": {"data": "CANARY-AUDIO-PAYLOAD", "format": "wav"}}
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "text", "text": "Let me look."},
+        {"type": "tool_call", "id": "call_1", "function": {"name": "lookup", "arguments": "{}"}}
+      ]
+    },
+    {"role": "tool", "content": "{\"ok\":true}", "tool_call_id": "call_1"}
+  ]
+}

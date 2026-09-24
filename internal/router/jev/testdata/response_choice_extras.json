@@ -1,0 +1,24 @@
+{
+  "model": "jev-1.13.0",
+  "request_id": "req_01HZX8Q2W8N2R2K3V0",
+  "answers": {
+    "routed_model": {
+      "type": "choice",
+      "choice": "gpt-4o-mini",
+      "confidence": 0.62,
+      "probabilities": {
+        "gpt-4o-mini": 0.62,
+        "claude-sonnet-4": 0.27,
+        "o4-mini": 0.11
+      },
+      "logprobs": [1.2, 3.4],
+      "future_field": {"nested": true}
+    }
+  },
+  "usage": {
+    "input_tokens": 812,
+    "output_tokens": 3,
+    "total_tokens": 815
+  },
+  "future_top_level": ["ignored"]
+}

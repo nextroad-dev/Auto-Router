@@ -1,0 +1,25 @@
+{
+  "model": "sample-model",
+  "instructions": [
+    {"type": "input_text", "text": "You are a careful assistant."},
+    {"type": "input_text", "text": "Never invent facts."}
+  ],
+  "input": [
+    {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Prefer tables."}]},
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Compare the two options."}]},
+    {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Weighing options."}]},
+    {"type": "function_call", "id": "fc_1", "name": "lookup", "arguments": "{}", "call_id": "call_1"},
+    {"type": "function_call_output", "call_id": "call_1", "output": "{\"result\":42}"},
+    {"type": "file_search_call", "id": "fs_1", "queries": ["release notes"]},
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Here is the comparison.", "annotations": []}]}
+  ],
+  "tools": [
+    {"type": "function", "name": "lookup", "parameters": {"type": "object"}},
+    {"type": "mcp", "server_label": "internal_docs", "server_url": "https://mcp.example.test"},
+    {"type": "file_search", "vector_store_ids": ["vs_1"]}
+  ],
+  "tool_choice": {"type": "function", "name": "lookup"},
+  "reasoning": {"effort": "high", "summary": "auto"},
+  "stream": true,
+  "max_output_tokens": 512
+}
