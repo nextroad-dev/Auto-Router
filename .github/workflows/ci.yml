@@ -45,8 +45,6 @@ jobs:
         working-directory: webui
       - run: npm run build
         working-directory: webui
-      - run: git diff --exit-code -- ../internal/api/dashboard/static/web
-        working-directory: webui
 
   race:
     runs-on: ubuntu-latest

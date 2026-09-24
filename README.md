@@ -25,7 +25,7 @@ docker compose logs -f auto-router
 
 镜像为 `ghcr.io/nextroad-dev/auto-router`，支持 `linux/amd64` 与 `linux/arm64`。`.env` 中的 `AUTO_ROUTER_VERSION` 可设为 `latest` 或具体版本（例如 `1.2.3`）。首次发布后，仓库维护者需在 GitHub Packages 将该镜像包可见性设为 **Public**，用户才能免登录拉取。
 
-GitHub Actions 会在 PR 上构建验证、在 `main` 发布 `edge`，并在推送 `v*` 标签时发布版本标签和 `latest`：
+GitHub Actions 会在 PR 上构建验证、在 `main` 发布 `edge` 和 `latest`，并在推送 `v*` 标签时发布版本标签和 `latest`：
 
 ```sh
 git tag v1.2.3
