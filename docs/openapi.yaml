@@ -2443,7 +2443,7 @@ components:
         object: {type: string, const: model}
         owned_by:
           type: string
-          description: `auto-router` for the virtual `auto` model; otherwise the provider key selected by the first routable binding.
+          description: The virtual model uses `auto-router`; other entries use the provider key selected by the first routable binding.
         context_window:
           type: integer
           description: Advertised context window in tokens. Present for the virtual `auto` model (1000000); this does not guarantee an upstream with that context size.

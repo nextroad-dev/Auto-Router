@@ -57,13 +57,17 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List routable logical models
-         * @description Lists the enabled logical models that currently have at least one routable binding, in
-         *     registry order (model priority ascending, then model ID ascending). A model without an
-         *     enabled pair is not advertised, so the listing never promises a target the router would
-         *     refuse. `created` is deliberately absent: the registry has no creation timestamps and
-         *     inventing one would be a fabricated fact. `data` is always an array, so an empty registry
-         *     reads as an empty catalogue rather than a decode error.
+         * List auto-routing and routable models
+         * @description Always lists the virtual `auto` model first. It advertises `context_window: 1000000` and
+         *     `supports_tools`, `supports_vision` and `supports_reasoning` as true. These are the declared
+         *     capabilities of the virtual routing entry, not a guarantee that every configured upstream
+         *     has those capabilities or a one-million-token context window; the router still filters
+         *     actual candidates against the request and each candidate's declared capability/context.
+         *     After `auto`, the response lists enabled logical models that currently have at least one
+         *     routable binding, in registry order (model priority ascending, then model ID ascending).
+         *     A logical model without an enabled pair is not advertised. `created` is deliberately absent:
+         *     the registry has no creation timestamps and inventing one would be a fabricated fact. `data`
+         *     is always an array, so an empty registry still contains `auto` rather than a null catalogue.
          */
         get: operations["listModels"];
         put?: never;
@@ -1158,16 +1162,20 @@ export interface components {
             data: components["schemas"]["ModelObject"][];
         };
         ModelObject: {
-            /** @description The logical model identifier a client may send in `model`. */
+            /** @description The model identifier a client may send in `model`, including the virtual `auto` routing selector. */
             id: string;
             /** @constant */
             object: "model";
-            /**
-             * @description The provider key that a request for this model would currently select — the first
-             *     routable binding's provider. It is deliberately the effective owner rather than a
-             *     canonical one, so the listing never promises a target the router would refuse.
-             */
+            /** @description The virtual model uses `auto-router`; other entries use the provider key selected by the first routable binding. */
             owned_by: string;
+            /** @description Advertised context window in tokens. Present for the virtual `auto` model (1000000); this does not guarantee an upstream with that context size. */
+            context_window?: number;
+            /** @description Advertised tool support. Present and true for the virtual `auto` model. */
+            supports_tools?: boolean;
+            /** @description Advertised vision support. Present and true for the virtual `auto` model. */
+            supports_vision?: boolean;
+            /** @description Advertised reasoning/thinking support. Present and true for the virtual `auto` model. */
+            supports_reasoning?: boolean;
         };
         /**
          * @description The OpenAI-compatible request as the client sent it. Only `model` is read by this service;
