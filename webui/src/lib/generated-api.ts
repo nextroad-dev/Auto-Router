@@ -1113,6 +1113,25 @@ export interface components {
             /** @enum {string} */
             status: "ok" | "ready" | "not_ready";
         };
+        /**
+         * @description The closed set of codes a locally generated failure can carry. The vocabulary is
+         *     deliberately small because an automated client branches on the code. It covers the
+         *     forwarding surface, the credential check and the loopback-only diagnostic endpoints,
+         *     which all share this envelope.
+         *
+         *     `invalid_request` is shared with the management vocabulary: the diagnostic endpoints
+         *     report a malformed body with the same code the management surface uses, and they answer
+         *     on this envelope rather than the management one.
+         * @enum {string}
+         */
+        InferenceErrorCode: "invalid_request" | "invalid_request_error" | "unsupported_media_type" | "unsupported_conversion" | "invalid_routing_preference" | "request_too_large" | "provider_not_configured" | "provider_override_disabled" | "invalid_model_identifier" | "model_not_found" | "provider_not_found" | "auto_routing_unavailable" | "routing_unavailable" | "no_eligible_candidate" | "truncated_evidence" | "upstream_unavailable" | "upstream_timeout" | "client_closed_request" | "internal_error" | "invalid_api_key" | "insufficient_scope" | "debug_route_unavailable";
+        /**
+         * @description The closed set of codes the management surface can answer with. Every member is stable:
+         *     the console maps each one to operator-facing copy, so widening the set is a documented
+         *     contract change and not an ad-hoc string.
+         * @enum {string}
+         */
+        AdminErrorCode: "invalid_request" | "invalid_filter" | "invalid_cursor" | "invalid_group" | "invalid_scopes" | "invalid_model" | "invalid_password" | "invalid_session" | "invalid_api_key" | "insufficient_scope" | "cross_site_request" | "too_many_attempts" | "request_too_large" | "unknown_model" | "unknown_provider" | "unknown_pair" | "not_found" | "provider_exists" | "model_exists" | "pair_exists" | "provider_not_deletable" | "provider_not_configured" | "key_not_found" | "key_name_exists" | "credential_limit" | "password_already_set" | "password_not_set" | "settings_conflict" | "restart_required" | "unsupported_setting" | "read_only_state" | "storage_error" | "snapshot_publish_failed" | "empty_allowlist" | "sync_failed" | "sync_unavailable" | "discovery_failed" | "metadata_lookup_failed" | "dashboard_missing";
         OpenAIError: {
             error: {
                 /** @description Authored by this service and intentionally generic. */
@@ -1122,33 +1141,14 @@ export interface components {
                  * @enum {string}
                  */
                 type: "invalid_request_error" | "permission_error" | "api_error";
-                /**
-                 * @description A stable machine code, for example `invalid_request_error`, `model_not_found`,
-                 *     `provider_not_configured`, `provider_override_disabled`, `invalid_model_identifier`,
-                 *     `no_eligible_candidate`, `truncated_evidence`, `routing_unavailable`,
-                 *     `upstream_unavailable`, `upstream_timeout`, `request_too_large`,
-                 *     `unsupported_media_type`, `invalid_routing_preference`, `invalid_api_key`,
-                 *     `insufficient_scope`.
-                 */
-                code: string;
+                code: components["schemas"]["InferenceErrorCode"];
                 /** @description Always `null`. This service does not attribute a failure to a named parameter. */
                 param: null;
             };
         };
         AdminError: {
             error: {
-                /**
-                 * @description A stable machine code, for example `invalid_request`, `invalid_filter`,
-                 *     `invalid_cursor`, `invalid_scopes`, `invalid_api_key`, `insufficient_scope`,
-                 *     `unknown_model`, `unknown_provider`, `unknown_pair`, `model_exists`,
-                 *     `provider_exists`, `pair_exists`, `key_not_found`, `key_name_exists`,
-                 *     `credential_limit`, `request_too_large`, `settings_conflict`,
-                 *     `restart_required`, `unsupported_setting`, `read_only_state`, `storage_error`,
-                 *     `snapshot_publish_failed`, `empty_allowlist`, `sync_failed`, `sync_unavailable`,
-                 *     `too_many_attempts`, `cross_site_request`, `not_found`, `password_already_set`,
-                 *     `password_not_set`, `invalid_password`.
-                 */
-                code: string;
+                code: components["schemas"]["AdminErrorCode"];
                 /** @description Authored by this service. It never repeats a submitted value. */
                 message: string;
                 /** @description The offending field or setting path, when one can be named. Omitted otherwise. */
@@ -1737,7 +1737,11 @@ export interface components {
             upstream_model?: string | null;
             status: number;
             upstream_status?: number | null;
-            error_code?: string | null;
+            /**
+             * @description The failure recorded for this request. Codes are read back from storage, so a value
+             *     written by an older build may no longer be a member of the current vocabulary.
+             */
+            error_code?: components["schemas"]["InferenceErrorCode"] | null;
             stream: boolean;
             /** Format: int64 */
             bytes_written: number;
@@ -1799,7 +1803,8 @@ export interface components {
             /** @description RFC 3339 timestamp. */
             completed_at?: string | null;
             status?: number | null;
-            error_code?: string | null;
+            /** @description The failure recorded for this upstream attempt, if it did not complete. */
+            error_code?: components["schemas"]["InferenceErrorCode"] | null;
             /** Format: int64 */
             input_tokens?: number | null;
             /** Format: int64 */

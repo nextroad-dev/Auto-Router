@@ -2368,6 +2368,88 @@ components:
           type: string
           enum: [ok, ready, not_ready]
 
+    InferenceErrorCode:
+      type: string
+      description: |
+        The closed set of codes a locally generated failure can carry. The vocabulary is
+        deliberately small because an automated client branches on the code. It covers the
+        forwarding surface, the credential check and the loopback-only diagnostic endpoints,
+        which all share this envelope.
+
+        `invalid_request` is shared with the management vocabulary: the diagnostic endpoints
+        report a malformed body with the same code the management surface uses, and they answer
+        on this envelope rather than the management one.
+      enum:
+        - invalid_request
+        - invalid_request_error
+        - unsupported_media_type
+        - unsupported_conversion
+        - invalid_routing_preference
+        - request_too_large
+        - provider_not_configured
+        - provider_override_disabled
+        - invalid_model_identifier
+        - model_not_found
+        - provider_not_found
+        - auto_routing_unavailable
+        - routing_unavailable
+        - no_eligible_candidate
+        - truncated_evidence
+        - upstream_unavailable
+        - upstream_timeout
+        - client_closed_request
+        - internal_error
+        - invalid_api_key
+        - insufficient_scope
+        - debug_route_unavailable
+
+    AdminErrorCode:
+      type: string
+      description: |
+        The closed set of codes the management surface can answer with. Every member is stable:
+        the console maps each one to operator-facing copy, so widening the set is a documented
+        contract change and not an ad-hoc string.
+      enum:
+        - invalid_request
+        - invalid_filter
+        - invalid_cursor
+        - invalid_group
+        - invalid_scopes
+        - invalid_model
+        - invalid_password
+        - invalid_session
+        - invalid_api_key
+        - insufficient_scope
+        - cross_site_request
+        - too_many_attempts
+        - request_too_large
+        - unknown_model
+        - unknown_provider
+        - unknown_pair
+        - not_found
+        - provider_exists
+        - model_exists
+        - pair_exists
+        - provider_not_deletable
+        - provider_not_configured
+        - key_not_found
+        - key_name_exists
+        - credential_limit
+        - password_already_set
+        - password_not_set
+        - settings_conflict
+        - restart_required
+        - unsupported_setting
+        - read_only_state
+        - storage_error
+        - snapshot_publish_failed
+        - empty_allowlist
+        - sync_failed
+        - sync_unavailable
+        - discovery_failed
+        - metadata_lookup_failed
+        - dashboard_missing
+
     OpenAIError:
       type: object
       required: [error]
@@ -2384,15 +2466,7 @@ components:
               enum: [invalid_request_error, permission_error, api_error]
               description: |
                 `invalid_request_error` for 4xx, `permission_error` for 403, `api_error` for 5xx.
-            code:
-              type: string
-              description: |
-                A stable machine code, for example `invalid_request_error`, `model_not_found`,
-                `provider_not_configured`, `provider_override_disabled`, `invalid_model_identifier`,
-                `no_eligible_candidate`, `truncated_evidence`, `routing_unavailable`,
-                `upstream_unavailable`, `upstream_timeout`, `request_too_large`,
-                `unsupported_media_type`, `invalid_routing_preference`, `invalid_api_key`,
-                `insufficient_scope`.
+            code: {$ref: '#/components/schemas/InferenceErrorCode'}
             param:
               type: 'null'
               description: Always `null`. This service does not attribute a failure to a named parameter.
@@ -2405,18 +2479,7 @@ components:
           type: object
           required: [code, message]
           properties:
-            code:
-              type: string
-              description: |
-                A stable machine code, for example `invalid_request`, `invalid_filter`,
-                `invalid_cursor`, `invalid_scopes`, `invalid_api_key`, `insufficient_scope`,
-                `unknown_model`, `unknown_provider`, `unknown_pair`, `model_exists`,
-                `provider_exists`, `pair_exists`, `key_not_found`, `key_name_exists`,
-                `credential_limit`, `request_too_large`, `settings_conflict`,
-                `restart_required`, `unsupported_setting`, `read_only_state`, `storage_error`,
-                `snapshot_publish_failed`, `empty_allowlist`, `sync_failed`, `sync_unavailable`,
-                `too_many_attempts`, `cross_site_request`, `not_found`, `password_already_set`,
-                `password_not_set`, `invalid_password`.
+            code: {$ref: '#/components/schemas/AdminErrorCode'}
             message:
               type: string
               description: Authored by this service. It never repeats a submitted value.
@@ -3191,7 +3254,13 @@ components:
           type: [string, 'null']
         status: {type: integer}
         upstream_status: {type: [integer, 'null']}
-        error_code: {type: [string, 'null']}
+        error_code:
+          oneOf:
+            - $ref: '#/components/schemas/InferenceErrorCode'
+            - type: 'null'
+          description: |
+            The failure recorded for this request. Codes are read back from storage, so a value
+            written by an older build may no longer be a member of the current vocabulary.
         stream: {type: boolean}
         bytes_written: {type: integer, format: int64}
         client_ip:
@@ -3259,7 +3328,11 @@ components:
         started_at: {type: string, description: RFC 3339 timestamp.}
         completed_at: {type: [string, 'null'], description: RFC 3339 timestamp.}
         status: {type: [integer, 'null']}
-        error_code: {type: [string, 'null']}
+        error_code:
+          description: The failure recorded for this upstream attempt, if it did not complete.
+          oneOf:
+            - $ref: '#/components/schemas/InferenceErrorCode'
+            - type: 'null'
         input_tokens: {type: [integer, 'null'], format: int64}
         output_tokens: {type: [integer, 'null'], format: int64}
         total_tokens: {type: [integer, 'null'], format: int64}

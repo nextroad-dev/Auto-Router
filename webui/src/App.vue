@@ -19,12 +19,18 @@ onMounted(() => {
     ? stored
     : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   colorMode.value = mode
-  document.documentElement.classList.toggle('dark', mode === 'dark')
+  applyColorMode(mode)
 })
+
+function applyColorMode(mode: 'light' | 'dark') {
+  document.documentElement.classList.toggle('dark', mode === 'dark')
+  document.documentElement.setAttribute('data-theme', mode)
+  document.documentElement.style.colorScheme = mode
+}
 
 function toggleColorMode() {
   colorMode.value = colorMode.value === 'dark' ? 'light' : 'dark'
-  document.documentElement.classList.toggle('dark', colorMode.value === 'dark')
+  applyColorMode(colorMode.value)
   try { window.localStorage.setItem('auto-router-color-mode', colorMode.value) } catch { /* theme still changes for this visit */ }
 }
 
@@ -70,25 +76,23 @@ async function logout() {
 
         <div class="sidebar-section-label">{{ t('app.workspace') }}</div>
         <nav class="sidebar-nav" :aria-label="t('app.workspace')">
-          <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" class="sidebar-link" :class="{ 'sidebar-link-active': route.path === item.to }" @click="menuOpen = false">
+          <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" class="sidebar-link" :class="{ 'sidebar-link-active': route.path === item.to }" :aria-current="route.path === item.to ? 'page' : undefined" @click="menuOpen = false">
             <UIcon :name="item.icon" class="h-[18px] w-[18px]" />
             <span>{{ item.label }}</span>
-            <span v-if="route.path === item.to" class="sidebar-active-dot" />
           </RouterLink>
         </nav>
 
         <div class="sidebar-section-label mt-8">{{ t('app.management') }}</div>
         <nav class="sidebar-nav" :aria-label="t('app.management')">
-          <RouterLink v-for="item in systemNavigation" :key="item.to" :to="item.to" class="sidebar-link" :class="{ 'sidebar-link-active': route.path === item.to }" @click="menuOpen = false">
+          <RouterLink v-for="item in systemNavigation" :key="item.to" :to="item.to" class="sidebar-link" :class="{ 'sidebar-link-active': route.path === item.to }" :aria-current="route.path === item.to ? 'page' : undefined" @click="menuOpen = false">
             <UIcon :name="item.icon" class="h-[18px] w-[18px]" />
             <span>{{ item.label }}</span>
-            <span v-if="route.path === item.to" class="sidebar-active-dot" />
           </RouterLink>
         </nav>
 
         <div class="sidebar-bottom">
           <div class="account-card">
-            <span class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-full border border-default bg-elevated text-primary"><UIcon name="i-heroicons-user" aria-hidden="true" /></span>
+            <span class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-full border border-default bg-elevated text-highlighted"><UIcon name="i-heroicons-user" aria-hidden="true" /></span>
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm font-medium">{{ sessionState.name || t('app.admin') }}</span>
             </span>
@@ -102,7 +106,7 @@ async function logout() {
           <div class="flex min-w-0 items-center gap-3">
             <UButton class="lg:hidden" color="neutral" variant="ghost" icon="i-heroicons-bars-3" :aria-label="t('app.openMenu')" @click="menuOpen = true" />
             <div class="min-w-0">
-              <h1 class="truncate text-base font-semibold tracking-tight sm:text-lg">{{ pageTitle }}</h1>
+              <h1 class="dashboard-topbar-title truncate text-base sm:text-lg">{{ pageTitle }}</h1>
             </div>
           </div>
           <div class="flex shrink-0 items-center gap-2">
@@ -111,7 +115,7 @@ async function logout() {
         </header>
 
         <main class="dashboard-content">
-          <div class="mx-auto w-full max-w-[1440px]">
+          <div class="dashboard-content-inner">
             <RouterView />
           </div>
         </main>

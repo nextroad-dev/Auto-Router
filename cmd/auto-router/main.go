@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -71,6 +72,20 @@ func main() {
 func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 }
+
+// hasLegacyAutoRouterEnvironment detects the former environment-based settings
+// without retaining or disclosing either names or values in the warning.
+func hasLegacyAutoRouterEnvironment(environment []string) bool {
+	const prefix = "AUTO_ROUTER_"
+	for _, entry := range environment {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && len(name) > len(prefix) && strings.EqualFold(name[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func run(ctx context.Context, args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("auto-router", flag.ContinueOnError)
 	flags.SetOutput(output)
@@ -95,6 +110,16 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments; use -help for usage")
 	}
+	if hasLegacyAutoRouterEnvironment(os.Environ()) {
+		fmt.Fprintln(output, "warning: legacy AUTO_ROUTER_* environment variables are ignored; configure runtime settings in the authenticated management UI")
+	}
+	if *configPath != "" {
+		fmt.Fprintln(output, "warning: -config is deprecated and ignored; configuration files and AUTO_ROUTER_* variables no longer affect runtime behavior")
+	}
+	if *syncModels {
+		fmt.Fprintln(output, "warning: -sync-models is deprecated and ignored; synchronize models.dev from the management UI (Admin → Models → Sync)")
+		return nil
+	}
 	if *jevCheckPrompt != "" && !*jevCheck {
 		return errors.New("-jev-check-prompt requires -jev-check")
 	}
@@ -105,7 +130,6 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		name    string
 		enabled bool
 	}{
-		{"-sync-models", *syncModels},
 		{"-recover-admin", *recoverAdmin},
 		{"-jev-check", *jevCheck},
 		{"-analyze-check", analyzeCheck.enabled},
@@ -128,17 +152,11 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if err := logsCheck.validate(flagsSet(flags)); err != nil {
 		return err
 	}
-	if *configPath != "" {
-		fmt.Fprintln(output, "warning: -config is deprecated and ignored; configuration files and AUTO_ROUTER_* variables no longer affect runtime behavior")
-	}
 	cfg := config.Defaults()
 	if *listenAddress != "" {
 		cfg.HTTP.Address = *listenAddress
 	}
 	sources := config.Sources{}
-	if *syncModels {
-		return errors.New("model synchronization is managed from the WebUI (Admin → Models → Sync); -sync-models did not run")
-	}
 	if *recoverAdmin {
 		return runAdminRecovery(ctx, cfg, output)
 	}

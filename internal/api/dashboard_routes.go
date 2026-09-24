@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 // This file is the management surface's page-shell registration. The shells
 // themselves are built in dashboard.go; this function exists so the route table is
@@ -16,6 +19,11 @@ import "net/http"
 // unauthenticatedRequest is the authority on that, and this function only decides
 // which paths exist.
 //
+// Every shell is mounted from adminPageShells rather than from its own literal list, so a page
+// cannot be present in the handler's lookup and absent from the route table. That split is
+// exactly how /admin/models and /admin/logs came to answer 404 for a direct visit while the
+// sidebar still reached them through client-side routing.
+//
 // The bare root path is registered without a method pattern. A method-less pattern
 // matches every method, and it wins over the mux's own "add a trailing slash" rule,
 // so the bare path answers this handler's permanent redirect rather than the mux's
@@ -26,11 +34,14 @@ func registerDashboardRoutes(mux *http.ServeMux, handler *adminHandler) {
 		return
 	}
 	mux.HandleFunc("/admin", handler.handleAdminRootRedirect)
-	mux.HandleFunc("GET /admin/{$}", handler.handleDashboardPage)
-	mux.HandleFunc("GET /admin/login", handler.handleDashboardPage)
-	mux.HandleFunc("GET /admin/providers", handler.handleDashboardPage)
-	mux.HandleFunc("GET /admin/pairs", handler.handleDashboardPage)
-	mux.HandleFunc("GET /admin/settings", handler.handleDashboardPage)
-	mux.HandleFunc("GET /admin/keys", handler.handleDashboardPage)
+	for shell := range adminPageShells {
+		// Go's ServeMux spells "this exact path" as `{$}`. The map keeps the operator-facing
+		// path, so the trailing-slash root has to be translated before it can be registered.
+		pattern := shell
+		if strings.HasSuffix(shell, "/") {
+			pattern = shell + "{$}"
+		}
+		mux.HandleFunc("GET "+pattern, handler.handleDashboardPage)
+	}
 	mux.HandleFunc("GET /admin/static/{path...}", handler.handleDashboardAsset)
 }

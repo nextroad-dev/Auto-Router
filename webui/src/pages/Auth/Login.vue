@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { api, ApiError, errorMessage } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
+import { errorNotice } from '@/lib/errors'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import type { PasswordSession, SetupStatus } from '@/lib/admin-contracts'
 import { sessionState } from '@/lib/session'
 
@@ -11,7 +13,9 @@ const initialized = ref<boolean>()
 const password = ref('')
 const confirmation = ref('')
 const busy = ref(false)
-const errorMsg = ref('')
+// Holds either a thrown backend failure or a locally authored validation sentence;
+// ErrorAlert renders both without the page tracking which one it is.
+const errorMsg = ref<unknown>()
 
 function safeTarget(target: unknown): string {
   if (typeof target !== 'string' || !target.startsWith('/') || target.startsWith('//')) return '/'
@@ -23,12 +27,12 @@ function safeTarget(target: unknown): string {
 }
 
 async function loadSetupStatus() {
-  errorMsg.value = ''
+  errorMsg.value = undefined
   try {
     const status = await api.get<SetupStatus>('/admin/v1/setup/status')
     initialized.value = status.password_set
   } catch (cause) {
-    errorMsg.value = errorMessage(cause)
+    errorMsg.value = errorNotice(cause)
   }
 }
 
@@ -41,7 +45,7 @@ async function establishSession(value: string) {
 }
 
 async function submit() {
-  errorMsg.value = ''
+  errorMsg.value = undefined
   if (!password.value) { errorMsg.value = initialized.value ? '请输入管理员密码。' : '请设置管理员密码。'; return }
   if (initialized.value === false && password.value !== confirmation.value) {
     errorMsg.value = '两次输入的密码不一致。'
@@ -63,7 +67,7 @@ async function submit() {
   } catch (cause) {
     errorMsg.value = cause instanceof ApiError && cause.status === 401
       ? '管理员密码不正确。'
-      : errorMessage(cause)
+      : errorNotice(cause)
   } finally {
     password.value = ''
     confirmation.value = ''
@@ -80,7 +84,7 @@ onMounted(() => { void loadSetupStatus() })
       <h1 class="text-2xl font-semibold tracking-tight">{{ initialized === false ? '设置管理员密码' : '登录' }}</h1>
     </div>
 
-    <UAlert v-if="errorMsg" color="error" variant="soft" class="mb-5" role="alert" :title="errorMsg" />
+    <ErrorAlert v-if="errorMsg" class="mb-5" :error="errorMsg" />
     <USkeleton v-if="initialized === undefined && !errorMsg" class="mb-5 h-10 w-full" />
 
     <form v-if="initialized !== undefined" class="space-y-5" @submit.prevent="submit">
@@ -97,5 +101,5 @@ onMounted(() => { void loadSetupStatus() })
 </template>
 
 <style scoped>
-.login-card { border-radius: 18px; box-shadow: 0 22px 70px rgb(24 24 27 / 8%); }
+.login-card { border-radius: var(--jf-radius-lg); box-shadow: 0 12px 40px rgb(0 0 0 / 8%); }
 </style>

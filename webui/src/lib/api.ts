@@ -67,6 +67,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { method: 'GET', signal }),
   post: <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
+  postEmpty: <T>(path: string) => request<T>(path, { method: 'POST' }),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
@@ -90,42 +91,6 @@ export function pageURL(path: string, params: Record<string, string | number | b
   }
   const suffix = query.toString()
   return suffix ? `${path}?${suffix}` : path
-}
-
-const errorMessages: Record<string, string> = {
-  network_error: '无法连接管理服务，请检查服务状态。',
-  invalid_password: '管理员密码不正确。',
-  insufficient_scope: '此凭据没有执行该操作的权限。',
-  invalid_request: '请求内容无效，请检查表单后重试。',
-  invalid_filter: '筛选条件无效，请调整筛选项。',
-  invalid_cursor: '分页位置已失效，请重新加载列表。',
-  unknown_model: '找不到指定的模型。',
-  unknown_provider: '找不到指定的提供商。',
-  unknown_pair: '找不到指定的路由绑定。',
-  provider_exists: '此提供商标识已存在。',
-  key_not_found: '找不到此凭据。',
-  key_name_exists: '此凭据名称已存在。',
-  credential_limit: '已达到凭据数量上限。',
-  request_too_large: '提交内容过大。',
-  settings_conflict: '设置已被其他操作修改，请刷新后重试。',
-  restart_required: '此设置需要重启服务才能生效。',
-  unsupported_setting: '此设置不支持在线修改。',
-  read_only_state: '当前设置为只读状态。',
-  storage_error: '存储操作失败，请稍后重试。',
-  snapshot_publish_failed: '设置已保存，但服务暂时无法发布最新配置。',
-  empty_allowlist: '同步范围为空，请先配置允许列表。',
-  sync_failed: '同步失败，现有配置未被修改。',
-  sync_unavailable: '同步服务当前不可用。',
-  too_many_attempts: '尝试次数过多，请稍后重试。',
-  cross_site_request: '请求来源未通过安全校验，请刷新页面后重试。',
-}
-
-export function errorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    const message = errorMessages[error.code] ?? (error.status === 0 ? '无法连接管理服务，请检查服务状态。' : '操作未能完成，请检查输入或稍后重试。')
-    return error.field ? `${message}（字段：${error.field}）` : message
-  }
-  return error instanceof Error ? error.message : '发生未知错误。'
 }
 
 export function formatRate(value: number | null | undefined) {

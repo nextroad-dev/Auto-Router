@@ -1,18 +1,30 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api, errorMessage, getAllPages, type Model, type Pair } from '@/lib/api'
+import { api, getAllPages, type Model, type Pair } from '@/lib/api'
+import { errorNotice } from '@/lib/errors'
+import ErrorAlert from '@/components/ErrorAlert.vue'
+import type { components } from '@/lib/generated-api'
 
 const loading = ref(false)
 const saving = ref(false)
-const error = ref('')
+const error = ref<unknown>()
 const search = ref('')
 const models = ref<Model[]>([])
 const pairs = ref<Pair[]>([])
+type SyncState = components['schemas']['SyncState']
+type SyncResult = components['schemas']['SyncResult']
+const syncState = ref<SyncState>()
+const syncLoading = ref(false)
+const syncing = ref(false)
+// Holds either a thrown backend failure or a locally authored sentence; ErrorAlert
+// renders both without the page having to track which one it is.
+const syncError = ref<unknown>()
+const syncSuccess = ref('')
 
 const modelEditorOpen = ref(false)
 const pairEditorOpen = ref(false)
-const modelError = ref('')
-const pairError = ref('')
+const modelError = ref<unknown>()
+const pairError = ref<unknown>()
 const modelForm = reactive({ id: '', display_name: '', enabled: true, priority: 0 })
 const pairForm = reactive({
   provider: '', model: '', upstream_model_id: '', context_window: 32768,
@@ -52,7 +64,7 @@ const pairColumns = [
 
 async function loadData() {
   loading.value = true
-  error.value = ''
+  error.value = undefined
   try {
     const [modelRows, pairRows] = await Promise.all([
       getAllPages<Model>('/admin/v1/models'),
@@ -61,21 +73,21 @@ async function loadData() {
     models.value = modelRows
     pairs.value = pairRows
   } catch (cause) {
-    error.value = errorMessage(cause)
+    error.value = errorNotice(cause)
   } finally {
     loading.value = false
   }
 }
 
 function editModel(model: Model) {
-  modelError.value = ''
+  modelError.value = undefined
   Object.assign(modelForm, { id: model.id, display_name: model.display_name, enabled: model.enabled, priority: model.priority })
   modelEditorOpen.value = true
 }
 
 async function saveModel() {
   saving.value = true
-  modelError.value = ''
+  modelError.value = undefined
   try {
     await api.patch(`/admin/v1/models/${encodeURIComponent(modelForm.id)}`, {
       display_name: modelForm.display_name.trim(), enabled: modelForm.enabled, priority: Number(modelForm.priority),
@@ -83,14 +95,14 @@ async function saveModel() {
     modelEditorOpen.value = false
     await loadData()
   } catch (cause) {
-    modelError.value = errorMessage(cause)
+    modelError.value = errorNotice(cause)
   } finally {
     saving.value = false
   }
 }
 
 function editPair(pair: Pair) {
-  pairError.value = ''
+  pairError.value = undefined
   Object.assign(pairForm, {
     provider: pair.provider, model: pair.model, upstream_model_id: pair.upstream_model_id,
     context_window: pair.context_window, max_output: pair.max_output === null ? '' : String(pair.max_output),
@@ -129,10 +141,49 @@ async function savePair() {
     pairEditorOpen.value = false
     await loadData()
   } catch (cause) {
-    pairError.value = errorMessage(cause)
+    pairError.value = errorNotice(cause)
   } finally {
     saving.value = false
   }
+}
+
+async function loadSyncState() {
+  syncLoading.value = true
+  syncError.value = undefined
+  try {
+    syncState.value = await api.get<SyncState>('/admin/v1/sync-state')
+  } catch (cause) {
+    syncError.value = errorNotice(cause)
+  } finally {
+    syncLoading.value = false
+  }
+}
+
+async function synchronizeRegistry() {
+  syncing.value = true
+  syncError.value = undefined
+  syncSuccess.value = ''
+  try {
+    const result = await api.postEmpty<SyncResult>('/admin/v1/sync')
+    if (!result.synchronized) {
+      syncError.value = '同步未产生成功结果；注册表未做乐观更新。'
+      return
+    }
+    syncSuccess.value = `同步成功：导入 ${result.imported_pairs} 个模型绑定，跳过 ${result.skipped_pairs} 个。`
+    await Promise.all([loadData(), loadSyncState()])
+  } catch (cause) {
+    // The API guarantees a failed sync leaves the current registry unchanged.
+    // Keep the displayed state as-is and surface the server error through the
+    // shared mapper rather than claiming a successful refresh.
+    syncError.value = errorNotice(cause)
+  } finally {
+    syncing.value = false
+  }
+}
+
+function formattedSyncTime(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
 }
 
 function capabilities(pair: Pair) {
@@ -144,7 +195,7 @@ function capabilities(pair: Pair) {
   return values.length ? values.join(' · ') : '纯文本'
 }
 
-onMounted(() => { void loadData() })
+onMounted(() => { void loadData(); void loadSyncState() })
 </script>
 
 <template>
@@ -156,7 +207,21 @@ onMounted(() => { void loadData() })
         <UButton color="neutral" variant="outline" icon="i-heroicons-arrow-path" :loading="loading" @click="loadData">刷新</UButton>
       </div>
     </section>
-    <UAlert v-if="error" color="error" variant="soft" :title="error" />
+    <ErrorAlert v-if="error" :error="error" />
+
+    <UCard>
+      <template #header><div class="flex flex-wrap items-center justify-between gap-3"><div><h2 class="font-semibold">models.dev 全局同步</h2><p class="mt-1 text-sm text-muted">按系统设置中的 models.dev allow-list 同步注册表；这不是某个 Provider 的模型发现接口。</p></div><UButton icon="i-heroicons-arrow-path" :loading="syncing" :disabled="loading || syncLoading" @click="synchronizeRegistry">立即同步 models.dev</UButton></div></template>
+      <ErrorAlert v-if="syncError" :error="syncError" />
+      <UAlert v-if="syncSuccess" class="mb-3" color="success" variant="soft" :title="syncSuccess" />
+      <div v-if="syncLoading" class="text-sm text-muted">正在读取最近同步状态…</div>
+      <div v-else-if="syncState?.synchronized" class="grid gap-2 text-sm sm:grid-cols-2">
+        <p>最近同步：<time :datetime="syncState.fetched_at" class="font-mono text-xs">{{ formattedSyncTime(syncState.fetched_at) }}</time></p>
+        <p>上游：<code>{{ syncState.url }}</code></p>
+        <p>导入绑定：{{ syncState.imported_pairs }} · 跳过：{{ syncState.skipped_pairs }}</p>
+        <p v-if="syncState.warnings.length" class="text-warning sm:col-span-2">提醒：{{ syncState.warnings.join('；') }}</p>
+      </div>
+      <p v-else-if="!syncLoading" class="text-sm text-muted">尚无同步记录。可以在此运行一次显式同步。</p>
+    </UCard>
 
     <UCard class="overflow-hidden">
       <template #header><div class="flex items-center justify-between"><h2 class="font-semibold">逻辑模型</h2><UBadge color="neutral" variant="subtle">{{ visibleModels.length }}</UBadge></div></template>
@@ -192,7 +257,7 @@ onMounted(() => { void loadData() })
         <UFormField label="显示名称" required><UInput v-model="modelForm.display_name" class="w-full" /></UFormField>
         <UFormField label="优先级"><UInput v-model.number="modelForm.priority" type="number" min="0" class="w-full" /></UFormField>
         <div class="flex items-center justify-between rounded-lg border border-default p-3"><span class="text-sm">启用此逻辑模型</span><USwitch v-model="modelForm.enabled" /></div>
-        <UAlert v-if="modelError" color="error" variant="soft" :title="modelError" />
+        <ErrorAlert v-if="modelError" :error="modelError" />
         <div class="flex justify-end gap-2"><UButton color="neutral" variant="ghost" @click="modelEditorOpen = false">取消</UButton><UButton type="submit" :loading="saving">保存模型</UButton></div>
       </form></template>
     </USlideover>
@@ -209,7 +274,7 @@ onMounted(() => { void loadData() })
           <USwitch v-model="pairForm.supports_reasoning" label="推理能力" />
         </div>
         <div class="grid grid-cols-2 gap-3"><UFormField label="优先级"><UInput v-model.number="pairForm.priority" type="number" min="0" class="w-full" /></UFormField><div class="flex items-center justify-between gap-2 pt-5"><span class="text-sm">启用绑定</span><USwitch v-model="pairForm.enabled" /></div></div>
-        <UAlert v-if="pairError" color="error" variant="soft" :title="pairError" />
+        <ErrorAlert v-if="pairError" :error="pairError" />
         <div class="flex justify-end gap-2"><UButton color="neutral" variant="ghost" @click="pairEditorOpen = false">取消</UButton><UButton type="submit" :loading="saving">保存绑定信息</UButton></div>
       </form></template>
     </USlideover>

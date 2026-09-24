@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [vue(), tailwindcss(), ui({
     colorMode: false,
     ui: {
-      colors: { primary: 'green', neutral: 'zinc' },
+      colors: { primary: 'neutral', neutral: 'zinc' },
       // Prevent Nuxt UI from injecting automatic slot dividers; keep only explicit page separators.
       card: {
         variants: {
@@ -30,6 +30,9 @@ export default defineConfig({
   build: {
     outDir: '../internal/api/dashboard/static/web',
     emptyOutDir: true,
+    // Font faces are CSP-restricted to same-origin files and need their own immutable URLs;
+    // do not inline small WOFF2 slices as data: URLs.
+    assetsInlineLimit: 0,
     assetsDir: 'assets',
     rollupOptions: { output: { entryFileNames: 'assets/[name]-[hash].js', chunkFileNames: 'assets/[name]-[hash].js', assetFileNames: 'assets/[name]-[hash][extname]' } },
   },

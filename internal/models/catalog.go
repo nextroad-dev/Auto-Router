@@ -64,6 +64,9 @@ type Provider struct {
 // GatewayKey is a deprecated compatibility helper for callers that still read
 // migrated gateway metadata. Direct execution never calls it and always selects
 // the provider by Key.
+//
+// Deprecated: Use Provider.Key for routing and logging. This helper remains for
+// source compatibility with pre-migration consumers.
 func (p Provider) GatewayKey() string {
 	if p.GatewayProvider != nil && *p.GatewayProvider != "" {
 		return *p.GatewayProvider

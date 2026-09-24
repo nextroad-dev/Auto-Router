@@ -3,15 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 )
 
-// RegistryConfig declares the local registry overlay and the models.dev sync
-// settings. List values are file-only: environment variables continue to
-// override the scalar fields they always did, not registry entries.
+// RegistryConfig declares code-default registry seed data and models.dev sync
+// settings. Serving startup uses Defaults; registry rows and the mutable sync
+// allow-list are managed through SQLite and the Admin API.
 type RegistryConfig struct {
 	Sync      RegistrySyncConfig `json:"sync"`
 	Providers []RegistryProvider `json:"providers"`
@@ -29,7 +28,7 @@ type RegistrySyncConfig struct {
 // supplied by a models.dev sync; the direct executor uses them for provider
 // requests. GatewayProvider remains a legacy registry field for databases and
 // configurations created before the direct-provider migration, but is ignored by
-// the serving path.
+// the serving path. It remains only for data and API compatibility.
 type RegistryProvider struct {
 	Key         string `json:"key"`
 	DisplayName string `json:"display_name"`
@@ -76,74 +75,6 @@ func defaultRegistryConfig() RegistryConfig {
 		Providers: []RegistryProvider{},
 		Models:    []RegistryModel{},
 	}
-}
-
-// normalize fills absent list fields with empty slices so a decoded
-// configuration compares equal to Defaults regardless of which keys were
-// present, then expands ${VAR} references in API keys.
-func (r *RegistryConfig) normalize(lookup func(string) (string, bool)) error {
-	if r.Sync.Include == nil {
-		r.Sync.Include = []string{}
-	}
-	if r.Providers == nil {
-		r.Providers = []RegistryProvider{}
-	}
-	if r.Models == nil {
-		r.Models = []RegistryModel{}
-	}
-	for i := range r.Providers {
-		expanded, err := expandEnv(r.Providers[i].APIKey, lookup)
-		if err != nil {
-			return fmt.Errorf("registry.providers[%d].api_key: %w", i, err)
-		}
-		r.Providers[i].APIKey = expanded
-	}
-	return nil
-}
-
-// expandEnv substitutes ${VAR} references. An unset variable is an error rather
-// than an empty string, because silently accepting an empty credential produces
-// authentication failures that are hard to trace. "$$" escapes a literal
-// dollar sign, so "$${VAR}" yields the text "${VAR}". Bare "$" is left alone.
-// Error values never include the substitution result, only the variable name.
-func expandEnv(raw string, lookup func(string) (string, bool)) (string, error) {
-	if !strings.Contains(raw, "$") {
-		return raw, nil
-	}
-	var builder strings.Builder
-	builder.Grow(len(raw))
-	for i := 0; i < len(raw); {
-		if raw[i] != '$' {
-			builder.WriteByte(raw[i])
-			i++
-			continue
-		}
-		if i+1 < len(raw) && raw[i+1] == '$' {
-			builder.WriteByte('$')
-			i += 2
-			continue
-		}
-		if i+1 < len(raw) && raw[i+1] == '{' {
-			end := strings.IndexByte(raw[i+2:], '}')
-			if end < 0 {
-				return "", errors.New("unterminated ${VAR} reference")
-			}
-			name := raw[i+2 : i+2+end]
-			if name == "" {
-				return "", errors.New("empty ${} reference")
-			}
-			value, ok := lookup(name)
-			if !ok {
-				return "", fmt.Errorf("environment variable %s is referenced but not set", name)
-			}
-			builder.WriteString(value)
-			i += 2 + end + 1
-			continue
-		}
-		builder.WriteByte('$')
-		i++
-	}
-	return builder.String(), nil
 }
 
 // Validate checks the whole registry section before any database work happens.

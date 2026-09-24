@@ -12,16 +12,12 @@ import (
 
 // RoutingPolicyConfig is the `routing.policy` section: the settings the policy
 // engine is compiled from. It is a separate type from the engine's own Config
-// because the file uses JSON spellings and validation messages, while the engine
-// uses the domain types directly; the conversion is one function (Domain).
-//
-// Lists and tier tables are file-only, matching the registry convention: an
-// environment variable overrides a scalar setting, never a table. That rule exists
-// because a list in an environment variable has no syntax this project can validate
-// against a file, and a half-overridden table is worse than a fixed one.
+// because the configuration and API use JSON spellings and validation messages,
+// while the engine uses domain types directly; the conversion is one function
+// (Domain). Lists and tiers use the same validated runtime overlay as scalar values.
 type RoutingPolicyConfig struct {
-	// Version is the policy schema version. It must equal policy.Version; a file
-	// written for a future schema is refused rather than partially applied.
+	// Version is the policy schema version. It must equal policy.Version; an
+	// unsupported schema is refused rather than partially applied.
 	Version int `json:"version"`
 	// HighConfidence and LowConfidence are the band boundaries.
 	HighConfidence float64 `json:"high_confidence"`
@@ -71,22 +67,6 @@ func defaultRoutingPolicyConfig() RoutingPolicyConfig {
 		DenyProviders:           []string{},
 		AllowPairs:              []string{},
 		DenyPairs:               []string{},
-	}
-}
-
-// normalize fills absent list and tier fields with empty slices so a decoded
-// configuration compares equal to Defaults regardless of which keys were present.
-func (p *RoutingPolicyConfig) normalize() {
-	if p.CostTiers == nil {
-		p.CostTiers = []RoutingTier{}
-	}
-	if p.LatencyTiers == nil {
-		p.LatencyTiers = []RoutingTier{}
-	}
-	for _, list := range []*[]string{&p.AllowModels, &p.DenyModels, &p.AllowProviders, &p.DenyProviders, &p.AllowPairs, &p.DenyPairs} {
-		if *list == nil {
-			*list = []string{}
-		}
 	}
 }
 

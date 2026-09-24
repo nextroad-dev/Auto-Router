@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,13 +20,21 @@ import (
 //go:embed all:dashboard/static
 var dashboardAssets embed.FS
 
-var dashboardPages = map[string]struct{}{
+// adminPageShells is the one list of management pages the dashboard bundle serves a shell for.
+//
+// Every entry must correspond to a top-level route in webui/src/router.ts, and both the page
+// handler and the unauthenticated-shell test read this map, so the two cannot drift apart again.
+// A page missing here is a page an operator cannot reach by URL: the sidebar still navigates to
+// it client-side, but a refresh, a bookmark or a shared link answers 404.
+var adminPageShells = map[string]struct{}{
 	"/admin/":          {},
 	"/admin/login":     {},
 	"/admin/providers": {},
+	"/admin/models":    {},
 	"/admin/pairs":     {},
 	"/admin/settings":  {},
 	"/admin/keys":      {},
+	"/admin/logs":      {},
 }
 
 // Nuxt UI inserts a deterministic color-token style element. Allow only that
@@ -42,7 +51,7 @@ func (h *adminHandler) handleAdminRootRedirect(w http.ResponseWriter, r *http.Re
 // handleDashboardPage is intentionally an exact route lookup. Unknown /admin paths
 // remain 404s; this is not an SPA wildcard fallback.
 func (h *adminHandler) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := dashboardPages[r.URL.Path]; !ok {
+	if _, ok := adminPageShells[r.URL.Path]; !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -67,10 +76,23 @@ func writeShellHeaders(header http.Header) {
 	header.Set("Content-Security-Policy", dashboardContentSecurityPolicy)
 }
 
+// dashboardAssetTypes is the allowlist of static file types the dashboard serves, keyed by
+// extension. It is an allowlist rather than a passthrough because the embedded tree is served
+// from the same origin as the authenticated API.
+//
+// The font entries are load-bearing: the stylesheet references webfonts with `url(...)`, and a
+// type missing here makes every font request a 404. That failure is quiet — the browser drops to
+// the next family in the CSS font stack, so the page still renders with system fonts.
 var dashboardAssetTypes = map[string]string{
-	".css": "text/css; charset=utf-8",
-	".js":  "text/javascript; charset=utf-8",
+	".css":   "text/css; charset=utf-8",
+	".js":    "text/javascript; charset=utf-8",
+	".woff2": "font/woff2",
 }
+
+// Vite emits content-hashed names for production assets; those URLs are immutable across
+// releases, so browsers and proxies can cache them without revalidation. Keep unversioned
+// assets revalidatable if the build pipeline ever starts emitting any.
+var contentHashedAssetName = regexp.MustCompile(`-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$`)
 
 func (h *adminHandler) handleDashboardAsset(w http.ResponseWriter, r *http.Request) {
 	serveEmbeddedAsset(w, r, r.PathValue("path"))
@@ -101,7 +123,11 @@ func serveEmbeddedAsset(w http.ResponseWriter, r *http.Request, requested string
 	}
 	writeShellHeaders(w.Header())
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-cache")
+	if contentHashedAssetName.MatchString(path.Base(cleaned)) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	w.Header().Set("ETag", assetETag(content))
 	http.ServeContent(w, r, cleaned, dashboardAssetModTime, bytes.NewReader(content))
 }

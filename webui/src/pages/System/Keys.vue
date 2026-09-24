@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { api, createInboundKeyRequest, errorMessage, type InboundKey, type OneTimeKey } from '@/lib/api'
+import { api, createInboundKeyRequest, type InboundKey, type OneTimeKey } from '@/lib/api'
+import { errorNotice } from '@/lib/errors'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 
 const loading = ref(false)
 const keys = ref<InboundKey[]>([])
-const error = ref('')
+const error = ref<unknown>()
 const slideOpen = ref(false)
 const formLoading = ref(false)
-const formError = ref('')
+// Holds either a thrown backend failure or a locally authored sentence.
+const formError = ref<unknown>()
 const revealOpen = ref(false)
 const revealedKey = ref('')
 const revealedTitle = ref('')
@@ -15,17 +18,17 @@ const copied = ref(false)
 const formData = reactive({ name: '' })
 
 async function fetchKeys() {
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = undefined
   try {
     const result = await api.get<{ items: InboundKey[] }>('/admin/v1/keys')
     keys.value = result.items
-  } catch (cause) { error.value = errorMessage(cause) }
+  } catch (cause) { error.value = errorNotice(cause) }
   finally { loading.value = false }
 }
 onMounted(() => { void fetchKeys() })
 
 function openCreate() {
-  formError.value = ''; formData.name = ''; slideOpen.value = true
+  formError.value = undefined; formData.name = ''; slideOpen.value = true
 }
 function showKey(result: OneTimeKey, title: string) {
   revealedKey.value = result.key
@@ -34,7 +37,7 @@ function showKey(result: OneTimeKey, title: string) {
   revealOpen.value = true
 }
 async function createKey() {
-  formError.value = ''
+  formError.value = undefined
   const name = formData.name.trim()
   if (!name) { formError.value = '请输入凭据名称。'; return }
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) {
@@ -47,26 +50,26 @@ async function createKey() {
     slideOpen.value = false
     showKey(result, '凭据已创建')
     await fetchKeys()
-  } catch (cause) { formError.value = errorMessage(cause) }
+  } catch (cause) { formError.value = errorNotice(cause) }
   finally { formLoading.value = false }
 }
 async function rotateKey(item: InboundKey) {
   if (!window.confirm(`确定轮换 API 密钥“${item.name}”吗？旧密钥将立即失效。`)) return
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = undefined
   try {
     const result = await api.post<OneTimeKey>(`/admin/v1/keys/${encodeURIComponent(item.name)}/rotate`, {})
     showKey(result, `凭据“${item.name}”已轮换`)
 	await fetchKeys()
-  } catch (cause) { error.value = errorMessage(cause) }
+  } catch (cause) { error.value = errorNotice(cause) }
   finally { loading.value = false }
 }
 async function disableKey(item: InboundKey) {
   if (!window.confirm(`确定停用 API 密钥“${item.name}”吗？该密钥将立即失效。`)) return
-  loading.value = true; error.value = ''
+  loading.value = true; error.value = undefined
   try {
     await api.delete(`/admin/v1/keys/${encodeURIComponent(item.name)}`)
     await fetchKeys()
-  } catch (cause) { error.value = errorMessage(cause) }
+  } catch (cause) { error.value = errorNotice(cause) }
   finally { loading.value = false }
 }
 async function copyRevealedKey() {
@@ -97,13 +100,13 @@ const columns = [
       <div><p class="text-sm text-muted">为调用方命名；密钥只在创建或轮换时显示一次。</p></div>
       <div class="flex gap-2"><UButton color="neutral" variant="outline" icon="i-heroicons-arrow-path" :loading="loading" @click="fetchKeys">刷新</UButton><UButton icon="i-heroicons-plus" @click="openCreate">创建 API 密钥</UButton></div>
     </section>
-    <UAlert v-if="error" color="error" variant="soft" :title="error" />
+    <ErrorAlert v-if="error" :error="error" />
     <UCard class="overflow-hidden">
       <template #header><h3 class="font-semibold">已登记 API 密钥 <UBadge color="neutral" variant="subtle" class="ml-1">{{ keys.length }}</UBadge></h3></template>
       <div class="overflow-x-auto"><UTable :data="keys" :columns="columns" :loading="loading" empty="尚未登记凭据">
         <template #name-cell="{ row }"><div class="font-medium">{{ row.original.name }}</div><div class="mt-0.5 font-mono text-[11px] text-muted">{{ row.original.key_set ? '密钥已写入' : '密钥未设置' }}</div></template>
         <template #active-cell="{ row }"><UBadge :color="row.original.active ? 'success' : 'neutral'" variant="subtle">{{ row.original.active ? '有效' : '已停用' }}</UBadge></template>
-        <template #created_at-cell="{ row }"><span class="whitespace-nowrap text-xs text-muted">{{ showCreatedAt(row.original.created_at) }}</span></template>
+        <template #created_at-cell="{ row }"><span class="whitespace-nowrap font-mono text-xs text-muted">{{ showCreatedAt(row.original.created_at) }}</span></template>
         <template #actions-cell="{ row }"><div class="flex gap-1"><UButton color="neutral" variant="ghost" size="sm" icon="i-heroicons-arrow-path-rounded-square" :disabled="!row.original.active" @click="rotateKey(row.original)">轮换</UButton><UButton color="error" variant="ghost" size="sm" icon="i-heroicons-no-symbol" :disabled="!row.original.active" @click="disableKey(row.original)">停用</UButton></div></template>
       </UTable></div>
     </UCard>
@@ -111,7 +114,7 @@ const columns = [
     <USlideover v-model:open="slideOpen" title="创建 API 密钥">
       <template #body><form class="space-y-5" @submit.prevent="createKey">
         <UFormField label="名称" name="key-name" required><UInput v-model="formData.name" autocomplete="off" placeholder="例如：production-app" class="w-full" /></UFormField>
-        <UAlert v-if="formError" color="error" variant="soft" :title="formError" />
+        <ErrorAlert v-if="formError" :error="formError" />
         <div class="flex justify-end gap-2"><UButton color="neutral" variant="ghost" @click="slideOpen = false">取消</UButton><UButton type="submit" :loading="formLoading">创建密钥</UButton></div>
       </form></template>
     </USlideover>

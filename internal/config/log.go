@@ -1,10 +1,6 @@
 package config
 
-import (
-	"fmt"
-	"strconv"
-	"strings"
-)
+import "fmt"
 
 // The routing log's bounds. They are configuration because retention is an
 // operational decision, and constants where a wrong value could break the
@@ -115,24 +111,4 @@ func (c Config) routingLogWarnings() []string {
 		warnings = append(warnings, "routing.log.jev_trace.retention_days is 0; Jev traces are kept forever and the database will grow without a bound")
 	}
 	return warnings
-}
-
-// errRetentionDays is the shared error for a retention value outside the range.
-func errRetentionDays(name string) error {
-	return fmt.Errorf("%s must be a whole number of days between 0 and %d", name, maxRetentionDays)
-}
-
-// parseRetentionDays parses one environment value. An explicitly empty value is
-// rejected: "no retention configured" is a state this router does not have, and
-// silently falling back to the file would hide the mistake. The error never
-// repeats the offending value.
-func parseRetentionDays(name, value string) (int, error) {
-	if value == "" || value != strings.TrimSpace(value) {
-		return 0, errRetentionDays(name)
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 || parsed > maxRetentionDays {
-		return 0, errRetentionDays(name)
-	}
-	return parsed, nil
 }

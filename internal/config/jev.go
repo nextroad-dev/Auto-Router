@@ -74,18 +74,6 @@ func defaultJevConfig() JevConfig {
 	}
 }
 
-// normalize expands ${VAR} references in the API key. The semantics match the
-// registry and provider credentials: an unset variable is an error naming the
-// variable, never its value.
-func (j *JevConfig) normalize(lookup func(string) (string, bool)) error {
-	expanded, err := expandEnv(j.APIKey, lookup)
-	if err != nil {
-		return fmt.Errorf("jev.api_key: %w", err)
-	}
-	j.APIKey = expanded
-	return nil
-}
-
 // ValidateJevModel checks the syntax and length of a System One model identifier.
 // Upstream aliases such as "jev-latest" are intentionally accepted and passed
 // through unchanged; alias resolution belongs to the upstream service.

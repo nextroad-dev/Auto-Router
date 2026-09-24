@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { api, errorMessage, pageURL, type Page, type Provider } from '@/lib/api'
+import { api, pageURL, type Page, type Provider } from '@/lib/api'
+import { errorNotice } from '@/lib/errors'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import type { DiscoveredModel, DiscoveredModelsDocument } from '@/lib/admin-contracts'
 import type { operations } from '@/lib/generated-api'
 
@@ -14,13 +16,13 @@ const search = ref('')
 const enabled = ref('all')
 const nextCursor = ref<string | null>(null)
 const hasMore = ref(false)
-const error = ref('')
+const error = ref<unknown>()
 
 const formOpen = ref(false)
 const deletingProvider = ref('')
 const editing = ref(false)
 const saving = ref(false)
-const formError = ref('')
+const formError = ref<unknown>()
 const formData = reactive({
   key: '', display_name: '', kind: 'openai_compatible' as ProviderKind,
   base_url: '', api_key: '', enabled: true,
@@ -38,7 +40,7 @@ const enabledOptions = [
 async function fetchProviders(reset = true) {
   if (reset) { nextCursor.value = null; providers.value = [] }
   loading.value = true
-  error.value = ''
+  error.value = undefined
   try {
     const result = await api.get<Page<ProviderRow>>(pageURL('/admin/v1/providers', {
       search: search.value.trim(),
@@ -50,7 +52,7 @@ async function fetchProviders(reset = true) {
     nextCursor.value = result.next_cursor
     hasMore.value = result.next_cursor !== null
   } catch (cause) {
-    error.value = errorMessage(cause)
+    error.value = errorNotice(cause)
   } finally {
     loading.value = false
   }
@@ -60,14 +62,14 @@ onMounted(() => { void fetchProviders() })
 
 function openCreate() {
   editing.value = false
-  formError.value = ''
+  formError.value = undefined
   Object.assign(formData, { key: '', display_name: '', kind: 'openai_compatible', base_url: '', api_key: '', enabled: true })
   formOpen.value = true
 }
 
 async function openEdit(provider: ProviderRow) {
   editing.value = true
-  formError.value = ''
+  formError.value = undefined
   try {
     const detail = await api.get<{ provider: ProviderRow }>(`/admin/v1/providers/${encodeURIComponent(provider.key)}`)
     Object.assign(formData, {
@@ -89,7 +91,7 @@ async function openEdit(provider: ProviderRow) {
 
 async function saveProvider() {
   saving.value = true
-  formError.value = ''
+  formError.value = undefined
   try {
     let createdProvider: ProviderRow | undefined
     const common = {
@@ -111,7 +113,7 @@ async function saveProvider() {
     await fetchProviders(true)
     if (createdProvider) await openModels(createdProvider)
   } catch (cause) {
-    formError.value = errorMessage(cause)
+    formError.value = errorNotice(cause)
   } finally {
     saving.value = false
     formData.api_key = ''
@@ -120,7 +122,7 @@ async function saveProvider() {
 
 const modelsOpen = ref(false)
 const modelsLoading = ref(false)
-const modelsError = ref('')
+const modelsError = ref<unknown>()
 const modelsNotice = ref('')
 const modelsNoticeColor = ref<'success' | 'warning'>('success')
 const activeProvider = ref<ProviderRow>()
@@ -136,7 +138,7 @@ async function openModels(provider: ProviderRow) {
   candidateTruncated.value = false
   configuredModels.value = []
   manualModel.value = ''
-  modelsError.value = ''
+  modelsError.value = undefined
   modelsNotice.value = ''
   modelsOpen.value = true
   modelsLoading.value = true
@@ -150,7 +152,7 @@ async function openModels(provider: ProviderRow) {
     candidateTruncated.value = found.truncated
     configuredModels.value = [...new Set(current.pairs.map(pair => pair.upstream_model_id).filter(Boolean))]
   } catch (cause) {
-    modelsError.value = errorMessage(cause)
+    modelsError.value = errorNotice(cause)
   } finally {
     modelsLoading.value = false
   }
@@ -161,7 +163,7 @@ async function toggleProvider(provider: ProviderRow) {
     await api.patch(`/admin/v1/providers/${encodeURIComponent(provider.key)}`, { enabled: !provider.enabled })
     await fetchProviders(true)
   } catch (cause) {
-    error.value = errorMessage(cause)
+    error.value = errorNotice(cause)
   }
 }
 
@@ -170,12 +172,12 @@ async function deleteProvider(provider: ProviderRow) {
   const name = provider.display_name || provider.key
   if (!window.confirm(`确定删除提供商“${name}”吗？其模型绑定和路由分组引用也会移除，历史请求日志会保留。`)) return
   deletingProvider.value = provider.key
-  error.value = ''
+  error.value = undefined
   try {
     await api.delete(`/admin/v1/providers/${encodeURIComponent(provider.key)}`)
     await fetchProviders(true)
   } catch (cause) {
-    error.value = errorMessage(cause)
+    error.value = errorNotice(cause)
   } finally {
     deletingProvider.value = ''
   }
@@ -184,7 +186,7 @@ async function deleteProvider(provider: ProviderRow) {
 async function selectModel(model: DiscoveredModel) {
   if (!activeProvider.value) return
   selectingModel.value = model.id
-  modelsError.value = ''
+  modelsError.value = undefined
   modelsNotice.value = ''
   try {
     const result = await api.post<{ metadata_source: string; metadata_applied: boolean; metadata_match: string; metadata_model: string }>(`/admin/v1/providers/${encodeURIComponent(activeProvider.value.key)}/models`, { model: model.id })
@@ -201,7 +203,7 @@ async function selectModel(model: DiscoveredModel) {
     }
     await fetchProviders(true)
   } catch (cause) {
-    modelsError.value = errorMessage(cause)
+    modelsError.value = errorNotice(cause)
   } finally {
     selectingModel.value = ''
   }
@@ -237,7 +239,7 @@ const columns = [
         <UButton icon="i-heroicons-plus" @click="openCreate">添加提供商</UButton>
       </div>
     </section>
-    <UAlert v-if="error" color="error" variant="soft" :title="error" />
+    <ErrorAlert v-if="error" :error="error" />
     <UCard class="overflow-hidden">
       <template #header>
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -257,7 +259,7 @@ const columns = [
         <template #models-cell="{ row }"><UButton color="neutral" variant="soft" size="sm" @click="openModels(row.original)">选择模型 · {{ row.original.pair_count }}</UButton></template>
         <template #actions-cell="{ row }"><div class="flex items-center"><UButton color="neutral" variant="ghost" size="sm" icon="i-heroicons-pencil-square" @click="openEdit(row.original)">编辑</UButton><UButton v-if="row.original.owner === 'admin'" color="error" variant="ghost" size="sm" icon="i-heroicons-trash" :loading="deletingProvider === row.original.key" :disabled="Boolean(deletingProvider)" :aria-label="`删除 ${row.original.display_name || row.original.key}`" @click="deleteProvider(row.original)">删除</UButton></div></template>
       </UTable></div>
-      <div v-if="hasMore" class="flex justify-center border-t border-default p-4"><UButton color="neutral" variant="soft" :loading="loading" @click="fetchProviders(false)">加载更多</UButton></div>
+      <div v-if="hasMore" class="flex justify-center px-4 pt-2 pb-4"><UButton color="neutral" variant="soft" :loading="loading" @click="fetchProviders(false)">加载更多</UButton></div>
     </UCard>
 
     <USlideover v-model:open="formOpen" :title="editing ? '编辑提供商' : '添加提供商'" :ui="{ overlay: 'z-[100]', content: 'z-[101]' }">
@@ -267,7 +269,7 @@ const columns = [
         <UFormField label="类型" required><USelect v-model="formData.kind" :items="kindOptions" value-key="value" class="w-full" :ui="{ content: 'z-[110]' }" /></UFormField>
         <UFormField label="API 端点" required><UInput v-model="formData.base_url" type="url" placeholder="https://api.example.com/v1" class="w-full" /></UFormField>
         <UFormField :label="editing ? '替换 API 密钥' : 'API 密钥'"><UInput v-model="formData.api_key" type="password" autocomplete="new-password" class="w-full" /></UFormField>
-        <UAlert v-if="formError" color="error" variant="soft" :title="formError" />
+        <ErrorAlert v-if="formError" :error="formError" />
         <div class="flex justify-end gap-2 pt-3"><UButton color="neutral" variant="ghost" @click="formOpen = false">取消</UButton><UButton type="submit" :loading="saving">{{ editing ? '保存更改' : '添加并选择模型' }}</UButton></div>
       </form></template>
     </USlideover>
@@ -275,7 +277,7 @@ const columns = [
     <USlideover v-model:open="modelsOpen" :title="activeProvider ? `模型 · ${activeProvider.display_name || activeProvider.key}` : '选择模型'" :ui="{ overlay: 'z-[100]', content: 'z-[101]' }">
       <template #body>
         <div class="space-y-5">
-          <UAlert v-if="modelsError" color="error" variant="soft" :title="modelsError"><template #actions><UButton color="error" variant="ghost" size="sm" :disabled="!activeProvider" @click="activeProvider && openModels(activeProvider)">重试发现</UButton></template></UAlert>
+          <ErrorAlert v-if="modelsError" :error="modelsError"><template #actions><UButton color="error" variant="ghost" size="sm" :disabled="!activeProvider" @click="activeProvider && openModels(activeProvider)">重试发现</UButton></template></ErrorAlert>
           <UAlert v-if="modelsNotice" :color="modelsNoticeColor" variant="soft" :title="modelsNotice" />
           <div class="flex gap-2">
             <UInput v-model="manualModel" class="min-w-0 flex-1" placeholder="手动输入模型 ID" @keydown.enter.prevent="addManualModel" />
@@ -290,7 +292,7 @@ const columns = [
             </div>
             <p v-if="!candidateModels.length && !modelsError" class="py-6 text-center text-sm text-muted">没有发现模型，可手动添加。</p>
           </div>
-          <div class="flex justify-end border-t border-default pt-4"><UButton color="neutral" variant="ghost" @click="saveModels">完成</UButton></div>
+          <div class="flex justify-end pt-2"><UButton color="neutral" variant="ghost" @click="saveModels">完成</UButton></div>
         </div>
       </template>
     </USlideover>

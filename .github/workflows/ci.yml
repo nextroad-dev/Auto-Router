@@ -41,10 +41,19 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci
         working-directory: webui
+      - run: npm run api:types
+        working-directory: webui
+      - run: git diff --exit-code -- src/lib/generated-api.ts
+        working-directory: webui
+      - run: npm test
+        working-directory: webui
       - run: npm run typecheck
         working-directory: webui
       - run: npm run build
         working-directory: webui
+      - run: npm run check:embedded-assets
+        working-directory: webui
+      - run: go build ./cmd/auto-router
 
   race:
     runs-on: ubuntu-latest

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, errorMessage, getAllPages, type Pair } from '@/lib/api'
+import { api, getAllPages, type Pair } from '@/lib/api'
+import { errorNotice } from '@/lib/errors'
+import ErrorAlert from '@/components/ErrorAlert.vue'
 import type { GroupModel, ModelGroupsDocument } from '@/lib/admin-contracts'
 import { router } from '@/router'
 
@@ -15,7 +17,7 @@ const groups = ref<Record<GroupName, GroupModel[]>>({ simple: [], medium: [], co
 const availablePairs = ref<Pair[]>([])
 const loading = ref(false)
 const saving = ref(false)
-const error = ref('')
+const error = ref<unknown>()
 const success = ref('')
 
 function pairKey(pair: GroupModel) {
@@ -24,7 +26,7 @@ function pairKey(pair: GroupModel) {
 
 async function loadGroups() {
   loading.value = true
-  error.value = ''
+  error.value = undefined
   success.value = ''
   try {
     const [document, pairs] = await Promise.all([
@@ -38,7 +40,7 @@ async function loadGroups() {
     }
     availablePairs.value = pairs.sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
   } catch (cause) {
-    error.value = errorMessage(cause)
+    error.value = errorNotice(cause)
   } finally {
     loading.value = false
   }
@@ -67,7 +69,7 @@ function movePair(group: GroupName, index: number, direction: -1 | 1) {
 
 async function saveGroups() {
   saving.value = true
-  error.value = ''
+  error.value = undefined
   success.value = ''
   try {
     await api.put('/admin/v1/groups', {
@@ -77,7 +79,7 @@ async function saveGroups() {
     })
     success.value = '分组和选择顺序已保存。'
   } catch (cause) {
-    error.value = errorMessage(cause)
+    error.value = errorNotice(cause)
   } finally {
     saving.value = false
   }
@@ -98,9 +100,9 @@ onMounted(() => { void loadGroups() })
       </div>
     </section>
 
-    <UAlert v-if="error" color="error" variant="soft" :title="error" />
+    <ErrorAlert v-if="error" :error="error" />
     <UAlert v-if="success" color="success" variant="soft" :title="success" />
-    <UCard v-if="!availablePairs.length && !loading" class="border-dashed">
+    <UCard v-if="!availablePairs.length && !loading" class="jf-empty">
       <div class="py-5 text-center">
         <h3 class="font-medium">还没有可选路由</h3>
         <p class="mt-1 text-sm text-muted">先在提供商页面添加模型。</p>
@@ -127,7 +129,7 @@ onMounted(() => { void loadGroups() })
               @update:model-value="togglePair(definition.key, pair, $event)"
             />
           </div>
-          <USeparator />
+          <div class="h-2" aria-hidden="true" />
           <div>
             <h4 class="mb-2 text-sm font-medium">选择顺序</h4>
             <ol v-if="groups[definition.key].length" class="space-y-2">

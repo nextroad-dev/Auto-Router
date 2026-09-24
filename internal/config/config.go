@@ -1,16 +1,12 @@
-// Package config loads and validates process configuration. Routing and provider
-// settings will be introduced with their owning development stages.
+// Package config defines and validates the process defaults and the runtime-config
+// shape used by the Admin API settings overlay.
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -46,11 +42,10 @@ type Config struct {
 	Registry RegistryConfig `json:"registry"`
 	Routing  RoutingConfig  `json:"routing"`
 	Jev      JevConfig      `json:"jev"`
-	// Auth is the inbound authentication section. It is off by default, which is
-	// the stage-8 behavior: no credential is required and /admin/* is not mounted.
+	// Auth is the authentication configuration shape. Normal serving uses the
+	// SQLite-backed credential store and mounts the authenticated Admin API.
 	Auth AuthConfig `json:"auth"`
-	// Admin is the management API's own section. It is only effective together
-	// with auth.enabled.
+	// Admin contains management limits and the runtime-adjustable session TTL.
 	Admin AdminConfig `json:"admin"`
 }
 
@@ -81,9 +76,8 @@ type RoutingConfig struct {
 	// tool that reports the extracted features of a request body. It is off by
 	// default and is never mounted on a non-loopback listener.
 	AnalyzerDebugEndpoint bool `json:"analyzer_debug_endpoint"`
-	// Policy is the policy engine's configuration. Its lists and tier tables are
-	// file-only, matching the registry convention: an environment variable
-	// overrides a scalar setting, never a table.
+	// Policy is the policy engine configuration, including its runtime-adjustable
+	// lists and relative cost/latency tier tables.
 	Policy RoutingPolicyConfig `json:"policy"`
 	// PolicyDebugEndpoint mounts POST /debug/route, an offline development tool
 	// that evaluates the policy over a request body and a caller-supplied
@@ -138,254 +132,35 @@ func Defaults() Config {
 	}
 }
 
-// RoutingPreferenceEnv is the environment variable that overrides
-// routing.default_preference. It is named here so the explicit-empty-value
-// rejection and the loader cannot drift apart.
+// RoutingPreferenceEnv is the historical environment variable name for
+// routing.default_preference.
+//
+// Deprecated: Runtime startup no longer reads AUTO_ROUTER_* variables.
 const RoutingPreferenceEnv = "AUTO_ROUTER_ROUTING_DEFAULT_PREFERENCE"
 
-// The two authentication switches are the only members of their sections that
-// have an environment variable. The key list, its header and its scheme stay
-// file-only, exactly like the registry lists and the policy tables: an
-// environment variable overrides a scalar setting, never a table. A credential
-// that could be injected through the environment without appearing in the file
-// would also be invisible to the operator reading the file.
+// These historical environment variable names remain exported for source
+// compatibility; the serving process no longer reads them.
 const (
-	// AuthEnabledEnv turns inbound authentication on.
+	// AuthEnabledEnv is the historical auth switch name.
+	//
+	// Deprecated: Runtime startup no longer reads AUTO_ROUTER_* variables.
 	AuthEnabledEnv = "AUTO_ROUTER_AUTH_ENABLED"
-	// AdminEnabledEnv mounts the Admin API. It is only effective together with
-	// AuthEnabledEnv.
+	// AdminEnabledEnv is the historical management API switch name.
+	//
+	// Deprecated: Runtime startup no longer reads AUTO_ROUTER_* variables.
 	AdminEnabledEnv = "AUTO_ROUTER_ADMIN_ENABLED"
 )
 
-// Load applies defaults, an optional JSON file, then explicit environment
-// overrides. Relative database paths are resolved from the process directory.
-// An explicitly provided but empty environment variable is an error, not a
-// request to silently fall back to the file or defaults.
 // Load returns the fixed process defaults. path is retained for source compatibility
-// with offline tools and old launch scripts; runtime JSON and AUTO_ROUTER_* overrides
-// are intentionally ignored.
+// with offline tools and old launch scripts; startup settings are managed through
+// SQLite-backed runtime overrides. JSON files and AUTO_ROUTER_* variables are ignored.
+//
+// Deprecated: Use Defaults to obtain the startup configuration. The path argument is
+// ignored and file/environment configuration no longer changes serving behavior.
 func Load(path string) (Config, error) {
 	_ = path
 	cfg := Defaults()
 	return cfg, cfg.Validate()
-}
-
-// load is Load's implementation with an injectable environment lookup. It records
-// no provenance; loadTracked is the same code path with a provenance recorder.
-func load(path string, lookup func(string) (string, bool)) (Config, error) {
-	return loadTracked(path, lookup, nil)
-}
-
-// loadTracked applies defaults, the file and then environment overrides. sources
-// may be nil, in which case no provenance is recorded: the effective result is
-// identical either way, which is what makes Load and LoadWithSources unable to
-// disagree.
-func loadTracked(path string, lookup func(string) (string, bool), sources *Sources) (Config, error) {
-	cfg := Defaults()
-	if path != "" {
-		if err := loadFile(path, &cfg); err != nil {
-			return Config{}, err
-		}
-	}
-	if err := cfg.Registry.normalize(lookup); err != nil {
-		return Config{}, err
-	}
-	if err := cfg.Jev.normalize(lookup); err != nil {
-		return Config{}, err
-	}
-	if err := cfg.Auth.normalize(lookup); err != nil {
-		return Config{}, err
-	}
-	cfg.Routing.Policy.normalize()
-	// The routing log's two retention settings are the only non-boolean members of
-	// the section, so they are read through the same explicit-empty rejection rule
-	// every other scalar uses.
-	for _, retention := range []struct {
-		name   string
-		path   string
-		target *int
-	}{
-		{"AUTO_ROUTER_ROUTING_LOG_RETENTION_DAYS", "routing.log.retention_days", &cfg.Routing.Log.RetentionDays},
-		{"AUTO_ROUTER_ROUTING_LOG_JEV_TRACE_RETENTION_DAYS", "routing.log.jev_trace.retention_days", &cfg.Routing.Log.JevTrace.RetentionDays},
-	} {
-		if value, ok := lookup(retention.name); ok {
-			parsed, err := parseRetentionDays(retention.name, value)
-			if err != nil {
-				return Config{}, err
-			}
-			*retention.target = parsed
-			sources.markEnv(retention.path, retention.name)
-		}
-	}
-	stringsToSet := []struct {
-		name   string
-		path   string
-		target *string
-	}{
-		{"AUTO_ROUTER_HTTP_ADDRESS", "http.address", &cfg.HTTP.Address},
-		{"AUTO_ROUTER_DATABASE_PATH", "database.path", &cfg.Database.Path},
-		{"AUTO_ROUTER_LOG_LEVEL", "log.level", &cfg.Log.Level},
-		{"AUTO_ROUTER_JEV_BASE_URL", "jev.base_url", &cfg.Jev.BaseURL},
-		{"AUTO_ROUTER_JEV_API_KEY", "jev.api_key", &cfg.Jev.APIKey},
-		{"AUTO_ROUTER_JEV_MODEL", "jev.model", &cfg.Jev.Model},
-		{"AUTO_ROUTER_JEV_AUTH_HEADER", "jev.auth_header", &cfg.Jev.AuthHeader},
-		{"AUTO_ROUTER_JEV_AUTH_SCHEME", "jev.auth_scheme", &cfg.Jev.AuthScheme},
-		{"AUTO_ROUTER_JEV_INPUT_MODE", "jev.input_mode", &cfg.Jev.InputMode},
-		{"AUTO_ROUTER_ROUTING_DEFAULT_PREFERENCE", "routing.default_preference", (*string)(&cfg.Routing.DefaultPreference)},
-		{"AUTO_ROUTER_ROUTING_POLICY_DEFAULT_MODEL", "routing.policy.default_model", &cfg.Routing.Policy.DefaultModel},
-	}
-	for _, env := range stringsToSet {
-		if value, ok := lookup(env.name); ok {
-			*env.target = value
-			sources.markEnv(env.path, env.name)
-		}
-	}
-	// The same rule applies to the Jev endpoint. The Jev API key is different:
-	// an empty value is a legal state for a loopback test server, so it is not
-	// rejected here (validation still refuses it for a remote endpoint).
-	if value, ok := lookup("AUTO_ROUTER_JEV_BASE_URL"); ok && value == "" {
-		return Config{}, errors.New("AUTO_ROUTER_JEV_BASE_URL must be an absolute http(s) URL when it is set")
-	}
-	if value, ok := lookup("AUTO_ROUTER_JEV_MODEL"); ok && value == "" {
-		return Config{}, errors.New("AUTO_ROUTER_JEV_MODEL must not be empty when it is set")
-	}
-	// The input mode is a closed set of three literals. An explicitly empty
-	// value means "no mode configured", which is not a state this router has: a
-	// silent fall-back to content would be a privacy decision nobody made, so it
-	// is refused like an unknown value.
-	if value, ok := lookup("AUTO_ROUTER_JEV_INPUT_MODE"); ok && value == "" {
-		return Config{}, errors.New("AUTO_ROUTER_JEV_INPUT_MODE must be one of content, redacted, features_only when it is set")
-	}
-	// An explicitly empty preference must not silently keep the file value: an
-	// operator who clears the variable means "no preference configured", which
-	// is not a state this router has. The value is validated below like any
-	// other, so the error lists the four accepted values.
-	if value, ok := lookup(RoutingPreferenceEnv); ok && strings.TrimSpace(value) == "" {
-		return Config{}, fmt.Errorf("%s must be one of %s when it is set", RoutingPreferenceEnv, strings.Join(analyzer.PreferenceValues(), ", "))
-	}
-	// An explicitly empty default model means "no low-confidence fallback
-	// configured", which is a legal state. A value padded with whitespace is a
-	// mistake: trimming it silently would turn a typo into a different model name.
-	if value, ok := lookup("AUTO_ROUTER_ROUTING_POLICY_DEFAULT_MODEL"); ok && value != strings.TrimSpace(value) {
-		return Config{}, errors.New("AUTO_ROUTER_ROUTING_POLICY_DEFAULT_MODEL must not be padded with whitespace when it is set")
-	}
-	durationsToSet := []struct {
-		name   string
-		path   string
-		target *Duration
-	}{
-		{"AUTO_ROUTER_READ_HEADER_TIMEOUT", "http.read_header_timeout", &cfg.HTTP.ReadHeaderTimeout},
-		{"AUTO_ROUTER_IDLE_TIMEOUT", "http.idle_timeout", &cfg.HTTP.IdleTimeout},
-		{"AUTO_ROUTER_READINESS_TIMEOUT", "http.readiness_timeout", &cfg.HTTP.ReadinessTimeout},
-		{"AUTO_ROUTER_SHUTDOWN_TIMEOUT", "http.shutdown_timeout", &cfg.HTTP.ShutdownTimeout},
-		{"AUTO_ROUTER_DATABASE_BUSY_TIMEOUT", "database.busy_timeout", &cfg.Database.BusyTimeout},
-		{"AUTO_ROUTER_JEV_TIMEOUT", "jev.timeout", &cfg.Jev.Timeout},
-	}
-	for _, env := range durationsToSet {
-		if value, ok := lookup(env.name); ok {
-			parsed, err := time.ParseDuration(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("%s must be a Go duration such as 5s", env.name)
-			}
-			*env.target = Duration(parsed)
-			sources.markEnv(env.path, env.name)
-		}
-	}
-	for _, boolean := range []struct {
-		name   string
-		path   string
-		target *bool
-		label  string
-	}{
-		{"AUTO_ROUTER_ROUTING_ALLOW_PROVIDER_OVERRIDE", "routing.allow_provider_override", &cfg.Routing.AllowProviderOverride, "true or false"},
-		{"AUTO_ROUTER_ROUTING_ANALYZER_DEBUG_ENDPOINT", "routing.analyzer_debug_endpoint", &cfg.Routing.AnalyzerDebugEndpoint, "true or false"},
-		{"AUTO_ROUTER_ROUTING_POLICY_REFUSE_TRUNCATED_EVIDENCE", "routing.policy.refuse_truncated_evidence", &cfg.Routing.Policy.RefuseTruncatedEvidence, "true or false"},
-		{"AUTO_ROUTER_ROUTING_POLICY_DEBUG_ENDPOINT", "routing.policy_debug_endpoint", &cfg.Routing.PolicyDebugEndpoint, "true or false"},
-		{"AUTO_ROUTER_ROUTING_AUTO_FAILOVER", "routing.auto.failover.enabled", &cfg.Routing.Auto.Failover.Enabled, "true or false"},
-		{"AUTO_ROUTER_JEV_ENABLED", "jev.enabled", &cfg.Jev.Enabled, "true or false"},
-		{"AUTO_ROUTER_JEV_CAPTURE_RAW_IO", "jev.capture_raw_io", &cfg.Jev.CaptureRawIO, "true or false"},
-		{"AUTO_ROUTER_ROUTING_LOG_ENABLED", "routing.log.enabled", &cfg.Routing.Log.Enabled, "true or false"},
-		{"AUTO_ROUTER_ROUTING_LOG_STORE_CLIENT_IP", "routing.log.store_client_ip", &cfg.Routing.Log.StoreClientIP, "true or false"},
-		{"AUTO_ROUTER_ROUTING_LOG_JEV_TRACE_ENABLED", "routing.log.jev_trace.enabled", &cfg.Routing.Log.JevTrace.Enabled, "true or false"},
-		{AuthEnabledEnv, "auth.enabled", &cfg.Auth.Enabled, "true or false"},
-		{AdminEnabledEnv, "admin.enabled", &cfg.Admin.Enabled, "true or false"},
-	} {
-		if value, ok := lookup(boolean.name); ok {
-			parsed, err := strconv.ParseBool(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("%s must be %s", boolean.name, boolean.label)
-			}
-			*boolean.target = parsed
-			sources.markEnv(boolean.path, boolean.name)
-		}
-	}
-	for _, number := range []struct {
-		name   string
-		path   string
-		target *float64
-		label  string
-	}{
-		{"AUTO_ROUTER_ROUTING_POLICY_HIGH_CONFIDENCE", "routing.policy.high_confidence", &cfg.Routing.Policy.HighConfidence, "a number between 0 and 1"},
-		{"AUTO_ROUTER_ROUTING_POLICY_LOW_CONFIDENCE", "routing.policy.low_confidence", &cfg.Routing.Policy.LowConfidence, "a number between 0 and 1"},
-	} {
-		if value, ok := lookup(number.name); ok {
-			parsed, err := strconv.ParseFloat(value, 64)
-			if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
-				return Config{}, fmt.Errorf("%s must be %s", number.name, number.label)
-			}
-			*number.target = parsed
-			sources.markEnv(number.path, number.name)
-		}
-	}
-	if value, ok := lookup("AUTO_ROUTER_HTTP_MAX_REQUEST_BYTES"); ok {
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		if err != nil {
-			return Config{}, errors.New("AUTO_ROUTER_HTTP_MAX_REQUEST_BYTES must be a whole number of bytes")
-		}
-		cfg.HTTP.MaxRequestBytes = parsed
-		sources.markEnv("http.max_request_bytes", "AUTO_ROUTER_HTTP_MAX_REQUEST_BYTES")
-	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration: %w", err)
-	}
-	return cfg, nil
-}
-
-func loadFile(path string, cfg *Config) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open configuration: %w", err)
-	}
-	defer file.Close()
-	const maxConfigBytes = 1 << 20
-	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
-	if err != nil {
-		return fmt.Errorf("read configuration: %w", err)
-	}
-	if len(data) > maxConfigBytes {
-		return errors.New("configuration exceeds 1 MiB")
-	}
-	data = bytes.TrimSpace(data)
-	if len(data) == 0 || data[0] != '{' {
-		return errors.New("configuration must be a JSON object")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(cfg); err != nil {
-		// The file is named because this error is the one an operator meets when a field
-		// is missing from the build they are running: without the path, "unknown field
-		// session_ttl" reads as "this file is wrong" when the real answer is often "an
-		// older binary is what actually ran". On Windows a shell resolves
-		// ./bin/auto-router to bin/auto-router.exe through PATHEXT, so a build produced
-		// next to a stale auto-router.exe is silently not the one that ran. Naming the
-		// file, and having the process log its own version, is what makes that
-		// diagnosable.
-		return fmt.Errorf("decode configuration %s: %w", path, err)
-	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("configuration %s must contain exactly one JSON object", path)
-	}
-	return nil
 }
 
 func (c Config) Validate() error {
@@ -432,9 +207,8 @@ func (c Config) Validate() error {
 		return err
 	}
 	// The configured value must be one of the four literals exactly. Unlike the
-	// request header it is not normalized: a configuration file that says
-	// "Quality" is a typo to fix, not an input to interpret, and the error never
-	// repeats the offending value.
+	// request header it is not normalized: a configured "Quality" is a typo to
+	// fix, not an input to interpret, and the error never repeats the value.
 	if !c.Routing.DefaultPreference.Valid() {
 		return fmt.Errorf("routing.default_preference must be one of %s", strings.Join(analyzer.PreferenceValues(), ", "))
 	}

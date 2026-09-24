@@ -7,7 +7,7 @@ RUN npm ci
 WORKDIR /src
 COPY docs/openapi.yaml ./docs/openapi.yaml
 COPY webui ./webui
-RUN cd webui && npm run api:types && npm run typecheck && npm run build
+RUN cd webui && npm run api:types && npm run typecheck && npm run build && npm run check:embedded-assets
 
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-build
 ARG TARGETOS

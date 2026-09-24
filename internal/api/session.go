@@ -530,7 +530,13 @@ func unauthenticatedRequest(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/admin/v1/setup/status":
 		return true
-	case "/admin", "/admin/", "/admin/login", "/admin/providers", "/admin/pairs", "/admin/settings", "/admin/keys":
+	case "/admin":
+		return true
+	}
+	// The page shells come from adminPageShells rather than a second literal list: an entry added
+	// there is immediately reachable without a credential, and an entry cannot be served by the
+	// page handler while the middleware still answers 401 for it.
+	if _, ok := adminPageShells[r.URL.Path]; ok {
 		return true
 	}
 	// Static assets are matched by their exact prefix and then re-validated by the

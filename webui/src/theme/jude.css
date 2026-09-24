@@ -1,0 +1,129 @@
+/**
+ * Jude theme tokens — Auto Router admin WebUI.
+ *
+ * Single source of truth for the "Jude" visual language:
+ * light/dark surfaces, four-state status colors, radius, spacing,
+ * motion, typography baseline, and semantic Nuxt UI (--ui-*) overrides.
+ *
+ * Primary is a deep neutral (#1A1A18); green is intentionally absent.
+ * Both `.dark` class and `[data-theme="dark"]` are honored because
+ * Nuxt UI's dark variant depends on the `.dark` class.
+ */
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* ——— Surfaces ——— */
+  --jf-canvas: #f7f7f3;
+  --jf-surface: #ffffff;
+  --jf-surface-2: #f1f1ec;
+  --jf-overlay: #ffffff;
+  --jf-ink: #1a1a18;
+  --jf-ink-2: #5c5c58;
+  --jf-ink-3: #8a8a85;
+  --jf-line: #e4e4dc;
+  --jf-line-strong: #d3d3c9;
+
+  /* ——— Primary: deep neutral ——— */
+  --jf-primary: #1a1a18;
+  --jf-primary-ink: #fafaf7;
+  --jf-primary-hover: #33332f;
+  --jf-primary-active: #000000;
+  --jf-primary-ghost: rgb(26 26 24 / 6%);
+
+  /* ——— Status: info / success / warning / error ——— */
+  --jf-info: #2f5d8a;
+  --jf-info-bg: #e8eff6;
+  --jf-success: #2e7d4f;
+  --jf-success-bg: #e6f2ea;
+  --jf-warning: #9a6a00;
+  --jf-warning-bg: #faf0d3;
+  --jf-error: #b3261e;
+  --jf-error-bg: #fbe9e7;
+
+  /* ——— Radius ——— */
+  --jf-radius-xs: 6px;
+  --jf-radius-sm: 8px;
+  --jf-radius-md: 12px;
+  --jf-radius-lg: 16px;
+  --jf-radius-full: 999px;
+
+  /* ——— Spacing ——— */
+  --jf-space-1: 4px;
+  --jf-space-2: 8px;
+  --jf-space-3: 12px;
+  --jf-space-4: 16px;
+  --jf-space-5: 20px;
+  --jf-space-6: 24px;
+  --jf-space-8: 32px;
+
+  /* ——— Motion ——— */
+  --jf-duration-fast: 120ms;
+  --jf-duration-base: 180ms;
+  --jf-duration-slow: 260ms;
+  --jf-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ——— Typography baseline ——— */
+  --jf-font-sans: 'IBM Plex Sans', 'Noto Sans SC', 'Microsoft YaHei UI', 'PingFang SC',
+    ui-sans-serif, system-ui, sans-serif;
+  --jf-font-mono: 'IBM Plex Mono', 'Noto Sans SC', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --jf-body-size: 14px;
+  --jf-body-line: 1.6;
+  --jf-title-line: 1.35;
+  --jf-weight-normal: 400;
+  --jf-weight-medium: 500;
+
+  /* ——— Shell dimensions ——— */
+  --jf-sidebar-width: 260px;
+  --jf-topbar-height: 56px;
+  --jf-content-max: 1200px;
+
+  /* ——— Nuxt UI semantic overrides (light) ——— */
+  --ui-primary: var(--jf-primary);
+  --ui-text: var(--jf-ink);
+  --ui-text-muted: var(--jf-ink-2);
+  --ui-text-dimmed: var(--jf-ink-3);
+  --ui-bg: var(--jf-canvas);
+  --ui-bg-elevated: var(--jf-surface);
+  --ui-border: var(--jf-line);
+}
+
+:root.dark,
+:root[data-theme='dark'],
+.dark {
+  color-scheme: dark;
+
+  --jf-canvas: #131311;
+  --jf-surface: #1c1c1a;
+  --jf-surface-2: #262624;
+  --jf-overlay: #232321;
+  --jf-ink: #f0efe9;
+  --jf-ink-2: #b8b7b0;
+  --jf-ink-3: #86857e;
+  --jf-line: #2e2e2a;
+  --jf-line-strong: #41413c;
+
+  --jf-primary: #f0efe9;
+  --jf-primary-ink: #1a1a18;
+  --jf-primary-hover: #ffffff;
+  --jf-primary-active: #d8d7d0;
+  --jf-primary-ghost: rgb(240 239 233 / 8%);
+
+  --jf-info: #8fb4dd;
+  --jf-info-bg: rgb(143 180 221 / 14%);
+  --jf-success: #7cc79a;
+  --jf-success-bg: rgb(124 199 154 / 14%);
+  --jf-warning: #e0b44f;
+  --jf-warning-bg: rgb(224 180 79 / 14%);
+  --jf-error: #f19992;
+  --jf-error-bg: rgb(241 153 146 / 14%);
+
+  --ui-primary: var(--jf-primary);
+  --ui-text: var(--jf-ink);
+  --ui-text-muted: var(--jf-ink-2);
+  --ui-text-dimmed: var(--jf-ink-3);
+  --ui-bg: var(--jf-canvas);
+  --ui-bg-elevated: var(--jf-surface);
+  --ui-border: var(--jf-line);
+}

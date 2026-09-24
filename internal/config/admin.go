@@ -81,23 +81,19 @@ const (
 	maxAuthKeyLength = 1024
 )
 
-// authKeyEnvNote is retained for the legacy JSON parser only. Normal service
-// startup does not read auth.keys from files or environment variables.
-const authKeyEnvNote = "auth.keys is file-only; it has no environment variable"
-
 // authKeyNamePattern is the audit-name grammar. A key name is written into the
 // process log for every authenticated request, so it is restricted to a
 // conservative lowercase alphabet and can never contain a space, a NUL or a
 // control character.
 var authKeyNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
-// AuthKey is one legacy configuration credential shape. It is not used by the
-// serving runtime, which loads digest-only credentials from SQLite.
+// AuthKey is the credential shape accepted by the programmatic AuthConfig API.
+// Normal serving instead loads digest-only credentials from SQLite.
 type AuthKey struct {
 	// Name is the audit identifier of the key. It appears in the process log and
 	// in the Admin API; it is never a secret.
 	Name string `json:"name"`
-	// Key is the credential itself in the legacy file parser.
+	// Key is the credential itself; callers should not persist it in configuration files.
 	Key string `json:"key"`
 	// Scopes are the permissions this key carries.
 	Scopes []string `json:"scopes"`
@@ -113,27 +109,28 @@ func (k AuthKey) HasScope(scope string) bool {
 	return false
 }
 
-// AuthConfig is the legacy `auth` section. Normal serving keeps authentication
-// enabled and loads managed key digests from SQLite.
+// AuthConfig is the authentication configuration shape accepted by the explicit
+// NewAuthenticator helper. Normal serving keeps authentication enabled and loads
+// managed key digests from SQLite.
 type AuthConfig struct {
-	// Enabled is honored only by the legacy configuration parser; normal serving
-	// always enables inbound authentication.
+	// Enabled controls NewAuthenticator. Normal service composition always enables
+	// inbound authentication and does not read this switch from startup config.
 	Enabled bool `json:"enabled"`
 	// Header is the header carrying the credential. It defaults to Authorization.
 	Header string `json:"header"`
 	// Scheme is an optional space-separated prefix such as Bearer. An empty scheme
 	// accepts the bare credential.
 	Scheme string `json:"scheme"`
-	// Keys is retained for legacy JSON parsing and is not used by the server.
+	// Keys is used by NewAuthenticator; normal serving uses database-backed digests.
 	Keys []AuthKey `json:"keys"`
 }
 
-// AdminConfig contains management bounds and retained legacy enablement. The
-// serving runtime fixes the Admin API on and allows only the session TTL to be
-// changed through the SQLite-backed settings surface.
+// AdminConfig contains management bounds and session lifetime. The serving
+// runtime always mounts the Admin API and allows the session TTL to be changed
+// through the SQLite-backed settings surface.
 type AdminConfig struct {
-	// Enabled is honored only by the legacy configuration parser; serving mounts
-	// the authenticated Admin API unconditionally after installation.
+	// Enabled is retained for configuration compatibility; serving mounts the
+	// authenticated Admin API unconditionally after installation.
 	Enabled bool `json:"enabled"`
 	// PageSize is the list page size a request that asks for nothing gets.
 	PageSize int `json:"page_size"`
@@ -164,38 +161,6 @@ func defaultAdminConfig() AdminConfig {
 	}
 }
 
-// normalize is part of the legacy configuration parser: it fills absent slices
-// and expands ${VAR} references. Normal service startup never calls it.
-func (a *AuthConfig) normalize(lookup func(string) (string, bool)) error {
-	if a.Keys == nil {
-		a.Keys = []AuthKey{}
-	}
-	for i := range a.Keys {
-		if a.Keys[i].Scopes == nil {
-			a.Keys[i].Scopes = []string{}
-		}
-		expanded, err := expandEnv(a.Keys[i].Key, lookup)
-		if err != nil {
-			// The index identifies the offending entry without naming the
-			// variable: the message may name the key's audit name, which is not a
-			// secret, but never the credential.
-			return fmt.Errorf("auth.keys[%d].key: %w", i, err)
-		}
-		a.Keys[i].Key = expanded
-		// A ${VAR} that is present but empty is refused the same way an explicitly
-		// empty environment variable is refused everywhere else: an empty
-		// credential is not a credential, and accepting it would make every request
-		// unauthenticated.
-		if expanded == "" {
-			return fmt.Errorf("auth.keys[%d].key must not be empty", i)
-		}
-	}
-	return nil
-}
-
-// Validate checks the auth section before any listener is bound. Every error
-// names a setting and an index or a key name; none of them ever repeats a
-// credential.
 func (a AuthConfig) Validate() error {
 	if !validHeaderName(a.Header) {
 		return errors.New("auth.header must be a valid HTTP header name")

@@ -1,14 +1,27 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />
-    <meta name="theme-color" content="#faf9f6" />
+    <meta name="theme-color" content="#F7F7F3" />
     <title>Auto Router · 管理控制台</title>
+    <script>
+      // Anti-flash: apply persisted theme before first paint; keep .dark + data-theme in sync.
+      try {
+        var stored = window.localStorage.getItem('auto-router-color-mode');
+        var mode = stored === 'dark' || stored === 'light'
+          ? stored
+          : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.classList.toggle('dark', mode === 'dark');
+        document.documentElement.setAttribute('data-theme', mode);
+        document.documentElement.style.colorScheme = mode;
+      } catch (e) { /* first paint still uses light defaults */ }
+    </script>
   </head>
   <body>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
+
