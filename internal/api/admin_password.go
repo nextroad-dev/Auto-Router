@@ -2,7 +2,6 @@ package api
 
 import (
 	"errors"
-	"net"
 	"net/http"
 
 	"github.com/nextroad-dev/Auto-Router/internal/storage"
@@ -33,12 +32,6 @@ type setPasswordRequest struct {
 // embedding application without coupling storage to its router.
 func (h *adminHandler) handleSetupPassword(w http.ResponseWriter, r *http.Request) {
 	if !h.requireDatabase(w) {
-		return
-	}
-	remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
-	remoteIP := net.ParseIP(remoteHost)
-	if err != nil || remoteIP == nil || !remoteIP.IsLoopback() {
-		writeAdminError(w, http.StatusForbidden, "loopback_required", "initial password setup is available only from a loopback connection", "")
 		return
 	}
 	if !sameOriginRequest(r) {

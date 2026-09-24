@@ -300,7 +300,7 @@ export interface paths {
         put?: never;
         /**
          * Set the initial owner password
-         * @description Available only before a password exists and only from loopback with a same-origin request. Password length is 12–1024 bytes.
+         * @description Available only until the initial password is set. Browser requests must be same-origin; requests identified as cross-site are rejected. Password length is 12–1024 bytes.
          */
         post: operations["setInitialPassword"];
         delete?: never;
