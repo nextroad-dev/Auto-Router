@@ -180,24 +180,39 @@ func providerNotFound(providerKey string) *TargetError {
 	}
 }
 
-// ModelEntry is one advertised model for GET /v1/models.
+// ModelEntry is one advertised model for GET /v1/models. Capability fields are
+// populated for the virtual automatic-routing model; logical models retain the
+// OpenAI-compatible base fields only.
 type ModelEntry struct {
-	ID      string
-	OwnedBy string
+	ID                string
+	OwnedBy           string
+	ContextWindow     int
+	SupportsTools     bool
+	SupportsVision    bool
+	SupportsReasoning bool
 }
 
-// ListTargets returns the models a client may currently request, in registry
-// order (model priority ascending, then model ID ascending).
+// ListTargets returns the models a client may request. The virtual auto model
+// is always first; routable logical models follow in registry order (model
+// priority ascending, then model ID ascending).
 //
-// A model is advertised only when it has at least one routable pair, because
-// advertising a model that cannot be forwarded would send clients into a
-// guaranteed 404. Models are listed by logical ID: the override syntax is a
-// privileged escape hatch, not part of the catalogue surface.
+// Auto is a virtual routing target, so it is advertised even when no provider
+// is currently eligible. A logical model is advertised only when it has at
+// least one routable pair, because advertising one without a binding would send
+// clients into a guaranteed 404. Models are listed by logical ID: the override
+// syntax is a privileged escape hatch, not part of the catalogue surface.
 func ListTargets(catalog *models.Catalog) []ModelEntry {
+	entries := []ModelEntry{{
+		ID:                models.AutoModelID,
+		OwnedBy:           "auto-router",
+		ContextWindow:     1_000_000,
+		SupportsTools:     true,
+		SupportsVision:    true,
+		SupportsReasoning: true,
+	}}
 	if catalog == nil {
-		return nil
+		return entries
 	}
-	entries := make([]ModelEntry, 0, len(catalog.Models))
 	for _, model := range catalog.Models {
 		if !model.Enabled {
 			continue

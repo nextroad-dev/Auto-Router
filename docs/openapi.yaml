@@ -2,10 +2,11 @@ openapi: 3.1.0
 info:
   title: Auto Router API
   version: 0.10.0
-  summary: Single-user LLM gateway with named inference keys, provider configuration, fallback groups and usage metrics.
+  summary: Jev-assisted large-language-model auto-router with provider configuration, named inference keys and usage metrics.
   description: |
-    Auto Router is a single-user model gateway with provider-level upstream credentials, named client
-    inference keys, and ordered fallback groups (simple, medium and complex). The first owner password
+    Auto Router is a Jev-assisted large-language-model automatic router and single-user model gateway
+    with provider-level upstream credentials, named client inference keys, and ordered fallback groups
+    (simple, medium and complex). The first owner password
     is set once through the local setup endpoint; later access uses a password-backed browser session.
 
     Management APIs use the `auto_router_admin_session` cookie. Inference calls use a named inference
@@ -31,7 +32,7 @@ tags:
   - name: Health
     description: Unauthenticated liveness and readiness probes.
   - name: Models
-    description: Read-only catalogue of routable logical models.
+    description: Read-only catalogue containing the virtual auto-routing model and routable logical models.
   - name: Inference
     description: OpenAI-compatible and native provider protocols.
   - name: Debug
@@ -105,15 +106,19 @@ paths:
   /v1/models:
     get:
       tags: [Models]
-      summary: List routable logical models
+      summary: List auto-routing and routable models
       operationId: listModels
       description: |
-        Lists the enabled logical models that currently have at least one routable binding, in
-        registry order (model priority ascending, then model ID ascending). A model without an
-        enabled pair is not advertised, so the listing never promises a target the router would
-        refuse. `created` is deliberately absent: the registry has no creation timestamps and
-        inventing one would be a fabricated fact. `data` is always an array, so an empty registry
-        reads as an empty catalogue rather than a decode error.
+        Always lists the virtual `auto` model first. It advertises `context_window: 1000000` and
+        `supports_tools`, `supports_vision` and `supports_reasoning` as true. These are the declared
+        capabilities of the virtual routing entry, not a guarantee that every configured upstream
+        has those capabilities or a one-million-token context window; the router still filters
+        actual candidates against the request and each candidate's declared capability/context.
+        After `auto`, the response lists enabled logical models that currently have at least one
+        routable binding, in registry order (model priority ascending, then model ID ascending).
+        A logical model without an enabled pair is not advertised. `created` is deliberately absent:
+        the registry has no creation timestamps and inventing one would be a fabricated fact. `data`
+        is always an array, so an empty registry still contains `auto` rather than a null catalogue.
       security:
         - inferenceKey: []
       responses:
@@ -2434,14 +2439,23 @@ components:
       properties:
         id:
           type: string
-          description: The logical model identifier a client may send in `model`.
+          description: The model identifier a client may send in `model`, including the virtual `auto` routing selector.
         object: {type: string, const: model}
         owned_by:
           type: string
-          description: |
-            The provider key that a request for this model would currently select — the first
-            routable binding's provider. It is deliberately the effective owner rather than a
-            canonical one, so the listing never promises a target the router would refuse.
+          description: `auto-router` for the virtual `auto` model; otherwise the provider key selected by the first routable binding.
+        context_window:
+          type: integer
+          description: Advertised context window in tokens. Present for the virtual `auto` model (1000000); this does not guarantee an upstream with that context size.
+        supports_tools:
+          type: boolean
+          description: Advertised tool support. Present and true for the virtual `auto` model.
+        supports_vision:
+          type: boolean
+          description: Advertised vision support. Present and true for the virtual `auto` model.
+        supports_reasoning:
+          type: boolean
+          description: Advertised reasoning/thinking support. Present and true for the virtual `auto` model.
 
     ChatCompletionsRequest:
       type: object
