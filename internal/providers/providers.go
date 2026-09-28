@@ -107,18 +107,19 @@ var (
 	// ErrUpstreamUnavailable means the connection failed, TLS failed, or the
 	// upstream closed before sending response headers. Reported as 502.
 	ErrUpstreamUnavailable = errors.New("upstream unavailable")
-	// ErrUpstreamTimeout means response headers did not arrive inside the
-	// configured timeout. Reported as 504.
+	// ErrUpstreamTimeout means the provider response did not arrive inside the
+	// configured deadline. A connection timeout may also carry ErrPreRequestFailure
+	// when the transport can prove no request bytes were delivered.
 	ErrUpstreamTimeout = errors.New("upstream response timeout")
 	// ErrCanceled means the client went away or the server is shutting down.
 	// No error body is written.
 	ErrCanceled = errors.New("request canceled")
-	// ErrPreRequestFailure means the transport failed before the request could
-	// have reached the upstream: no connection was ever established, so the
-	// request was never written. It is the only class stage 7 may retry, and an
-	// error carries it only when the adapter is certain of that: an established
-	// connection, an answered header or an already-started stream is never
-	// retried, because a retried request could duplicate a tool side effect.
+	// ErrPreRequestFailure means the transport can prove that no request bytes
+	// reached the upstream. It is enabled for automatic failover by default;
+	// uncertain timeouts and explicitly configured HTTP status responses use
+	// separate opt-in retry classes. An established connection alone is not
+	// proof of delivery, but adapters must only attach this marker when delivery
+	// is known not to have occurred.
 	ErrPreRequestFailure = errors.New("upstream request was never delivered")
 )
 

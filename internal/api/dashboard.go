@@ -37,10 +37,16 @@ var adminPageShells = map[string]struct{}{
 	"/admin/logs":      {},
 }
 
-// Nuxt UI inserts a deterministic color-token style element. Allow only that
-// exact generated block rather than enabling arbitrary inline styles.
-const dashboardContentSecurityPolicy = "default-src 'none'; script-src 'self'; " +
-	"style-src 'self' 'sha256-qoouoS2GGd58R0p8qGIMuCoWOfTHBmRhvQ0pn7W/tnw='; " +
+// The shell carries exactly one inline authoring, pinned by hash instead of by relaxing
+// the directive: the theme bootstrap, which has to run before first paint or a dark-mode
+// reload flashes the light palette. It cannot move to a same-origin file, and a blocked
+// copy of it fails quietly — the page still works, it just flashes — so
+// dashboard_theme_script_test.go recomputes the hash from the embedded HTML on every run.
+//
+// Styles need no exception at all: the bundle links its stylesheet, and the few dynamic
+// styles the console applies go through the CSSOM rather than style attributes.
+const dashboardContentSecurityPolicy = "default-src 'none'; script-src 'self' 'sha256-0rJ6++JwMTUckjv3GExgWxc2/Hv4tuA4QBgQnh13TE8='; " +
+	"style-src 'self'; " +
 	"font-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; " +
 	"frame-ancestors 'none'"
 

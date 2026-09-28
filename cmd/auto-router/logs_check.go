@@ -172,6 +172,8 @@ func writeStoredTrace(output io.Writer, trace *logging.JevTrace) {
 		trace.Status, orNone(trace.FailureReason), trace.InputMode, formatStoredOptionalInt(trace.LatencyMS))
 	fmt.Fprintf(output, "  jev model_count=%d candidate_count=%d selected=%s\n",
 		trace.ModelCount, trace.CandidateCount, orNone(trace.Selected))
+	fmt.Fprintf(output, "  jev group_count=%d recommended_group=%s selected_group=%s candidate_groups=%s\n",
+		trace.GroupCount, orNone(trace.RecommendedGroup), orNone(trace.SelectedGroup), formatStringsOrNone(trace.CandidateGroups))
 	fmt.Fprintf(output, "  jev confidence=%s band=%s fallback=%s evidence_hash=%s\n",
 		formatStoredOptionalFloat(trace.Confidence), orNone(trace.ConfidenceBand),
 		orNone(trace.FallbackReason), orNone(trace.EvidenceHash))
@@ -181,6 +183,11 @@ func writeStoredTrace(output io.Writer, trace *logging.JevTrace) {
 		distribution = append(distribution, fmt.Sprintf("%s=%.6f", probability.Model, probability.Probability))
 	}
 	fmt.Fprintf(output, "  jev distribution=%s\n", formatStringsOrNone(distribution))
+	groupDistribution := make([]string, 0, len(trace.GroupProbabilities))
+	for _, probability := range trace.GroupProbabilities {
+		groupDistribution = append(groupDistribution, fmt.Sprintf("%s=%.6f", probability.Group, probability.Probability))
+	}
+	fmt.Fprintf(output, "  jev group_distribution=%s\n", formatStringsOrNone(groupDistribution))
 }
 
 // logsCheckJSONEntry is the JSON shape of one report line. The keys match the text
@@ -232,19 +239,24 @@ type logsCheckJSONEvent struct {
 }
 
 type logsCheckJSONJev struct {
-	Status          string    `json:"status"`
-	FailureReason   string    `json:"failure_reason,omitempty"`
-	InputMode       string    `json:"input_mode"`
-	Selected        string    `json:"selected,omitempty"`
-	ConfidenceBand  string    `json:"confidence_band,omitempty"`
-	FallbackReason  string    `json:"fallback_reason,omitempty"`
-	EvidenceHash    string    `json:"evidence_hash,omitempty"`
-	LatencyMS       *int64    `json:"latency_ms,omitempty"`
-	CandidateModels []string  `json:"candidate_models"`
-	ModelCount      int       `json:"model_count"`
-	CandidateCount  int       `json:"candidate_count"`
-	Confidence      *float64  `json:"confidence,omitempty"`
-	Probabilities   []float64 `json:"probabilities,omitempty"`
+	Status             string                     `json:"status"`
+	FailureReason      string                     `json:"failure_reason,omitempty"`
+	InputMode          string                     `json:"input_mode"`
+	Selected           string                     `json:"selected,omitempty"`
+	ConfidenceBand     string                     `json:"confidence_band,omitempty"`
+	FallbackReason     string                     `json:"fallback_reason,omitempty"`
+	EvidenceHash       string                     `json:"evidence_hash,omitempty"`
+	LatencyMS          *int64                     `json:"latency_ms,omitempty"`
+	CandidateModels    []string                   `json:"candidate_models"`
+	ModelCount         int                        `json:"model_count"`
+	CandidateCount     int                        `json:"candidate_count"`
+	CandidateGroups    []string                   `json:"candidate_groups"`
+	GroupCount         int                        `json:"group_count"`
+	RecommendedGroup   string                     `json:"recommended_group,omitempty"`
+	SelectedGroup      string                     `json:"selected_group,omitempty"`
+	Confidence         *float64                   `json:"confidence,omitempty"`
+	Probabilities      []float64                  `json:"probabilities,omitempty"`
+	GroupProbabilities []logging.GroupProbability `json:"group_probabilities,omitempty"`
 }
 
 // writeLogsJSON prints one JSON object per entry. The values are the stored ones:
@@ -296,18 +308,23 @@ func writeLogsJSON(output io.Writer, events []storage.StoredEvent) error {
 		if entry.JevTrace != nil {
 			trace := entry.JevTrace
 			rendered := &logsCheckJSONJev{
-				Status:          trace.Status,
-				FailureReason:   trace.FailureReason,
-				InputMode:       trace.InputMode,
-				Selected:        trace.Selected,
-				ConfidenceBand:  trace.ConfidenceBand,
-				FallbackReason:  trace.FallbackReason,
-				EvidenceHash:    trace.EvidenceHash,
-				LatencyMS:       trace.LatencyMS,
-				CandidateModels: trace.CandidateModels,
-				ModelCount:      trace.ModelCount,
-				CandidateCount:  trace.CandidateCount,
-				Confidence:      trace.Confidence,
+				Status:             trace.Status,
+				FailureReason:      trace.FailureReason,
+				InputMode:          trace.InputMode,
+				Selected:           trace.Selected,
+				ConfidenceBand:     trace.ConfidenceBand,
+				FallbackReason:     trace.FallbackReason,
+				EvidenceHash:       trace.EvidenceHash,
+				LatencyMS:          trace.LatencyMS,
+				CandidateModels:    trace.CandidateModels,
+				ModelCount:         trace.ModelCount,
+				CandidateCount:     trace.CandidateCount,
+				CandidateGroups:    trace.CandidateGroups,
+				GroupCount:         trace.GroupCount,
+				RecommendedGroup:   trace.RecommendedGroup,
+				SelectedGroup:      trace.SelectedGroup,
+				Confidence:         trace.Confidence,
+				GroupProbabilities: trace.GroupProbabilities,
 			}
 			if rendered.CandidateModels == nil {
 				rendered.CandidateModels = []string{}

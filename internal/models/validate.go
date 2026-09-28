@@ -234,9 +234,6 @@ func ValidateModel(m Model) error {
 	if !m.Source.Valid() {
 		return fmt.Errorf("source must be %q or %q", SourceModelsDev, SourceLocal)
 	}
-	if m.Priority < 0 {
-		return errors.New("priority must not be negative")
-	}
 	return nil
 }
 
@@ -266,9 +263,6 @@ func ValidatePair(p Pair) error {
 	}
 	if !p.Source.Valid() {
 		return fmt.Errorf("source must be %q or %q", SourceModelsDev, SourceLocal)
-	}
-	if p.Priority < 0 {
-		return errors.New("priority must not be negative")
 	}
 	return nil
 }

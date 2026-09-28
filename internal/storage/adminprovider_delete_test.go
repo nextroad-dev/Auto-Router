@@ -23,14 +23,14 @@ func TestDeleteAdminProviderRemovesBindingsAndCompactsGroups(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"model-a", "model-b", "model-c"} {
-		if _, err := db.ExecContext(ctx, `INSERT INTO models(id, display_name, enabled, priority, source, updated_at, admin_owned) VALUES(?, ?, 1, 0, 'local', 'now', 1)`, id, id); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO models(id, display_name, enabled, source, updated_at, admin_owned) VALUES(?, ?, 1, 'local', 'now', 1)`, id, id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, pair := range []struct{ provider, model string }{
 		{"keep-a", "model-a"}, {"remove", "model-b"}, {"keep-b", "model-c"},
 	} {
-		if _, err := db.ExecContext(ctx, `INSERT INTO provider_models(provider_key, model_id, upstream_model_id, context_window, supports_tools, supports_vision, supports_reasoning, enabled, priority, source, updated_at, admin_owned) VALUES(?, ?, ?, 1000, 0, 0, 0, 1, 0, 'local', 'now', 1)`, pair.provider, pair.model, pair.model); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO provider_models(provider_key, model_id, upstream_model_id, context_window, supports_tools, supports_vision, supports_reasoning, enabled, source, updated_at, admin_owned) VALUES(?, ?, ?, 1000, 0, 0, 0, 1, 'local', 'now', 1)`, pair.provider, pair.model, pair.model); err != nil {
 			t.Fatal(err)
 		}
 	}

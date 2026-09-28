@@ -63,7 +63,6 @@ type modelPayload struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
 	Enabled     bool   `json:"enabled"`
-	Priority    int    `json:"priority"`
 	Source      string `json:"source"`
 	Owner       string `json:"owner"`
 	PairCount   int    `json:"pair_count"`
@@ -74,7 +73,6 @@ func modelPayloadOf(view storage.ModelView) modelPayload {
 		ID:          view.Model.ID,
 		DisplayName: view.Model.DisplayName,
 		Enabled:     view.Model.Enabled,
-		Priority:    view.Model.Priority,
 		Source:      string(view.Model.Source),
 		Owner:       view.Owner(),
 		PairCount:   view.PairCount,
@@ -93,7 +91,6 @@ type pairPayload struct {
 	SupportsAudioInput bool   `json:"supports_audio_input"`
 	SupportsReasoning  bool   `json:"supports_reasoning"`
 	Enabled            bool   `json:"enabled"`
-	Priority           int    `json:"priority"`
 	Source             string `json:"source"`
 	Owner              string `json:"owner"`
 }
@@ -110,7 +107,6 @@ func pairPayloadOf(view storage.PairView) pairPayload {
 		SupportsAudioInput: view.Pair.SupportsAudioInput,
 		SupportsReasoning:  view.Pair.SupportsReasoning,
 		Enabled:            view.Pair.Enabled,
-		Priority:           view.Pair.Priority,
 		Source:             string(view.Pair.Source),
 		Owner:              view.Owner(),
 	}
@@ -540,17 +536,12 @@ func (h *adminHandler) handleModelList(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_filter", "the source filter is not supported", "source")
 		return
 	}
-	fields, err := decodeCursor(query.Get("cursor"), cursorModel, 2)
+	fields, err := decodeCursor(query.Get("cursor"), cursorModel, 1)
 	if err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_cursor", "the cursor is not valid for this endpoint", "")
 		return
 	}
-	priority, err := strconv.Atoi(fields[0])
-	if err != nil && fields[0] != "" {
-		writeAdminError(w, http.StatusBadRequest, "invalid_cursor", "the cursor is not valid for this endpoint", "")
-		return
-	}
-	views, err := storage.ListModelsFiltered(r.Context(), h.db, storage.ModelFilter{Search: search, Enabled: enabled, Source: source}, storage.ModelCursor{Priority: priority, ID: fields[1]}, limit)
+	views, err := storage.ListModelsFiltered(r.Context(), h.db, storage.ModelFilter{Search: search, Enabled: enabled, Source: source}, storage.ModelCursor{ID: fields[0]}, limit)
 	if err != nil {
 		storageFailure(w, h, "list models", err)
 		return
@@ -558,7 +549,7 @@ func (h *adminHandler) handleModelList(w http.ResponseWriter, r *http.Request) {
 	next := ""
 	if len(views) > limit {
 		last := views[limit-1]
-		next = encodeCursor(cursorModel, strconv.Itoa(last.Model.Priority), last.Model.ID)
+		next = encodeCursor(cursorModel, last.Model.ID)
 		views = views[:limit]
 	}
 	payload := make([]modelPayload, 0, len(views))
@@ -606,7 +597,6 @@ func (h *adminHandler) handleModelDetail(w http.ResponseWriter, r *http.Request)
 type modelPatchRequest struct {
 	DisplayName *string `json:"display_name"`
 	Enabled     *bool   `json:"enabled"`
-	Priority    *int    `json:"priority"`
 }
 
 // handleModelPatch serves PATCH /admin/v1/models/{id...}.
@@ -621,7 +611,7 @@ func (h *adminHandler) handleModelPatch(w http.ResponseWriter, r *http.Request) 
 		writeBodyError(w, err)
 		return
 	}
-	if !wasPresent(present, "display_name") && !wasPresent(present, "enabled") && !wasPresent(present, "priority") {
+	if !wasPresent(present, "display_name") && !wasPresent(present, "enabled") {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the request must change at least one field", "body")
 		return
 	}
@@ -635,14 +625,9 @@ func (h *adminHandler) handleModelPatch(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	if request.Priority != nil && *request.Priority < 0 {
-		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the priority must not be negative", "priority")
-		return
-	}
 	applied, err := storage.UpdateModel(r.Context(), h.db, id, storage.ModelPatch{
 		DisplayName: request.DisplayName,
 		Enabled:     request.Enabled,
-		Priority:    request.Priority,
 	})
 	if err != nil {
 		storageFailure(w, h, "update model", err)
@@ -665,7 +650,6 @@ type modelCreateRequest struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
 	Enabled     bool   `json:"enabled"`
-	Priority    int    `json:"priority"`
 }
 
 // handleModelCreate serves POST /admin/v1/models.
@@ -686,15 +670,10 @@ func (h *adminHandler) handleModelCreate(w http.ResponseWriter, r *http.Request)
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the automatic model identifier is reserved", "id")
 		return
 	}
-	if request.Priority < 0 {
-		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the priority must not be negative", "priority")
-		return
-	}
 	if err := storage.CreateModel(r.Context(), h.db, storage.NewModel{
 		ID:          request.ID,
 		DisplayName: request.DisplayName,
 		Enabled:     request.Enabled,
-		Priority:    request.Priority,
 	}); err != nil {
 		if isConflictError(err) {
 			writeAdminError(w, http.StatusConflict, "model_exists", "a model with this id already exists", "id")
@@ -749,22 +728,20 @@ func (h *adminHandler) handlePairList(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Missing = missing
 	}
-	fields, err := decodeCursor(query.Get("cursor"), cursorPair, 4)
+	fields, err := decodeCursor(query.Get("cursor"), cursorPair, 3)
 	if err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_cursor", "the cursor is not valid for this endpoint", "")
 		return
 	}
-	pairPriority, err1 := strconv.Atoi(fields[0])
-	providerPriority, err2 := strconv.Atoi(fields[1])
-	if (err1 != nil || err2 != nil) && fields[0] != "" {
+	providerPriority, err := strconv.Atoi(fields[0])
+	if err != nil && fields[0] != "" {
 		writeAdminError(w, http.StatusBadRequest, "invalid_cursor", "the cursor is not valid for this endpoint", "")
 		return
 	}
 	rows, err := storage.ListPairs(r.Context(), h.db, filter, storage.PairCursor{
-		Priority:         pairPriority,
 		ProviderPriority: providerPriority,
-		ProviderKey:      fields[2],
-		ModelID:          fields[3],
+		ProviderKey:      fields[1],
+		ModelID:          fields[2],
 	}, limit)
 	if err != nil {
 		storageFailure(w, h, "list pairs", err)
@@ -774,7 +751,6 @@ func (h *adminHandler) handlePairList(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > limit {
 		last := rows[limit-1]
 		next = encodeCursor(cursorPair,
-			strconv.Itoa(last.View.Pair.Priority),
 			strconv.Itoa(last.ProviderPriority),
 			last.View.Pair.ProviderKey,
 			last.View.Pair.ModelID)
@@ -818,7 +794,6 @@ func (h *adminHandler) handlePairDetail(w http.ResponseWriter, r *http.Request) 
 // limit" — and must be expressible.
 type pairPatchRequest struct {
 	Enabled            *bool   `json:"enabled"`
-	Priority           *int    `json:"priority"`
 	UpstreamModelID    *string `json:"upstream_model_id"`
 	ContextWindow      *int    `json:"context_window"`
 	MaxOutput          **int   `json:"max_output"`
@@ -829,7 +804,7 @@ type pairPatchRequest struct {
 }
 
 func (p pairPatchRequest) empty() bool {
-	return p.Enabled == nil && p.Priority == nil && p.UpstreamModelID == nil && p.ContextWindow == nil &&
+	return p.Enabled == nil && p.UpstreamModelID == nil && p.ContextWindow == nil &&
 		p.MaxOutput == nil && p.SupportsTools == nil && p.SupportsVision == nil &&
 		p.SupportsAudioInput == nil && p.SupportsReasoning == nil
 }
@@ -861,10 +836,6 @@ func (h *adminHandler) handlePairPatch(w http.ResponseWriter, r *http.Request) {
 	// The merged row is validated inside the storage layer, so the error there names
 	// the constraint without echoing a value. The fields that can be checked on their
 	// own are checked here so the response names the offending field.
-	if request.Priority != nil && *request.Priority < 0 {
-		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the priority must not be negative", "priority")
-		return
-	}
 	if request.ContextWindow != nil && *request.ContextWindow <= 0 {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the context_window must be positive", "context_window")
 		return
@@ -875,7 +846,6 @@ func (h *adminHandler) handlePairPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	applied, err := storage.UpdatePair(r.Context(), h.db, providerKey, modelID, storage.PairPatch{
 		Enabled:            request.Enabled,
-		Priority:           request.Priority,
 		UpstreamModelID:    request.UpstreamModelID,
 		ContextWindow:      request.ContextWindow,
 		MaxOutput:          maxOutput,
@@ -904,6 +874,51 @@ func (h *adminHandler) handlePairPatch(w http.ResponseWriter, r *http.Request) {
 	h.reloadAfterWrite(w, r, pairPayloadOf(view))
 }
 
+// handlePairDelete serves DELETE /admin/v1/pairs/{provider}/{model...}.
+func (h *adminHandler) handlePairDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.requireDatabase(w) {
+		return
+	}
+	providerKey := trimPathWildcard(r.PathValue("provider"))
+	modelID := trimPathWildcard(r.PathValue("model"))
+	if err := storage.DeletePair(r.Context(), h.db, providerKey, modelID); err != nil {
+		if errors.Is(err, storage.ErrPairNotFound) {
+			unknownPathID(w, "unknown_pair", "binding")
+			return
+		}
+		storageFailure(w, h, "delete binding", err)
+		return
+	}
+
+	groups, err := storage.LoadModelGroups(r.Context(), h.db)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Error("routing groups could not be read after binding deletion", "error", err.Error())
+		}
+		writeAdminError(w, http.StatusInternalServerError, "snapshot_publish_failed", "the binding was deleted, but the running routing groups could not be refreshed; they will be picked up at the next restart", "")
+		return
+	}
+	if h.reloadGroups != nil {
+		if err := h.reloadGroups(r.Context(), groups); err != nil {
+			if h.logger != nil {
+				h.logger.Error("routing groups could not be republished after binding deletion", "error", err.Error())
+			}
+			writeAdminError(w, http.StatusInternalServerError, "snapshot_publish_failed", "the binding was deleted, but the running routing groups could not be republished; they will be picked up at the next restart", "")
+			return
+		}
+	}
+	if h.reloadCatalog != nil {
+		if err := h.reloadCatalog(r.Context()); err != nil {
+			if h.logger != nil {
+				h.logger.Error("the registry snapshot could not be republished after binding deletion", "error", err.Error())
+			}
+			writeAdminError(w, http.StatusInternalServerError, "snapshot_publish_failed", "the binding was deleted, but the running snapshot could not be republished; it will be picked up at the next restart", "")
+			return
+		}
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]any{"provider": providerKey, "model": modelID, "deleted": true})
+}
+
 // pairCreateRequest is the request body of POST /admin/v1/pairs.
 type pairCreateRequest struct {
 	Provider           string `json:"provider"`
@@ -916,7 +931,6 @@ type pairCreateRequest struct {
 	SupportsAudioInput bool   `json:"supports_audio_input"`
 	SupportsReasoning  bool   `json:"supports_reasoning"`
 	Enabled            bool   `json:"enabled"`
-	Priority           int    `json:"priority"`
 }
 
 // handlePairCreate serves POST /admin/v1/pairs. It binds a provider and a logical
@@ -958,7 +972,6 @@ func (h *adminHandler) handlePairCreate(w http.ResponseWriter, r *http.Request) 
 		SupportsAudioInput: request.SupportsAudioInput,
 		SupportsReasoning:  request.SupportsReasoning,
 		Enabled:            request.Enabled,
-		Priority:           request.Priority,
 	}
 	if err := storage.ValidateNewPair(candidate); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the binding is not usable", "body")

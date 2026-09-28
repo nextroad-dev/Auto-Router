@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 	"github.com/nextroad-dev/Auto-Router/internal/router/policy"
@@ -14,7 +13,7 @@ import (
 // engine is compiled from. It is a separate type from the engine's own Config
 // because the configuration and API use JSON spellings and validation messages,
 // while the engine uses domain types directly; the conversion is one function
-// (Domain). Lists and tiers use the same validated runtime overlay as scalar values.
+// (Domain). Tiers use the same validated runtime overlay as scalar values.
 type RoutingPolicyConfig struct {
 	// Version is the policy schema version. It must equal policy.Version; an
 	// unsupported schema is refused rather than partially applied.
@@ -32,13 +31,6 @@ type RoutingPolicyConfig struct {
 	// CostTiers and LatencyTiers are the operator-declared integer rankings.
 	CostTiers    []RoutingTier `json:"cost_tiers"`
 	LatencyTiers []RoutingTier `json:"latency_tiers"`
-	// The six identifier lists. An empty allow list means "no restriction".
-	AllowModels    []string `json:"allow_models"`
-	DenyModels     []string `json:"deny_models"`
-	AllowProviders []string `json:"allow_providers"`
-	DenyProviders  []string `json:"deny_providers"`
-	AllowPairs     []string `json:"allow_pairs"`
-	DenyPairs      []string `json:"deny_pairs"`
 }
 
 // RoutingTier declares the rank of one model or one provider. Exactly one of the
@@ -61,12 +53,6 @@ func defaultRoutingPolicyConfig() RoutingPolicyConfig {
 		DefaultModel:            defaults.DefaultModel,
 		CostTiers:               []RoutingTier{},
 		LatencyTiers:            []RoutingTier{},
-		AllowModels:             []string{},
-		DenyModels:              []string{},
-		AllowProviders:          []string{},
-		DenyProviders:           []string{},
-		AllowPairs:              []string{},
-		DenyPairs:               []string{},
 	}
 }
 
@@ -82,12 +68,6 @@ func (p RoutingPolicyConfig) Domain() policy.Config {
 		DefaultModel:            p.DefaultModel,
 		CostTiers:               domainTiers(p.CostTiers),
 		LatencyTiers:            domainTiers(p.LatencyTiers),
-		AllowModels:             copyStrings(p.AllowModels),
-		DenyModels:              copyStrings(p.DenyModels),
-		AllowProviders:          copyStrings(p.AllowProviders),
-		DenyProviders:           copyStrings(p.DenyProviders),
-		AllowPairs:              copyStrings(p.AllowPairs),
-		DenyPairs:               copyStrings(p.DenyPairs),
 	}
 }
 
@@ -98,8 +78,6 @@ func domainTiers(tiers []RoutingTier) []policy.Tier {
 	}
 	return converted
 }
-
-func copyStrings(values []string) []string { return append([]string(nil), values...) }
 
 // Validate checks the policy section before any listener is bound. Every error
 // names the setting and never repeats an offending value, so a hostile or
@@ -135,31 +113,6 @@ func (p RoutingPolicyConfig) Validate() error {
 		{"latency_tiers", p.LatencyTiers},
 	} {
 		if err := validateTiers(dimension.name, dimension.tiers); err != nil {
-			return err
-		}
-	}
-	for _, list := range []struct {
-		name   string
-		values []string
-		pairs  bool
-	}{
-		{name: "allow_models", values: p.AllowModels},
-		{name: "deny_models", values: p.DenyModels},
-		{name: "allow_providers", values: p.AllowProviders},
-		{name: "deny_providers", values: p.DenyProviders},
-	} {
-		if err := validateIdentifiers(list.name, list.values); err != nil {
-			return err
-		}
-	}
-	for _, list := range []struct {
-		name   string
-		values []string
-	}{
-		{name: "allow_pairs", values: p.AllowPairs},
-		{name: "deny_pairs", values: p.DenyPairs},
-	} {
-		if err := validatePairs(list.name, list.values); err != nil {
 			return err
 		}
 	}
@@ -203,65 +156,6 @@ func validateTiers(field string, tiers []RoutingTier) error {
 		declared[key] = struct{}{}
 	}
 	return nil
-}
-
-// validateIdentifiers checks a model or provider list. The rule depends on the
-// list: a model list uses the model identifier grammar, a provider list the provider
-// key grammar.
-func validateIdentifiers(field string, values []string) error {
-	if len(values) != len(uniqueStrings(values)) {
-		return fmt.Errorf("routing.policy.%s declares the same entry more than once", field)
-	}
-	for index, value := range values {
-		if value == "" || value != strings.TrimSpace(value) {
-			return fmt.Errorf("routing.policy.%s[%d] must be a non-empty identifier without surrounding whitespace", field, index)
-		}
-		if strings.ContainsRune(value, '\x00') {
-			return fmt.Errorf("routing.policy.%s[%d] must not contain NUL", field, index)
-		}
-		if strings.HasSuffix(field, "_providers") {
-			if err := models.ValidateProviderKey(value); err != nil {
-				return fmt.Errorf("routing.policy.%s[%d]: %w", field, index, err)
-			}
-			continue
-		}
-		if err := models.ValidateModelID(value); err != nil {
-			return fmt.Errorf("routing.policy.%s[%d]: %w", field, index, err)
-		}
-	}
-	return nil
-}
-
-// validatePairs checks a "<provider>/<model>" list. The split reuses the shared
-// helper, so a model ID containing a slash stays addressable and the policy engine
-// and the sync allowlist agree on the syntax.
-func validatePairs(field string, values []string) error {
-	if len(values) != len(uniqueStrings(values)) {
-		return fmt.Errorf("routing.policy.%s declares the same entry more than once", field)
-	}
-	for index, value := range values {
-		providerKey, modelID, err := models.SplitIncludeEntry(value)
-		if err != nil {
-			return fmt.Errorf("routing.policy.%s[%d] must be provider/model", field, index)
-		}
-		if providerKey != strings.TrimSpace(providerKey) || modelID != strings.TrimSpace(modelID) {
-			return fmt.Errorf("routing.policy.%s[%d] must not be padded with whitespace", field, index)
-		}
-	}
-	return nil
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	unique := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, duplicate := seen[value]; duplicate {
-			continue
-		}
-		seen[value] = struct{}{}
-		unique = append(unique, value)
-	}
-	return unique
 }
 
 // PolicyEngine compiles the policy section. It exists so the composition root has

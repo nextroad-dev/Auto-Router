@@ -15,10 +15,10 @@
 //     every field, including the exclusion order, the signal order, the reason
 //     string and the evidence hash. Ties are broken by the caller's candidate
 //     order, so there is no tie the engine cannot decide.
-//   - Hard constraints are not negotiable: capability, context, output-ceiling,
-//     allow/deny-list and truncation filters remove candidates before any score
-//     exists. A probability can never outvote them, and the low-confidence
-//     fallback never widens them to reach a configured default model.
+//   - Hard constraints are not negotiable: capability, context, output-ceiling
+//     and truncation filters remove candidates before any score exists. A
+//     probability can never outvote them, and the low-confidence fallback never
+//     widens them to reach a configured default model.
 //   - Bounded: every list it returns has a named size limit, and every string it
 //     returns is an identifier, a closed enumeration or a number. Request text
 //     never reaches a decision, a reason string or an exclusion detail.
@@ -107,9 +107,8 @@ func (t Tier) key() (string, error) {
 	}
 }
 
-// Config is the policy configuration. Zero values are meaningful:
-// RefuseTruncatedEvidence false means "route on the evidence that was observed",
-// and an empty list means "no restriction" for every allow list.
+// Config is the policy configuration. RefuseTruncatedEvidence false means
+// "route on the evidence that was observed".
 type Config struct {
 	// Version must equal Version. It exists so a configuration file written for a
 	// future policy schema is rejected rather than partially applied.
@@ -130,21 +129,11 @@ type Config struct {
 	// tier.
 	CostTiers    []Tier
 	LatencyTiers []Tier
-	// AllowModels, DenyModels, AllowProviders and DenyProviders are identifier
-	// lists. An empty allow list means "no restriction".
-	AllowModels    []string
-	DenyModels     []string
-	AllowProviders []string
-	DenyProviders  []string
-	// AllowPairs and DenyPairs are "<provider>/<model>" lists split at the first
-	// slash, so a model ID containing a slash stays addressable.
-	AllowPairs []string
-	DenyPairs  []string
 }
 
 // DefaultConfig returns the configuration of an unconfigured deployment: the
-// documented thresholds, truncation refusal on, and no lists, tiers or default
-// model. It is what the check command and the tests start from.
+// documented thresholds, truncation refusal on, no tiers and no default model.
+// It is what the check command and the tests start from.
 func DefaultConfig() Config {
 	return Config{
 		Version:                 Version,
@@ -153,12 +142,6 @@ func DefaultConfig() Config {
 		RefuseTruncatedEvidence: true,
 		CostTiers:               []Tier{},
 		LatencyTiers:            []Tier{},
-		AllowModels:             []string{},
-		DenyModels:              []string{},
-		AllowProviders:          []string{},
-		DenyProviders:           []string{},
-		AllowPairs:              []string{},
-		DenyPairs:               []string{},
 	}
 }
 
@@ -207,18 +190,11 @@ type Extractor interface {
 }
 
 // Engine is a compiled policy. It is immutable after New and safe for concurrent
-// use: every call reads only its own inputs and the compiled tables.
+// use: every call reads only its own inputs and the compiled tier tables.
 type Engine struct {
 	high, low               float64
 	refuseTruncatedEvidence bool
 	defaultModel            string
-
-	allowModels    map[string]struct{}
-	denyModels     map[string]struct{}
-	allowProviders map[string]struct{}
-	denyProviders  map[string]struct{}
-	allowPairs     map[string]struct{}
-	denyPairs      map[string]struct{}
 
 	costTiers    map[string]int
 	latencyTiers map[string]int
@@ -226,7 +202,7 @@ type Engine struct {
 	extractor Extractor
 }
 
-// New validates the configuration and compiles its lookup tables. Every error
+// New validates the configuration and compiles its tier tables. Every error
 // describes the setting, never a client-provided value, and the compiled tables
 // are built in a fixed order so two engines built from equal configurations
 // behave identically.
@@ -244,24 +220,6 @@ func New(cfg Config) (*Engine, error) {
 		defaultModel:            cfg.DefaultModel,
 	}
 	var err error
-	if engine.allowModels, err = identifierSet("allow_models", cfg.AllowModels); err != nil {
-		return nil, err
-	}
-	if engine.denyModels, err = identifierSet("deny_models", cfg.DenyModels); err != nil {
-		return nil, err
-	}
-	if engine.allowProviders, err = identifierSet("allow_providers", cfg.AllowProviders); err != nil {
-		return nil, err
-	}
-	if engine.denyProviders, err = identifierSet("deny_providers", cfg.DenyProviders); err != nil {
-		return nil, err
-	}
-	if engine.allowPairs, err = pairSet("allow_pairs", cfg.AllowPairs); err != nil {
-		return nil, err
-	}
-	if engine.denyPairs, err = pairSet("deny_pairs", cfg.DenyPairs); err != nil {
-		return nil, err
-	}
 	if engine.costTiers, err = tierTable("cost_tiers", cfg.CostTiers); err != nil {
 		return nil, err
 	}
@@ -392,47 +350,6 @@ func validThreshold(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1
 }
 
-// identifierSet compiles an allow or deny list. Entries must be non-empty,
-// unpadded identifiers and must not repeat: a duplicate is almost always a
-// copy-paste mistake, and silently de-duplicating it hides the mistake.
-func identifierSet(field string, values []string) (map[string]struct{}, error) {
-	set := make(map[string]struct{}, len(values))
-	for index, value := range values {
-		if value == "" || value != strings.TrimSpace(value) {
-			return nil, fmt.Errorf("%w: %s[%d] must be a non-empty identifier without surrounding whitespace", ErrInvalidConfig, field, index)
-		}
-		if strings.ContainsRune(value, '\x00') {
-			return nil, fmt.Errorf("%w: %s[%d] must not contain NUL", ErrInvalidConfig, field, index)
-		}
-		if _, duplicate := set[value]; duplicate {
-			return nil, fmt.Errorf("%w: %s declares %q more than once", ErrInvalidConfig, field, value)
-		}
-		set[value] = struct{}{}
-	}
-	return set, nil
-}
-
-// pairSet compiles a "<provider>/<model>" list. The split happens at the first
-// slash, matching models.SplitIncludeEntry, so a model ID that itself contains a
-// slash stays expressible.
-func pairSet(field string, values []string) (map[string]struct{}, error) {
-	set := make(map[string]struct{}, len(values))
-	for index, value := range values {
-		providerKey, modelID, ok := decision.SplitPairKey(value)
-		if !ok {
-			return nil, fmt.Errorf("%w: %s[%d] must be provider/model", ErrInvalidConfig, field, index)
-		}
-		if providerKey != strings.TrimSpace(providerKey) || modelID != strings.TrimSpace(modelID) {
-			return nil, fmt.Errorf("%w: %s[%d] must not be padded with whitespace", ErrInvalidConfig, field, index)
-		}
-		if _, duplicate := set[providerKey+"/"+modelID]; duplicate {
-			return nil, fmt.Errorf("%w: %s declares %q more than once", ErrInvalidConfig, field, providerKey+"/"+modelID)
-		}
-		set[providerKey+"/"+modelID] = struct{}{}
-	}
-	return set, nil
-}
-
 // tierTable compiles one tier ranking. A negative tier is rejected because the
 // scale is a rank from zero; a repeated key is rejected because two different
 // ranks for one target have no defined meaning.
@@ -515,10 +432,6 @@ func (e *Engine) filter(features analyzer.Features, candidates []decision.Candid
 	exclusions := make([]rawExclusion, 0, len(candidates))
 	survivors := make([]eligible, 0, len(candidates))
 	for index, candidate := range candidates {
-		if code, detail, excluded := e.listRejection(candidate); excluded {
-			exclusions = append(exclusions, reject(index, candidate, code, detail))
-			continue
-		}
 		if code, detail, excluded := capabilityRejection(features, candidate); excluded {
 			exclusions = append(exclusions, reject(index, candidate, code, detail))
 			continue
@@ -595,38 +508,6 @@ func Exclusions(err error) []decision.Exclusion { return RefusalOf(err).Exclusio
 
 // FallbackReasonFor returns the reason a refused evaluation recorded.
 func FallbackReasonFor(err error) decision.FallbackReason { return RefusalOf(err).Reason }
-
-// listRejection applies the six identifier lists. Deny always wins: a pair named
-// by a deny list is refused even when an allow list also names it, because an
-// operator who denies something has made the more specific decision.
-func (e *Engine) listRejection(candidate decision.Candidate) (decision.ExclusionCode, string, bool) {
-	pairKey := candidate.PairKey()
-	switch {
-	case e.match(e.denyPairs, pairKey):
-		return decision.ExclusionDenied, "deny_pairs", true
-	case e.match(e.denyModels, candidate.ModelID):
-		return decision.ExclusionDenied, "deny_models", true
-	case e.match(e.denyProviders, candidate.ProviderKey):
-		return decision.ExclusionDenied, "deny_providers", true
-	}
-	// A non-empty allow list is an additional AND condition: naming a model in
-	// allow_models does not exempt it from allow_providers.
-	if len(e.allowPairs) > 0 && !e.match(e.allowPairs, pairKey) {
-		return decision.ExclusionNotInAllowlist, "allow_pairs", true
-	}
-	if len(e.allowModels) > 0 && !e.match(e.allowModels, candidate.ModelID) {
-		return decision.ExclusionNotInAllowlist, "allow_models", true
-	}
-	if len(e.allowProviders) > 0 && !e.match(e.allowProviders, candidate.ProviderKey) {
-		return decision.ExclusionNotInAllowlist, "allow_providers", true
-	}
-	return "", "", false
-}
-
-func (e *Engine) match(set map[string]struct{}, key string) bool {
-	_, ok := set[key]
-	return ok
-}
 
 // capabilityRejection applies the request-facing hard constraints. Each check
 // states one requirement, and none of them is satisfiable by another capability.

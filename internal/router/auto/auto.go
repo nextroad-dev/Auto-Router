@@ -39,6 +39,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -205,12 +206,23 @@ type JevCaller interface {
 // at startup, and this switch decides whether a decision may spend a call on it.
 // Turning it off must report "disabled", not "failure", because those are different
 // facts about a request.
+type FailoverPolicy struct {
+	Enabled                bool
+	MaxAttempts            int
+	RetryPreRequestFailure bool
+	RetryTimeout           bool
+	RetryStatusCodes       []int
+}
+
 type RuntimeSettings struct {
 	Engine            *policy.Engine
 	JevEnabled        bool
 	Jev               JevCaller
 	InputMode         jev.InputMode
-	FailoverEnabled   bool
+	Failover          FailoverPolicy
+	DefaultGroup      GroupName
+	LowConfidence     float64
+	HighConfidence    float64
 	DefaultPreference analyzer.Preference
 	GroupConfig       GroupConfig
 }
@@ -241,9 +253,12 @@ type Options struct {
 	DefaultPreference analyzer.Preference
 	// InputMode selects how much of the conversation reaches Jev.
 	InputMode jev.InputMode
-	// FailoverEnabled allows the single bounded retry. It is the static fallback
+	// Failover, DefaultGroup and confidence thresholds are the static values
 	// used when Settings is nil.
-	FailoverEnabled bool
+	Failover       FailoverPolicy
+	DefaultGroup   GroupName
+	LowConfidence  float64
+	HighConfidence float64
 	// Settings supplies the live values above. Nil means the static fields are used
 	// unchanged.
 	Settings Settings
@@ -262,7 +277,10 @@ type Router struct {
 	engine            *policy.Engine
 	defaultPreference analyzer.Preference
 	inputMode         jev.InputMode
-	failoverEnabled   bool
+	failover          FailoverPolicy
+	defaultGroup      GroupName
+	lowConfidence     float64
+	highConfidence    float64
 	settings          Settings
 	groupConfig       GroupConfig
 }
@@ -272,20 +290,51 @@ type Router struct {
 // administrator changes the policy while the request is in flight.
 func (r *Router) runtimeSnapshot() RuntimeSettings {
 	if r.settings != nil {
-		snapshot := r.settings.RuntimeSnapshot()
-		if snapshot.Engine == nil {
-			snapshot.Engine = r.engine
-		}
-		if !snapshot.DefaultPreference.Valid() {
-			snapshot.DefaultPreference = r.defaultPreference
-		}
-		if _, err := jev.ParseInputMode(string(snapshot.InputMode)); err != nil {
-			snapshot.InputMode = r.inputMode
-		}
-		snapshot.GroupConfig = cloneGroupConfig(snapshot.GroupConfig)
-		return snapshot
+		return r.normalizeRuntime(r.settings.RuntimeSnapshot())
 	}
-	return RuntimeSettings{Engine: r.engine, JevEnabled: r.jev != nil, Jev: r.jev, InputMode: r.inputMode, FailoverEnabled: r.failoverEnabled, DefaultPreference: r.defaultPreference, GroupConfig: cloneGroupConfig(r.groupConfig)}
+	return r.normalizeRuntime(RuntimeSettings{
+		Engine: r.engine, JevEnabled: r.jev != nil, Jev: r.jev, InputMode: r.inputMode,
+		Failover: r.failover, DefaultGroup: r.defaultGroup,
+		LowConfidence: r.lowConfidence, HighConfidence: r.highConfidence,
+		DefaultPreference: r.defaultPreference, GroupConfig: r.groupConfig,
+	})
+}
+
+func (r *Router) normalizeRuntime(snapshot RuntimeSettings) RuntimeSettings {
+	if snapshot.Engine == nil {
+		snapshot.Engine = r.engine
+	}
+	if !snapshot.DefaultPreference.Valid() {
+		snapshot.DefaultPreference = r.defaultPreference
+	}
+	if _, err := jev.ParseInputMode(string(snapshot.InputMode)); err != nil {
+		snapshot.InputMode = r.inputMode
+	}
+	if snapshot.Failover.MaxAttempts <= 0 {
+		snapshot.Failover = cloneFailoverPolicy(r.failover)
+	}
+	if snapshot.Failover.MaxAttempts > maxGroupMembers {
+		snapshot.Failover.MaxAttempts = maxGroupMembers
+	}
+	if snapshot.DefaultGroup != GroupSimple && snapshot.DefaultGroup != GroupMedium && snapshot.DefaultGroup != GroupComplex {
+		snapshot.DefaultGroup = r.defaultGroup
+	}
+	if !validConfidenceThresholds(snapshot.LowConfidence, snapshot.HighConfidence) {
+		snapshot.LowConfidence = r.lowConfidence
+		snapshot.HighConfidence = r.highConfidence
+		if !validConfidenceThresholds(snapshot.LowConfidence, snapshot.HighConfidence) {
+			defaults := policy.DefaultConfig()
+			snapshot.LowConfidence = defaults.LowConfidence
+			snapshot.HighConfidence = defaults.HighConfidence
+		}
+	}
+	snapshot.Failover = cloneFailoverPolicy(snapshot.Failover)
+	snapshot.GroupConfig = cloneGroupConfig(snapshot.GroupConfig)
+	return snapshot
+}
+
+func validConfidenceThresholds(low, high float64) bool {
+	return !math.IsNaN(low) && !math.IsInf(low, 0) && !math.IsNaN(high) && !math.IsInf(high, 0) && low >= 0 && low < high && high <= 1
 }
 
 // jevEnabled reports whether Jev may be called right now. A router without a live
@@ -310,6 +359,22 @@ func New(options Options) *Router {
 	if _, err := jev.ParseInputMode(string(inputMode)); err != nil {
 		inputMode = jev.InputModeRedacted
 	}
+	defaultGroup := options.DefaultGroup
+	if defaultGroup != GroupSimple && defaultGroup != GroupMedium && defaultGroup != GroupComplex {
+		defaultGroup = GroupMedium
+	}
+	failover := options.Failover
+	if failover.MaxAttempts == 0 {
+		failover.MaxAttempts = 2
+	}
+	if failover.MaxAttempts > maxGroupMembers {
+		failover.MaxAttempts = maxGroupMembers
+	}
+	lowConfidence, highConfidence := options.LowConfidence, options.HighConfidence
+	if !validConfidenceThresholds(lowConfidence, highConfidence) {
+		defaults := policy.DefaultConfig()
+		lowConfidence, highConfidence = defaults.LowConfidence, defaults.HighConfidence
+	}
 	return &Router{
 		catalog:           options.Catalog,
 		analyzer:          options.Analyzer,
@@ -317,7 +382,10 @@ func New(options Options) *Router {
 		engine:            options.Engine,
 		defaultPreference: preference,
 		inputMode:         inputMode,
-		failoverEnabled:   options.FailoverEnabled,
+		failover:          cloneFailoverPolicy(failover),
+		defaultGroup:      defaultGroup,
+		lowConfidence:     lowConfidence,
+		highConfidence:    highConfidence,
 		settings:          options.Settings,
 		groupConfig:       cloneGroupConfig(options.GroupConfig),
 	}
@@ -360,7 +428,7 @@ type Target struct {
 	// SelectionMode is the closed name of the rule that produced the selection:
 	// the policy origin (jev, blend, default_model, first_eligible).
 	SelectionMode string
-	// SelectedGroup is the validated Jev group, or medium on Jev failure.
+	// SelectedGroup is the accepted Jev group or configured default group.
 	SelectedGroup GroupName
 	// Decision is the complete policy decision: band, origin, confidence,
 	// exclusions, signals and evidence hash. It is what the routing log records.
@@ -373,8 +441,11 @@ type Target struct {
 	// selected target.
 	RoutingLatency time.Duration
 	// Attempts is how many upstream attempts the target accounts for. The first
-	// target is one; a failover target is two.
+	// target is one; a failover target increments it.
 	Attempts int
+	// MaxAttempts is the request-start limit copied from the runtime snapshot. The
+	// forwarding boundary uses it as an independent retry-loop guard.
+	MaxAttempts int
 	// JevTrace is the diagnostic trace of the single Jev call this decision made,
 	// or nil when no call was made. It carries identifiers, counts, durations and
 	// the normalized distribution only: there is no field for a prompt, a tool
@@ -409,30 +480,40 @@ type JevTrace struct {
 	// succeeded, and it is an identifier from the candidate list rather than a
 	// provider pair.
 	Selected string
-	// SelectedGroup records the choice without storing any prompt text.
+	// SelectedGroup is the group actually used for routing, including deterministic
+	// fallback when Jev is disabled, unavailable or below the confidence threshold.
 	SelectedGroup GroupName
-	// ConfidenceBand and FallbackReason mirror the decision the recommendation
-	// contributed to. They are filled in after the policy engine ran.
+	// RecommendedGroup is populated only when Jev successfully selected a group.
+	RecommendedGroup GroupName
+	// ConfidenceBand and FallbackReason describe the group-selection decision.
 	ConfidenceBand string
 	FallbackReason string
 	// EvidenceHash is the decision's evidence summary.
 	EvidenceHash string
 	// LatencyMS is how long the call took, nil when no call was made.
 	LatencyMS *int64
-	// CandidateModels lists the three group identifiers offered to Jev in fixed
-	// simple, medium, complex order; it contains no prompt rendering.
+	// CandidateGroups lists only groups with at least one hard-filtered member.
+	CandidateGroups []GroupName
+	GroupCount      int
+	// CandidateModels and ModelCount remain for backwards-compatible model-mode
+	// traces. Group routing leaves them empty; CandidateCount is always the number
+	// of hard-filtered provider/model pairs, independent of choice count.
 	CandidateModels []string
-	// ModelCount is the number of distinct logical models asked about, and
-	// CandidateCount is the number of eligible pair-level candidates those models
-	// were derived from.
-	ModelCount     int
-	CandidateCount int
+	ModelCount      int
+	CandidateCount  int
 	// Confidence is the recommendation confidence, nil when no recommendation was
 	// produced.
 	Confidence *float64
-	// Probabilities is the normalized distribution, ordered by descending
-	// probability with the model identifier ascending as the tie-break.
+	// Probabilities is the normalized model distribution for legacy model-mode traces.
 	Probabilities []ModelProbability
+	// GroupProbabilities is the normalized Jev distribution for group-mode traces.
+	GroupProbabilities []GroupProbability
+}
+
+// GroupProbability is one entry of a normalized group distribution.
+type GroupProbability struct {
+	Group       GroupName
+	Probability float64
 }
 
 // ModelProbability is one entry of the normalized distribution.
@@ -461,9 +542,8 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 	// same policy, Jev client, privacy mode and failover switch throughout.
 	runtime := r.runtimeSnapshot()
 	if request.Runtime != nil {
-		runtime = *request.Runtime
+		runtime = r.normalizeRuntime(*request.Runtime)
 	}
-	runtime.GroupConfig = cloneGroupConfig(runtime.GroupConfig)
 	engine := runtime.Engine
 	if engine == nil {
 		return Target{}, ErrRoutingUnavailable
@@ -493,9 +573,22 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 	if err != nil {
 		return Target{}, refusalFor(err)
 	}
+	groupCandidatesByName := make(map[GroupName][]decision.Candidate, 3)
+	groupChoices := make([]GroupName, 0, 3)
+	for _, name := range []GroupName{GroupSimple, GroupMedium, GroupComplex} {
+		members := orderedGroupCandidates(runtime.GroupConfig, name, eligible)
+		if len(members) == 0 {
+			continue
+		}
+		groupCandidatesByName[name] = members
+		groupChoices = append(groupChoices, name)
+	}
+	if len(groupChoices) == 0 {
+		return Target{}, refusalFor(policy.ErrNoEligibleCandidate)
+	}
 	envelopes := modelEnvelopes(eligible)
-	group, trace := r.recommendGroup(ctx, features, view, envelopes, len(eligible), runtime)
-	groupCandidates := orderedGroupCandidates(runtime.GroupConfig, group, eligible)
+	group, trace := r.recommendGroup(ctx, features, view, envelopes, groupChoices, len(eligible), runtime)
+	groupCandidates := groupCandidatesByName[group]
 	if len(groupCandidates) == 0 {
 		return Target{}, refusalFor(policy.ErrNoEligibleCandidate)
 	}
@@ -515,11 +608,8 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 		// call, so a refusal here repeats the pre-check's reason.
 		return Target{}, refusalFor(err)
 	}
-	// The trace is completed once the decision exists: the band, the fallback
-	// reason and the evidence hash describe the decision the recommendation
-	// contributed to, and they are exactly what the routing log correlates with.
-	trace.ConfidenceBand = string(outcome.Decision.ConfidenceBand)
-	trace.FallbackReason = string(outcome.Decision.Fallback.Reason)
+	// The selected group's recommendation metadata is recorded separately from
+	// the policy engine's in-group pair explanation.
 	trace.EvidenceHash = outcome.Decision.EvidenceHash
 	return Target{
 		ProviderKey:    outcome.Provider,
@@ -533,6 +623,7 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 		JevLatency:     jevLatency,
 		RoutingLatency: time.Since(started),
 		Attempts:       1,
+		MaxAttempts:    runtime.Failover.MaxAttempts,
 		JevTrace:       trace,
 		state: &routeState{
 			features:        features,
@@ -545,15 +636,18 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 	}, nil
 }
 
-// Failover resolves the destination for one bounded additional upstream attempt
-// after cause failed. It reports false when no further attempt may be made, and
-// the caller then reports the failure it already has.
-//
-// The rules are fixed: only a failure known to precede delivery may advance to
-// the next configured pair, and only within the selected group. Timeouts,
-// cancellations and failures after response headers never trigger a retry. The
-// analyzer and Jev are not called again.
-func (r *Router) Failover(ctx context.Context, previous Target, cause error) (Target, bool) {
+// AttemptFailure describes one failed upstream try. Exactly one of Cause or
+// StatusCode is normally populated; status-based retries are always opt-in because
+// the provider has already received and answered the request.
+type AttemptFailure struct {
+	Cause      error
+	StatusCode int
+}
+
+// Failover resolves the destination for the next configured pair in the selected
+// group. It reports false when the captured policy disallows another attempt.
+// Analysis and Jev are never called again.
+func (r *Router) Failover(ctx context.Context, previous Target, failure AttemptFailure) (Target, bool) {
 	if r == nil || previous.state == nil {
 		return Target{}, false
 	}
@@ -562,13 +656,10 @@ func (r *Router) Failover(ctx context.Context, previous Target, cause error) (Ta
 	if engine == nil {
 		return Target{}, false
 	}
-	if !state.runtime.FailoverEnabled || previous.Attempts >= maxGroupMembers {
+	if !state.runtime.Failover.Enabled || previous.Attempts >= state.runtime.Failover.MaxAttempts {
 		return Target{}, false
 	}
-	if ctx.Err() != nil {
-		return Target{}, false
-	}
-	if !isPreRequestFailure(cause) {
+	if ctx.Err() != nil || !retryAllowed(state.runtime.Failover, failure) {
 		return Target{}, false
 	}
 	remaining := withoutPair(state.groupCandidates, previous.ProviderKey, previous.Model)
@@ -597,6 +688,7 @@ func (r *Router) Failover(ctx context.Context, previous Target, cause error) (Ta
 		JevLatency:     previous.JevLatency,
 		RoutingLatency: previous.RoutingLatency,
 		Attempts:       previous.Attempts + 1,
+		MaxAttempts:    previous.MaxAttempts,
 		// The trace describes the one Jev call, which a failover does not repeat.
 		// It is carried through unchanged except for the fields that describe the
 		// retried decision rather than the call.
@@ -612,19 +704,41 @@ func (r *Router) Failover(ctx context.Context, previous Target, cause error) (Ta
 	}, true
 }
 
-// isPreRequestFailure reports whether a failed attempt may be repeated. Three
-// facts must hold at once: the adapter must be certain the request never reached
-// the provider, the failure must not be a timeout (a slow upstream may have
-// accepted the request before its header deadline expired), and it must not be a
-// cancellation (the client is gone, so a retry would work for nobody).
-func isPreRequestFailure(cause error) bool {
-	if cause == nil {
+func retryAllowed(policy FailoverPolicy, failure AttemptFailure) bool {
+	if failure.StatusCode != 0 {
+		if !retryableStatus(failure.StatusCode) {
+			return false
+		}
+		for _, status := range policy.RetryStatusCodes {
+			if status == failure.StatusCode {
+				return true
+			}
+		}
 		return false
 	}
-	if errors.Is(cause, providers.ErrCanceled) || errors.Is(cause, providers.ErrUpstreamTimeout) {
+	cause := failure.Cause
+	if cause == nil || errors.Is(cause, providers.ErrCanceled) {
 		return false
 	}
-	return errors.Is(cause, providers.ErrPreRequestFailure)
+	// A pre-request marker is stronger evidence than a timeout classification:
+	// connect timeouts can be safely retried because no provider connection was
+	// established. Other timeouts remain opt-in due to possible duplicate work.
+	if errors.Is(cause, providers.ErrPreRequestFailure) {
+		return policy.RetryPreRequestFailure
+	}
+	if errors.Is(cause, providers.ErrUpstreamTimeout) {
+		return policy.RetryTimeout
+	}
+	return false
+}
+
+func retryableStatus(status int) bool {
+	switch status {
+	case 408, 425, 429, 500, 502, 503, 504:
+		return true
+	default:
+		return false
+	}
 }
 
 // withoutPair copies a candidate list without one provider/model pair, keeping
@@ -660,36 +774,53 @@ func (r *Router) input(request Request, runtime RuntimeSettings) analyzer.Input 
 	return input
 }
 
-// recommendGroup asks Jev to classify the prompt into one of the three closed
-// group names. The trace contains only the choice, counts and timing metadata.
-func (r *Router) recommendGroup(ctx context.Context, features analyzer.Features, view analyzer.View, envelopes []modelEnvelope, eligibleCount int, runtime RuntimeSettings) (GroupName, *JevTrace) {
+// recommendGroup asks Jev to choose among groups that currently contain at least
+// one hard-filtered provider/model pair. The trace records group options and pair
+// counts separately because they are different dimensions.
+func (r *Router) recommendGroup(ctx context.Context, features analyzer.Features, view analyzer.View, envelopes []modelEnvelope, choices []GroupName, eligibleCount int, runtime RuntimeSettings) (GroupName, *JevTrace) {
 	trace := &JevTrace{
 		Status:          JevStatusDisabled,
 		InputMode:       string(runtime.InputMode),
-		CandidateModels: []string{string(GroupSimple), string(GroupMedium), string(GroupComplex)},
-		ModelCount:      3,
+		CandidateGroups: append([]GroupName(nil), choices...),
+		GroupCount:      len(choices),
 		CandidateCount:  eligibleCount,
-		SelectedGroup:   GroupMedium,
+	}
+	fallback := func(reason string) GroupName {
+		trace.FallbackReason = reason
+		trace.SelectedGroup = runtime.DefaultGroup
+		return runtime.DefaultGroup
 	}
 	if !runtime.JevEnabled || runtime.Jev == nil {
-		return GroupMedium, trace
+		trace.FallbackReason = string(decision.ReasonNotRequested)
+		return fallback(trace.FallbackReason), trace
+	}
+	if len(choices) == 1 {
+		trace.Status = JevStatusSkippedSingleModel
+		trace.FallbackReason = string(decision.ReasonNotRequested)
+		trace.SelectedGroup = choices[0]
+		return choices[0], trace
 	}
 	built, ok := r.buildPrompt(features, view, envelopes, runtime.InputMode)
 	if !ok {
 		trace.Status = JevStatusSkippedInsufficientEvidence
-		return GroupMedium, trace
+		trace.FallbackReason = string(decision.ReasonNotRequested)
+		return fallback(trace.FallbackReason), trace
+	}
+	candidates := make([]jev.Candidate, 0, len(choices))
+	for _, group := range choices {
+		description := "Choose for a request requiring moderate reasoning or multiple steps."
+		switch group {
+		case GroupSimple:
+			description = "Choose for a straightforward request with limited reasoning."
+		case GroupComplex:
+			description = "Choose for a difficult request requiring extensive reasoning or complex work."
+		}
+		candidates = append(candidates, jev.Candidate{Model: string(group), ContextWindow: 1000000, Description: description})
 	}
 	start := time.Now()
 	result, err := runtime.Jev.Route(ctx, jev.Request{
-		Protocol: features.Protocol,
-		Candidates: []jev.Candidate{
-			{Model: string(GroupSimple), ContextWindow: 1000000, Description: "Choose for a straightforward request with limited reasoning."},
-			{Model: string(GroupMedium), ContextWindow: 1000000, Description: "Choose for a request requiring moderate reasoning or multiple steps."},
-			{Model: string(GroupComplex), ContextWindow: 1000000, Description: "Choose for a difficult request requiring extensive reasoning or complex work."},
-		},
-		Messages:     built.messages,
-		SystemPrompt: built.system,
-		Tools:        built.tools,
+		Protocol: features.Protocol, Candidates: candidates,
+		Messages: built.messages, SystemPrompt: built.system, Tools: built.tools,
 	})
 	latency := time.Since(start).Milliseconds()
 	trace.LatencyMS = &latency
@@ -701,21 +832,76 @@ func (r *Router) recommendGroup(ctx context.Context, features analyzer.Features,
 		}
 		trace.Status = JevStatusFailurePrefix + string(failure)
 		trace.FailureReason = string(failure)
-		return GroupMedium, trace
+		trace.FallbackReason = string(failure)
+		return fallback(trace.FallbackReason), trace
 	}
 	selected := GroupName(result.Selected)
-	if selected != GroupSimple && selected != GroupMedium && selected != GroupComplex {
+	if !containsGroup(choices, selected) {
 		trace.Status = JevStatusFailurePrefix + string(decision.ReasonJevInvalidResult)
 		trace.FailureReason = string(decision.ReasonJevInvalidResult)
-		return GroupMedium, trace
+		trace.FallbackReason = string(decision.ReasonJevInvalidResult)
+		return fallback(trace.FallbackReason), trace
 	}
 	trace.Status = JevStatusOK
-	trace.Selected = result.Selected
+	trace.RecommendedGroup = selected
+	trace.Confidence = float64Pointer(result.Confidence)
+	trace.ConfidenceBand = groupConfidenceBand(result.Confidence, runtime.LowConfidence, runtime.HighConfidence)
+	trace.GroupProbabilities = sortedGroupProbabilities(result.Probabilities)
+	if result.Confidence < runtime.LowConfidence {
+		trace.FallbackReason = string(decision.ReasonConfidenceLow)
+		return fallback(trace.FallbackReason), trace
+	}
+	trace.FallbackReason = string(decision.ReasonNone)
 	trace.SelectedGroup = selected
-	confidence := result.Confidence
-	trace.Confidence = &confidence
-	trace.Probabilities = sortedProbabilities(result.Probabilities)
 	return selected, trace
+}
+
+func containsGroup(groups []GroupName, candidate GroupName) bool {
+	for _, group := range groups {
+		if group == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func groupConfidenceBand(confidence, low, high float64) string {
+	if confidence >= high {
+		return string(decision.BandHigh)
+	}
+	if confidence >= low {
+		return string(decision.BandMedium)
+	}
+	return string(decision.BandLow)
+}
+
+func float64Pointer(value float64) *float64 { return &value }
+
+func sortedGroupProbabilities(entries []jev.CandidateProbability) []GroupProbability {
+	sorted := make([]GroupProbability, 0, len(entries))
+	for _, entry := range entries {
+		sorted = append(sorted, GroupProbability{Group: GroupName(entry.Model), Probability: entry.Probability})
+	}
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Probability != sorted[j].Probability {
+			return sorted[i].Probability > sorted[j].Probability
+		}
+		return groupRank(sorted[i].Group) < groupRank(sorted[j].Group)
+	})
+	return sorted
+}
+
+func groupRank(group GroupName) int {
+	switch group {
+	case GroupSimple:
+		return 0
+	case GroupMedium:
+		return 1
+	case GroupComplex:
+		return 2
+	default:
+		return maxGroupMembers + 1
+	}
 }
 
 // recommend produces the policy engine's recommendation input. It makes at most
@@ -819,8 +1005,6 @@ func traceForDecision(trace *JevTrace, outcome decision.Decision) *JevTrace {
 		return nil
 	}
 	updated := *trace
-	updated.ConfidenceBand = string(outcome.ConfidenceBand)
-	updated.FallbackReason = string(outcome.Fallback.Reason)
 	updated.EvidenceHash = outcome.EvidenceHash
 	return &updated
 }

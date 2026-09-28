@@ -15,9 +15,9 @@ type migration struct {
 	SQL     string
 }
 
-// This v8 baseline is fresh-database-only: startup refuses earlier schema
-// versions before Migrate runs. The journal still checks every applied
-// checksum, so subsequent schema changes must be append-only.
+// The migration lineage is append-only. The journal checks every applied
+// checksum, so an existing migration is never rewritten to make a later schema
+// fit; follow-up schema changes must add a new migration at the end.
 var businessMigrations = []migration{
 	{
 		Version: 1,
@@ -289,6 +289,37 @@ var businessMigrations = []migration{
 			CREATE INDEX routing_attempts_started_at_idx ON routing_attempts(started_at, id);
 			CREATE INDEX routing_attempts_request_id_idx ON routing_attempts(request_id, attempt_index);
 			CREATE INDEX routing_attempts_provider_model_idx ON routing_attempts(provider_key, model_id, completed_at);
+		`,
+	},
+	{
+		Version: 9,
+		Name:    "persist_deleted_provider_model_exclusions",
+		SQL: `
+			CREATE TABLE deleted_provider_models (
+				provider_key TEXT NOT NULL,
+				model_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (provider_key, model_id)
+			) STRICT;
+		`,
+	},
+	{
+		Version: 10,
+		Name:    "persist_group_level_jev_traces",
+		SQL: `
+			ALTER TABLE routing_jev_calls ADD COLUMN candidate_groups_json TEXT NOT NULL DEFAULT '[]';
+			ALTER TABLE routing_jev_calls ADD COLUMN group_count INTEGER NOT NULL DEFAULT 0 CHECK (group_count >= 0);
+			ALTER TABLE routing_jev_calls ADD COLUMN recommended_group TEXT CHECK (recommended_group IS NULL OR recommended_group IN ('simple', 'medium', 'complex'));
+			ALTER TABLE routing_jev_calls ADD COLUMN selected_group TEXT CHECK (selected_group IS NULL OR selected_group IN ('simple', 'medium', 'complex'));
+			ALTER TABLE routing_jev_calls ADD COLUMN group_distribution_json TEXT NOT NULL DEFAULT '[]';
+		`,
+	},
+	{
+		Version: 11,
+		Name:    "remove_model_and_binding_priorities",
+		SQL: `
+			ALTER TABLE models DROP COLUMN priority;
+			ALTER TABLE provider_models DROP COLUMN priority;
 		`,
 	},
 }

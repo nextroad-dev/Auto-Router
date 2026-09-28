@@ -83,8 +83,9 @@ func (l *RoutingLog) Insert(ctx context.Context, events []logging.Event) error {
 	}
 	trace, err := tx.PrepareContext(ctx, `INSERT INTO routing_jev_calls
 		(request_id, started_at, status, failure_reason, input_mode, latency_ms, candidate_count, candidates_json,
-		 model_count, selected_model, confidence, confidence_band, fallback_reason, distribution_json, evidence_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 model_count, selected_model, confidence, confidence_band, fallback_reason, distribution_json, evidence_hash,
+		 candidate_groups_json, group_count, recommended_group, selected_group, group_distribution_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare routing trace insert: %w", err)
 	}
@@ -355,19 +356,24 @@ type storedRow struct {
 
 // storedTrace is the trace part of an event in column order.
 type storedTrace struct {
-	status         string
-	failureReason  string
-	inputMode      string
-	latencyMS      *int64
-	candidateCount int
-	models         []string
-	modelCount     int
-	selected       string
-	confidence     *float64
-	confidenceBand string
-	fallbackReason string
-	probabilities  []logging.ModelProbability
-	evidenceHash   string
+	status             string
+	failureReason      string
+	inputMode          string
+	latencyMS          *int64
+	candidateCount     int
+	models             []string
+	modelCount         int
+	selected           string
+	confidence         *float64
+	confidenceBand     string
+	fallbackReason     string
+	probabilities      []logging.ModelProbability
+	evidenceHash       string
+	candidateGroups    []string
+	groupCount         int
+	recommendedGroup   string
+	selectedGroup      string
+	groupProbabilities []logging.GroupProbability
 }
 
 // values renders the trace row, replacing an oversized diagnostic field with an
@@ -385,10 +391,21 @@ func (t *storedTrace) values(requestID, startedAt string, logger *slog.Logger) [
 		rejectDiagnosticField(logger, requestID, "distribution_json")
 		distribution = "[]"
 	}
+	groups, ok := logging.EncodeCandidateGroups(t.candidateGroups)
+	if !ok {
+		rejectDiagnosticField(logger, requestID, "candidate_groups_json")
+		groups = "[]"
+	}
+	groupDistribution, ok := logging.EncodeGroupDistribution(t.groupProbabilities)
+	if !ok {
+		rejectDiagnosticField(logger, requestID, "group_distribution_json")
+		groupDistribution = "[]"
+	}
 	return []any{
 		requestID, startedAt, t.status, nullString(t.failureReason), t.inputMode, nullInt64(t.latencyMS),
 		t.candidateCount, candidates, t.modelCount, nullString(t.selected), nullFloat64(t.confidence),
 		nullString(t.confidenceBand), nullString(t.fallbackReason), distribution, nullString(t.evidenceHash),
+		groups, t.groupCount, nullString(t.recommendedGroup), nullString(t.selectedGroup), groupDistribution,
 	}
 }
 
@@ -447,19 +464,24 @@ func newStoredRow(event logging.Event) storedRow {
 	}
 	if event.Jev != nil {
 		row.trace = &storedTrace{
-			status:         event.Jev.Status,
-			failureReason:  event.Jev.FailureReason,
-			inputMode:      event.Jev.InputMode,
-			latencyMS:      event.Jev.LatencyMS,
-			candidateCount: event.Jev.CandidateCount,
-			models:         event.Jev.CandidateModels,
-			modelCount:     event.Jev.ModelCount,
-			selected:       event.Jev.Selected,
-			confidence:     event.Jev.Confidence,
-			confidenceBand: event.Jev.ConfidenceBand,
-			fallbackReason: event.Jev.FallbackReason,
-			probabilities:  event.Jev.Probabilities,
-			evidenceHash:   event.Jev.EvidenceHash,
+			status:             event.Jev.Status,
+			failureReason:      event.Jev.FailureReason,
+			inputMode:          event.Jev.InputMode,
+			latencyMS:          event.Jev.LatencyMS,
+			candidateCount:     event.Jev.CandidateCount,
+			models:             event.Jev.CandidateModels,
+			modelCount:         event.Jev.ModelCount,
+			selected:           event.Jev.Selected,
+			confidence:         event.Jev.Confidence,
+			confidenceBand:     event.Jev.ConfidenceBand,
+			fallbackReason:     event.Jev.FallbackReason,
+			probabilities:      event.Jev.Probabilities,
+			evidenceHash:       event.Jev.EvidenceHash,
+			candidateGroups:    event.Jev.CandidateGroups,
+			groupCount:         event.Jev.GroupCount,
+			recommendedGroup:   event.Jev.RecommendedGroup,
+			selectedGroup:      event.Jev.SelectedGroup,
+			groupProbabilities: event.Jev.GroupProbabilities,
 		}
 	}
 	return row
@@ -642,24 +664,30 @@ func scanStoredEvent(row scanner) (StoredEvent, error) {
 // a selection rule.
 func (l *RoutingLog) selectTraceFor(ctx context.Context, requestID string) (*logging.JevTrace, *int64, error) {
 	var (
-		id             int64
-		trace          logging.JevTrace
-		failureReason  sql.NullString
-		latencyMS      sql.NullInt64
-		candidatesJSON string
-		selected       sql.NullString
-		confidence     sql.NullFloat64
-		band           sql.NullString
-		fallbackReason sql.NullString
-		distribution   string
-		evidenceHash   sql.NullString
+		id                  int64
+		trace               logging.JevTrace
+		failureReason       sql.NullString
+		latencyMS           sql.NullInt64
+		candidatesJSON      string
+		selected            sql.NullString
+		confidence          sql.NullFloat64
+		band                sql.NullString
+		fallbackReason      sql.NullString
+		distribution        string
+		evidenceHash        sql.NullString
+		candidateGroupsJSON string
+		recommendedGroup    sql.NullString
+		selectedGroup       sql.NullString
+		groupDistribution   string
 	)
 	err := l.db.QueryRowContext(ctx, `SELECT id, status, failure_reason, input_mode, latency_ms, candidate_count,
 		candidates_json, model_count, selected_model, confidence, confidence_band, fallback_reason,
-		distribution_json, evidence_hash FROM routing_jev_calls WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID).Scan(
+		distribution_json, evidence_hash, candidate_groups_json, group_count, recommended_group,
+		selected_group, group_distribution_json FROM routing_jev_calls WHERE request_id = ? ORDER BY id DESC LIMIT 1`, requestID).Scan(
 		&id, &trace.Status, &failureReason, &trace.InputMode, &latencyMS, &trace.CandidateCount,
 		&candidatesJSON, &trace.ModelCount, &selected, &confidence, &band, &fallbackReason,
-		&distribution, &evidenceHash)
+		&distribution, &evidenceHash, &candidateGroupsJSON, &trace.GroupCount, &recommendedGroup,
+		&selectedGroup, &groupDistribution)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, nil
 	}
@@ -669,6 +697,8 @@ func (l *RoutingLog) selectTraceFor(ctx context.Context, requestID string) (*log
 	trace.FailureReason = failureReason.String
 	trace.LatencyMS = optionalInt64(latencyMS)
 	trace.Selected = selected.String
+	trace.RecommendedGroup = recommendedGroup.String
+	trace.SelectedGroup = selectedGroup.String
 	if confidence.Valid {
 		value := confidence.Float64
 		trace.Confidence = &value
@@ -682,6 +712,12 @@ func (l *RoutingLog) selectTraceFor(ctx context.Context, requestID string) (*log
 	if trace.CandidateModels == nil {
 		trace.CandidateModels = []string{}
 	}
+	if err := json.Unmarshal([]byte(candidateGroupsJSON), &trace.CandidateGroups); err != nil {
+		return nil, nil, fmt.Errorf("decode stored candidate groups: %w", err)
+	}
+	if trace.CandidateGroups == nil {
+		trace.CandidateGroups = []string{}
+	}
 	var probabilities []struct {
 		Model       string  `json:"model"`
 		Probability float64 `json:"probability"`
@@ -693,6 +729,20 @@ func (l *RoutingLog) selectTraceFor(ctx context.Context, requestID string) (*log
 	for _, probability := range probabilities {
 		trace.Probabilities = append(trace.Probabilities, logging.ModelProbability{
 			Model:       probability.Model,
+			Probability: probability.Probability,
+		})
+	}
+	var groupProbabilities []struct {
+		Group       string  `json:"group"`
+		Probability float64 `json:"probability"`
+	}
+	if err := json.Unmarshal([]byte(groupDistribution), &groupProbabilities); err != nil {
+		return nil, nil, fmt.Errorf("decode stored group distribution: %w", err)
+	}
+	trace.GroupProbabilities = make([]logging.GroupProbability, 0, len(groupProbabilities))
+	for _, probability := range groupProbabilities {
+		trace.GroupProbabilities = append(trace.GroupProbabilities, logging.GroupProbability{
+			Group:       probability.Group,
 			Probability: probability.Probability,
 		})
 	}

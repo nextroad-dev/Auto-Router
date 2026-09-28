@@ -1,10 +1,39 @@
 @import "tailwindcss";
-@import "@nuxt/ui";
-@import "./theme/jude.css";
+
+/*
+ * Base layer, page shell and shared utilities.
+ * Built on Jude-Frontweb foundations (Soft Product Design System).
+ */
+@theme {
+  --breakpoint-md: 640px;
+  --breakpoint-lg: 960px;
+  --breakpoint-xl: 1280px;
+  --breakpoint-2xl: 1536px;
+}
 
 @theme inline {
   --font-sans: var(--jf-font-sans);
   --font-mono: var(--jf-font-mono);
+
+  --color-canvas: var(--jf-canvas);
+  --color-surface: var(--jf-surface);
+  --color-tonal: var(--jf-tonal);
+  --color-tonal-hover: var(--jf-tonal-hover);
+  --color-tonal-selected: var(--jf-tonal-selected);
+  --color-ink: var(--jf-text);
+  --color-ink-secondary: var(--jf-text-secondary);
+  --color-ink-decorative: var(--jf-decorative-muted);
+  --color-line: var(--jf-border-subtle);
+  --color-control: var(--jf-border-control);
+  --color-primary: var(--jf-primary);
+  --color-success: var(--jf-success-text);
+  --color-warning: var(--jf-warning-text);
+  --color-danger: var(--jf-danger-text);
+  --color-info: var(--jf-info-text);
+  --color-success-bg: var(--jf-success-bg);
+  --color-warning-bg: var(--jf-warning-bg);
+  --color-danger-bg: var(--jf-danger-bg);
+  --color-info-bg: var(--jf-info-bg);
 }
 
 :root {
@@ -12,12 +41,7 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  color-scheme: light;
-}
-
-:root.dark,
-.dark {
-  color-scheme: dark;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 html {
@@ -31,11 +55,11 @@ body {
   min-height: 100vh;
   margin: 0;
   background: var(--jf-canvas);
-  color: var(--jf-ink);
+  color: var(--jf-text);
   font-family: var(--jf-font-sans);
-  font-size: var(--jf-body-size);
-  font-weight: var(--jf-weight-normal);
-  line-height: var(--jf-body-line);
+  font-size: var(--jf-compact-size);
+  font-weight: var(--jf-body-weight);
+  line-height: var(--jf-compact-leading);
   font-variant-numeric: tabular-nums;
 }
 
@@ -47,78 +71,329 @@ select {
 }
 
 h1,
+.jf-page-title {
+  margin: 0;
+  font-size: var(--jf-page-title-size);
+  line-height: var(--jf-page-title-leading);
+  font-weight: var(--jf-heading-weight);
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
 h2,
-h3 {
-  font-weight: var(--jf-weight-medium);
-  line-height: var(--jf-title-line);
-  letter-spacing: -0.01em;
+.jf-section-title {
+  margin: 0;
+  font-size: var(--jf-section-title-size);
+  line-height: var(--jf-section-title-leading);
+  font-weight: var(--jf-heading-weight);
+  letter-spacing: normal;
+  text-wrap: balance;
+}
+
+h3,
+.jf-subsection-title {
+  margin: 0;
+  font-size: var(--jf-subsection-size);
+  line-height: var(--jf-subsection-leading);
+  font-weight: var(--jf-emphasis-weight);
+  letter-spacing: normal;
+  text-wrap: balance;
+}
+
+h4,
+.jf-module-title {
+  margin: 0;
+  font-size: var(--jf-compact-size);
+  line-height: 1.4;
+  font-weight: var(--jf-emphasis-weight);
+  letter-spacing: normal;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
 }
 
 code,
 kbd,
 samp,
-pre,
-.font-mono {
+pre {
   font-family: var(--jf-font-mono);
 }
 
-/* ——— Shell ——— */
+/* ——— Type ramp ——— */
+.jf-display {
+  font-size: var(--jf-display-size);
+  line-height: var(--jf-display-leading);
+  letter-spacing: var(--jf-display-tracking);
+  font-weight: var(--jf-heading-weight);
+  line-break: strict;
+  text-wrap: balance;
+}
+
+.jf-body {
+  font-size: var(--jf-compact-size);
+  line-height: var(--jf-compact-leading);
+}
+
+.jf-caption {
+  font-size: var(--jf-caption-size);
+  line-height: var(--jf-caption-leading);
+}
+
+.jf-overline {
+  font-size: var(--jf-overline-size);
+  line-height: var(--jf-overline-leading);
+  font-weight: var(--jf-emphasis-weight);
+  letter-spacing: var(--jf-overline-tracking);
+}
+
+.jf-metric {
+  font-size: var(--jf-page-title-size);
+  line-height: var(--jf-page-title-leading);
+  font-weight: var(--jf-heading-weight);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ——— Text utilities ——— */
+.jf-nowrap {
+  white-space: nowrap;
+}
+
+.jf-balance {
+  text-wrap: balance;
+}
+
+.jf-pretty {
+  text-wrap: pretty;
+}
+
+.jf-cjk-display {
+  line-break: strict;
+}
+
+.jf-anywhere {
+  overflow-wrap: anywhere;
+}
+
+.jf-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jf-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ——— Layout helpers ——— */
+.jf-stack {
+  display: grid;
+  gap: var(--jf-space-8);
+  align-content: start;
+}
+
+.jf-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--jf-space-3);
+}
+
+.jf-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--jf-space-2);
+}
+
+.jf-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--jf-space-3);
+}
+
+.jf-scroll-x {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.jf-divider {
+  height: 1px;
+  margin: var(--jf-space-8) 0;
+  border: 0;
+  background: var(--jf-border-subtle);
+}
+
+/* Focus indicator */
+:where(a, button, input, select, textarea, [tabindex], [role]):focus-visible {
+  outline: var(--jf-border-width-focus) solid var(--jf-border-focus);
+  outline-offset: 2px;
+}
+
+/* ——— Motion Keyframes ——— */
+@keyframes jf-fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes jf-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes jf-fade-in-scale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes jf-slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes jf-slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes jf-slide-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes jf-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes jf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes jf-pulse-tonal {
+  0%,
+  100% {
+    background-color: var(--jf-tonal);
+  }
+  50% {
+    background-color: var(--jf-tonal-selected);
+  }
+}
+
+/* ——— Dashboard Shell ——— */
 .dashboard-shell {
   background: var(--jf-canvas);
-  color: var(--jf-ink);
+  color: var(--jf-text);
+  min-height: 100vh;
 }
 
 .dashboard-sidebar {
   position: fixed;
   inset: 0 auto 0 0;
-  z-index: 50;
+  z-index: var(--jf-z-sticky);
   display: flex;
   width: var(--jf-sidebar-width);
   flex-direction: column;
-  border-right: 1px solid var(--jf-line);
+  border-right: 1px solid var(--jf-border-subtle);
   background: var(--jf-surface);
   padding: 0 var(--jf-space-4);
   transform: translateX(-100%);
-  transition: transform var(--jf-duration-base) var(--jf-ease);
+  transition:
+    transform var(--jf-duration-overlay) var(--jf-ease-out),
+    width var(--jf-duration-normal) var(--jf-ease);
 }
 
 .dashboard-sidebar-open {
+  z-index: var(--jf-z-modal);
   transform: translateX(0);
+  box-shadow: var(--jf-shadow-drawer);
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 960px) {
   .dashboard-sidebar {
-    z-index: 20;
     transform: translateX(0);
   }
   .dashboard-main {
     margin-left: var(--jf-sidebar-width);
+    transition: margin-left var(--jf-duration-normal) var(--jf-ease);
   }
 }
 
 .sidebar-brand {
   display: flex;
-  height: var(--jf-topbar-height);
+  height: var(--jf-header-height);
   flex: none;
   align-items: center;
-  justify-content: flex-end;
-  border-bottom: 1px solid var(--jf-line);
+  justify-content: space-between;
+  border-bottom: 1px solid var(--jf-border-subtle);
+  padding: 0 var(--jf-space-2) 0 var(--jf-space-3);
 }
 
-@media (min-width: 1024px) {
+.sidebar-brand-title {
+  font-size: 1.125rem;
+  font-weight: var(--jf-emphasis-weight);
+  color: var(--jf-text);
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+@media (min-width: 960px) {
   .sidebar-brand {
+    justify-content: flex-start;
+  }
+  .sidebar-brand-close {
     display: none;
   }
 }
 
+/* Sidebar section header: 16px 500, strictly larger than 14px navigation subitems */
 .sidebar-section-label {
-  padding: var(--jf-space-5) 10px var(--jf-space-2);
-  color: var(--jf-ink-3);
-  font-size: 11px;
-  font-weight: var(--jf-weight-medium);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  padding: var(--jf-space-5) var(--jf-space-3) var(--jf-space-2);
+  font-size: 1rem;
+  font-weight: var(--jf-emphasis-weight);
   line-height: 1.4;
+  color: var(--jf-text);
+  letter-spacing: normal;
 }
 
 .sidebar-nav {
@@ -129,23 +404,28 @@ pre,
 .sidebar-link {
   position: relative;
   display: flex;
-  min-height: 40px;
+  min-height: var(--jf-control-md);
   align-items: center;
-  gap: 11px;
-  border-radius: var(--jf-radius-sm);
-  padding: 0 11px 0 14px;
-  color: var(--jf-ink-2);
-  font-size: 13px;
-  font-weight: var(--jf-weight-normal);
+  gap: var(--jf-space-3);
+  border-radius: var(--jf-radius-control);
+  padding: 0 var(--jf-space-3);
+  color: var(--jf-text-secondary);
+  font-weight: var(--jf-body-weight);
   text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
   transition:
     background var(--jf-duration-fast) var(--jf-ease),
     color var(--jf-duration-fast) var(--jf-ease);
 }
 
 .sidebar-link:hover {
-  background: var(--jf-surface-2);
-  color: var(--jf-ink);
+  background: var(--jf-tonal);
+  color: var(--jf-text);
+}
+
+.sidebar-link:active {
+  background: var(--jf-tonal-active);
 }
 
 .sidebar-link::before {
@@ -155,37 +435,71 @@ pre,
   top: 8px;
   bottom: 8px;
   width: 3px;
-  border-radius: var(--jf-radius-full);
+  border-radius: var(--jf-radius-pill);
   background: transparent;
   transition: background var(--jf-duration-fast) var(--jf-ease);
 }
 
 .sidebar-link-active {
-  background: var(--jf-surface-2);
-  color: var(--jf-ink);
-  font-weight: var(--jf-weight-medium);
+  background: var(--jf-tonal-selected);
+  color: var(--jf-text);
+  font-weight: var(--jf-emphasis-weight);
 }
 
 .sidebar-link-active::before {
   background: var(--jf-primary);
 }
 
+.sidebar-link-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sidebar-bottom {
   margin-top: auto;
   padding: var(--jf-space-4) 0 var(--jf-space-5);
-  border-top: 1px solid var(--jf-line);
+  border-top: 1px solid var(--jf-border-subtle);
 }
 
-.account-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 5px;
+/* Collapsed rail (64px) */
+@media (min-width: 960px) {
+  .dashboard-sidebar-collapsed {
+    width: var(--jf-sidebar-collapsed);
+    padding: 0 var(--jf-space-2);
+  }
+
+  .dashboard-sidebar-collapsed .sidebar-brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .dashboard-sidebar-collapsed .sidebar-brand-title,
+  .dashboard-sidebar-collapsed .sidebar-section-label,
+  .dashboard-sidebar-collapsed .sidebar-link-label {
+    display: none;
+  }
+
+  .dashboard-sidebar-collapsed .sidebar-link {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .dashboard-sidebar-collapsed .sidebar-bottom {
+    padding-inline: 0;
+  }
+
+
+  .dashboard-main-collapsed {
+    margin-left: var(--jf-sidebar-collapsed);
+  }
 }
 
-/* Compat alias: pages use Nuxt UI `text-muted`; keep it mapped to Jude ink-2 */
-.text-muted {
-  color: var(--jf-ink-2);
+.dashboard-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--jf-z-modal) - 1);
+  background: rgb(0 0 0 / var(--jf-opacity-overlay));
 }
 
 .dashboard-main {
@@ -196,103 +510,58 @@ pre,
 .dashboard-topbar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--jf-z-sticky);
   display: flex;
-  height: var(--jf-topbar-height);
+  height: var(--jf-header-height);
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--jf-line);
+  gap: var(--jf-space-3);
+  border-bottom: 1px solid var(--jf-border-subtle);
   background: var(--jf-surface);
   padding: 0 var(--jf-space-6);
 }
 
+@media (min-width: 1280px) {
+  .dashboard-topbar {
+    padding: 0 var(--jf-space-8);
+  }
+}
+
 .dashboard-topbar-title {
-  font-weight: var(--jf-weight-normal);
-  letter-spacing: -0.01em;
+  font-size: var(--jf-compact-size);
+  line-height: var(--jf-compact-leading);
+  font-weight: var(--jf-emphasis-weight);
+  color: var(--jf-text-secondary);
 }
 
 .dashboard-content {
   display: flex;
-  min-height: calc(100vh - var(--jf-topbar-height));
+  min-height: calc(100vh - var(--jf-header-height));
   flex-direction: column;
-  padding: var(--jf-space-6) var(--jf-space-6) 0;
+  padding: var(--jf-space-3) var(--jf-space-4) var(--jf-space-8);
+}
+
+@media (min-width: 640px) {
+  .dashboard-content {
+    padding: var(--jf-space-4) var(--jf-space-6) var(--jf-space-10);
+  }
+}
+
+@media (min-width: 1280px) {
+  .dashboard-content {
+    padding: var(--jf-space-5) var(--jf-space-8) var(--jf-space-12);
+  }
 }
 
 .dashboard-content-inner {
   margin-inline: auto;
   width: 100%;
   max-width: var(--jf-content-max);
-  animation: jf-page-in var(--jf-duration-slow) var(--jf-ease) both;
+  animation: jf-fade-in-up var(--jf-duration-page) var(--jf-ease-out) both;
 }
 
-@keyframes jf-page-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* Login scene: flat canvas, no gradient */
 .auth-scene {
   background: var(--jf-canvas);
-}
-
-.login-card {
-  border-radius: var(--jf-radius-lg);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 0.08);
-}
-
-/* Empty state: dashed card (border width comes from Nuxt UI card ring/border) */
-.jf-empty {
-  border-style: dashed;
-  border-width: 1px;
-}
-
-/* Jude weight baseline: Tailwind `font-semibold` (600) is capped at 500.
-   Titles/headings across pages thus render 400/500 only — no per-template edits,
-   no copy/logic changes. */
-.font-semibold {
-  font-weight: var(--jf-weight-medium);
-}
-
-/* Tabular numerals for data tables */
-td,
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
-}
-
-.jf-kpi {
-  font-size: 32px;
-  line-height: 1.2;
-  font-weight: var(--jf-weight-medium);
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-
-.jf-mono,
-.jf-tabular {
-  font-variant-numeric: tabular-nums;
-}
-
-/* Neutral focus ring, visible in both themes */
-:where(a, button, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--jf-info);
-  outline-offset: 2px;
-  border-radius: var(--jf-radius-xs);
-}
-
-@media (max-width: 640px) {
-  .dashboard-topbar {
-    padding: 0 var(--jf-space-4);
-  }
-  .dashboard-content {
-    min-height: calc(100vh - var(--jf-topbar-height));
-    padding: var(--jf-space-4) var(--jf-space-4) 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -309,3 +578,13 @@ td,
   }
 }
 
+.metric-icon-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--jf-radius-control);
+  background: var(--jf-tonal);
+  flex-shrink: 0;
+}

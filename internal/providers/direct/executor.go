@@ -368,19 +368,26 @@ func classify(ctx context.Context, trace *requestTrace, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return fmt.Errorf("%w: %v", providers.ErrCanceled, err)
 	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %v", providers.ErrUpstreamTimeout, err)
-	}
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded)
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return fmt.Errorf("%w: %v", providers.ErrUpstreamTimeout, err)
+		timedOut = true
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) && urlErr.Timeout() {
-		return fmt.Errorf("%w: %v", providers.ErrUpstreamTimeout, err)
+		timedOut = true
 	}
-	if !trace.connected() && !trace.receivedFirstByte() {
+	// A timeout before the transport obtained a connection is known not to have
+	// delivered request bytes. Preserve the timeout classification for the client
+	// and logs, while also exposing the safe pre-request retry marker.
+	if trace != nil && !trace.connected() && !trace.receivedFirstByte() {
+		if timedOut {
+			return fmt.Errorf("%w: %w: %v", providers.ErrUpstreamTimeout, providers.ErrPreRequestFailure, err)
+		}
 		return fmt.Errorf("%w: %w: %v", providers.ErrUpstreamUnavailable, providers.ErrPreRequestFailure, err)
+	}
+	if timedOut {
+		return fmt.Errorf("%w: %v", providers.ErrUpstreamTimeout, err)
 	}
 	return fmt.Errorf("%w: %v", providers.ErrUpstreamUnavailable, err)
 }

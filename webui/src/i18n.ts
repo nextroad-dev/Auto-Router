@@ -19,6 +19,8 @@ export const messages = {
       theme: '切换颜色主题',
       openMenu: '打开导航菜单',
       closeMenu: '关闭导航菜单',
+      collapseNav: '收起导航栏',
+      expandNav: '展开导航栏',
       workspace: '工作区',
       management: '管理',
     },
@@ -175,10 +177,6 @@ export const messages = {
         snapshot_publish_failed: {
           title: '改动已保存但运行配置未刷新',
           description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。重启服务后生效。',
-        },
-        empty_allowlist: {
-          title: '同步范围为空白名单',
-          description: '检查表单中的必填项与格式后重试。先在设置中添加允许的提供商/模型。',
         },
         sync_failed: {
           title: '同步失败，现有配置未被修改。',

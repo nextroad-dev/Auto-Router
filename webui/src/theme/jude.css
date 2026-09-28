@@ -1,129 +1,323 @@
-/**
- * Jude theme tokens — Auto Router admin WebUI.
+/*
+ * Jude-Frontweb Design Tokens — Auto Router Management Console
  *
- * Single source of truth for the "Jude" visual language:
- * light/dark surfaces, four-state status colors, radius, spacing,
- * motion, typography baseline, and semantic Nuxt UI (--ui-*) overrides.
- *
- * Primary is a deep neutral (#1A1A18); green is intentionally absent.
- * Both `.dark` class and `[data-theme="dark"]` are honored because
- * Nuxt UI's dark variant depends on the `.dark` class.
+ * Soft Product Design System (Jude-Frontweb)
+ * Light Mode (Default) & Dark Mode (Opt-in via [data-theme="dark"])
  */
 
 :root,
 :root[data-theme='light'] {
   color-scheme: light;
 
-  /* ——— Surfaces ——— */
+  /* --- Font families --- */
+  --jf-font-sans: 'IBM Plex Sans', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --jf-font-mono: 'IBM Plex Mono', 'Noto Sans SC', ui-monospace, Menlo, monospace;
+
+  /* --- Surface colors --- */
   --jf-canvas: #f7f7f3;
   --jf-surface: #ffffff;
-  --jf-surface-2: #f1f1ec;
-  --jf-overlay: #ffffff;
-  --jf-ink: #1a1a18;
-  --jf-ink-2: #5c5c58;
-  --jf-ink-3: #8a8a85;
-  --jf-line: #e4e4dc;
-  --jf-line-strong: #d3d3c9;
+  --jf-surface-hover: #fafafa;
+  --jf-tonal: #efefe9;
+  --jf-tonal-hover: #e8e8e0;
+  --jf-tonal-active: #e0e0d6;
+  --jf-tonal-selected: #e3e3da;
 
-  /* ——— Primary: deep neutral ——— */
+  /* --- Border colors --- */
+  --jf-border-subtle: #e5e5dd;
+  --jf-border-control: #85857e;
+  --jf-border-focus: #1a1a18;
+  --jf-border-strong: #4a4a44;
+
+  /* --- Text colors --- */
+  --jf-text: #1a1a18;
+  --jf-text-secondary: #666660;
+  --jf-text-inverse: #f7f7f3;
+  --jf-decorative-muted: #999993;
+  --jf-text-on-primary: #ffffff;
+  --jf-text-on-danger: #ffffff;
+  --jf-text-on-warning: #1a1a18;
+  --jf-text-on-success: #ffffff;
+  --jf-text-on-info: #ffffff;
+
+  /* --- Primary (deep neutral) --- */
   --jf-primary: #1a1a18;
-  --jf-primary-ink: #fafaf7;
-  --jf-primary-hover: #33332f;
-  --jf-primary-active: #000000;
-  --jf-primary-ghost: rgb(26 26 24 / 6%);
+  --jf-primary-hover: #333330;
+  --jf-primary-active: #1a1a18;
+  --jf-primary-bg: #f0f0ea;
 
-  /* ——— Status: info / success / warning / error ——— */
-  --jf-info: #2f5d8a;
-  --jf-info-bg: #e8eff6;
-  --jf-success: #2e7d4f;
-  --jf-success-bg: #e6f2ea;
-  --jf-warning: #9a6a00;
-  --jf-warning-bg: #faf0d3;
-  --jf-error: #b3261e;
-  --jf-error-bg: #fbe9e7;
+  /* --- Semantic colors: base --- */
+  --jf-success: #166534;
+  --jf-success-bg: #f0fdf4;
+  --jf-success-hover: #15803d;
+  --jf-success-active: #166534;
+  --jf-success-border: #bbf7d0;
+  --jf-success-text: #166534;
 
-  /* ——— Radius ——— */
-  --jf-radius-xs: 6px;
-  --jf-radius-sm: 8px;
-  --jf-radius-md: 12px;
-  --jf-radius-lg: 16px;
-  --jf-radius-full: 999px;
+  --jf-warning: #854d0e;
+  --jf-warning-bg: #fefce8;
+  --jf-warning-hover: #a16207;
+  --jf-warning-active: #854d0e;
+  --jf-warning-border: #fde68a;
+  --jf-warning-text: #854d0e;
 
-  /* ——— Spacing ——— */
-  --jf-space-1: 4px;
-  --jf-space-2: 8px;
-  --jf-space-3: 12px;
-  --jf-space-4: 16px;
-  --jf-space-5: 20px;
-  --jf-space-6: 24px;
-  --jf-space-8: 32px;
+  --jf-danger: #b91c1c;
+  --jf-danger-bg: #fef2f2;
+  --jf-danger-hover: #991b1b;
+  --jf-danger-active: #7f1d1d;
+  --jf-danger-border: #fecaca;
+  --jf-danger-text: #b91c1c;
 
-  /* ——— Motion ——— */
+  --jf-info: #1e40af;
+  --jf-info-bg: #eff6ff;
+  --jf-info-hover: #1d4ed8;
+  --jf-info-active: #1e3a8a;
+  --jf-info-border: #bfdbfe;
+  --jf-info-text: #1e40af;
+
+  /* --- Radius (semantic) --- */
+  --jf-radius-check: 50%;
+  --jf-radius-control: 10px;
+  --jf-radius-popup: 12px;
+  --jf-radius-object: 14px;
+  --jf-radius-dialog: 18px;
+  --jf-radius-pill: 999px;
+  --jf-radius-none: 0;
+
+  /* --- Control sizes --- */
+  --jf-control-xs: 1.5rem;
+  --jf-control-sm: 2rem;
+  --jf-control-md: 2.5rem;
+  --jf-control-lg: 3rem;
+  --jf-control-xl: 3.5rem;
+
+  /* --- Spacing scale (4px base) --- */
+  --jf-space-0: 0;
+  --jf-space-px: 1px;
+  --jf-space-1: 0.25rem;
+  --jf-space-2: 0.5rem;
+  --jf-space-3: 0.75rem;
+  --jf-space-4: 1rem;
+  --jf-space-5: 1.25rem;
+  --jf-space-6: 1.5rem;
+  --jf-space-7: 1.75rem;
+  --jf-space-8: 2rem;
+  --jf-space-10: 2.5rem;
+  --jf-space-12: 3rem;
+  --jf-space-14: 3.5rem;
+  --jf-space-16: 4rem;
+  --jf-space-20: 5rem;
+  --jf-space-24: 6rem;
+  --jf-space-32: 8rem;
+
+  /* --- Typography scale --- */
+  --jf-display-size: clamp(2.25rem, 4vw, 3.75rem);
+  --jf-display-leading: 1.05;
+  --jf-display-tracking: -0.0175em;
+  --jf-page-title-size: 2rem;
+  --jf-page-title-leading: 1.25;
+  --jf-section-title-size: 1.25rem;
+  --jf-section-title-leading: 1.4;
+  --jf-subsection-size: 1rem;
+  --jf-subsection-leading: 1.4;
+  --jf-body-size: 1rem;
+  --jf-body-leading: 1.59;
+  --jf-compact-size: 0.875rem;
+  --jf-compact-leading: 1.5;
+  --jf-caption-size: 0.75rem;
+  --jf-caption-leading: 1.5;
+  --jf-overline-size: 0.6875rem;
+  --jf-overline-leading: 1.4;
+  --jf-overline-tracking: 0.05em;
+  --jf-heading-weight: 400;
+  --jf-emphasis-weight: 500;
+  --jf-body-weight: 400;
+
+  /* --- Shadows --- */
+  --jf-shadow-none: none;
+  --jf-shadow-soft: 0 4px 20px rgb(0 0 0 / 0.04);
+  --jf-shadow-floating: 0 12px 32px rgb(0 0 0 / 0.06);
+  --jf-shadow-dropdown: 0 8px 24px rgb(0 0 0 / 0.08);
+  --jf-shadow-toast: 0 8px 24px rgb(0 0 0 / 0.10);
+  --jf-shadow-modal: 0 16px 48px rgb(0 0 0 / 0.12);
+  --jf-shadow-drawer: -4px 0 24px rgb(0 0 0 / 0.06);
+  --jf-shadow-command: 0 16px 48px rgb(0 0 0 / 0.14);
+
+  /* --- Motion: durations --- */
+  --jf-duration-instant: 80ms;
   --jf-duration-fast: 120ms;
-  --jf-duration-base: 180ms;
-  --jf-duration-slow: 260ms;
+  --jf-duration-normal: 180ms;
+  --jf-duration-overlay: 240ms;
+  --jf-duration-emphasis: 320ms;
+  --jf-duration-page: 400ms;
+
+  --jf-duration-exit-fast: 60ms;
+  --jf-duration-exit-normal: 120ms;
+  --jf-duration-exit-overlay: 160ms;
+
+  --jf-period-shimmer: 1.5s;
+  --jf-period-spinner: 600ms;
+  --jf-period-progress: 1.2s;
+  --jf-period-pulse: 1s;
+
+  /* --- Motion: easings --- */
   --jf-ease: cubic-bezier(0.2, 0, 0, 1);
+  --jf-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --jf-ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --jf-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --jf-ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --jf-ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.1);
 
-  /* ——— Typography baseline ——— */
-  --jf-font-sans: 'IBM Plex Sans', 'Noto Sans SC', 'Microsoft YaHei UI', 'PingFang SC',
-    ui-sans-serif, system-ui, sans-serif;
-  --jf-font-mono: 'IBM Plex Mono', 'Noto Sans SC', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  --jf-body-size: 14px;
-  --jf-body-line: 1.6;
-  --jf-title-line: 1.35;
-  --jf-weight-normal: 400;
-  --jf-weight-medium: 500;
+  /* --- Z-index scale --- */
+  --jf-z-base: 0;
+  --jf-z-sticky: 10;
+  --jf-z-dropdown: 20;
+  --jf-z-overlay: 30;
+  --jf-z-modal: 40;
+  --jf-z-toast: 50;
+  --jf-z-tooltip: 60;
+  --jf-z-command: 70;
 
-  /* ——— Shell dimensions ——— */
+  /* --- Opacity --- */
+  --jf-opacity-disabled: 0.45;
+  --jf-opacity-muted: 0.65;
+  --jf-opacity-overlay: 0.40;
+  --jf-opacity-ghost-hover: 0.06;
+  --jf-opacity-ghost-active: 0.10;
+
+  /* --- Border widths --- */
+  --jf-border-width: 1px;
+  --jf-border-width-focus: 2px;
+
+  /* --- Icon sizes --- */
+  --jf-icon-xs: 12px;
+  --jf-icon-sm: 16px;
+  --jf-icon-md: 20px;
+  --jf-icon-lg: 24px;
+  --jf-icon-xl: 32px;
+  --jf-icon-2xl: 48px;
+
+  /* --- Layout dimensions --- */
   --jf-sidebar-width: 260px;
-  --jf-topbar-height: 56px;
+  --jf-sidebar-collapsed: 64px;
+  --jf-header-height: 56px;
   --jf-content-max: 1200px;
+  --jf-form-max: 640px;
+  --jf-reading-max: 72ch;
 
-  /* ——— Nuxt UI semantic overrides (light) ——— */
-  --ui-primary: var(--jf-primary);
-  --ui-text: var(--jf-ink);
-  --ui-text-muted: var(--jf-ink-2);
-  --ui-text-dimmed: var(--jf-ink-3);
-  --ui-bg: var(--jf-canvas);
-  --ui-bg-elevated: var(--jf-surface);
-  --ui-border: var(--jf-line);
+  /* --- Content card --- */
+  --jf-card-radius: var(--jf-radius-object);
+  --jf-card-padding-compact: var(--jf-space-4);
+  --jf-card-padding-comfortable: var(--jf-space-6);
+  --jf-card-section-gap: var(--jf-space-4);
+  --jf-card-section-gap-compact: var(--jf-space-3);
 }
 
-:root.dark,
-:root[data-theme='dark'],
-.dark {
+/* ============================================================ */
+/* Dark mode                                                    */
+/* ============================================================ */
+:root[data-theme='dark'] {
   color-scheme: dark;
 
-  --jf-canvas: #131311;
-  --jf-surface: #1c1c1a;
-  --jf-surface-2: #262624;
-  --jf-overlay: #232321;
-  --jf-ink: #f0efe9;
-  --jf-ink-2: #b8b7b0;
-  --jf-ink-3: #86857e;
-  --jf-line: #2e2e2a;
-  --jf-line-strong: #41413c;
+  --jf-canvas: #1a1a18;
+  --jf-surface: #242422;
+  --jf-surface-hover: #2a2a28;
+  --jf-tonal: #2e2e2a;
+  --jf-tonal-hover: #383832;
+  --jf-tonal-active: #42423c;
+  --jf-tonal-selected: #3d3d36;
 
-  --jf-primary: #f0efe9;
-  --jf-primary-ink: #1a1a18;
-  --jf-primary-hover: #ffffff;
-  --jf-primary-active: #d8d7d0;
-  --jf-primary-ghost: rgb(240 239 233 / 8%);
+  --jf-border-subtle: #3a3a34;
+  --jf-border-control: #6a6a62;
+  --jf-border-focus: #e5e5dd;
+  --jf-border-strong: #8a8a82;
 
-  --jf-info: #8fb4dd;
-  --jf-info-bg: rgb(143 180 221 / 14%);
-  --jf-success: #7cc79a;
-  --jf-success-bg: rgb(124 199 154 / 14%);
-  --jf-warning: #e0b44f;
-  --jf-warning-bg: rgb(224 180 79 / 14%);
-  --jf-error: #f19992;
-  --jf-error-bg: rgb(241 153 146 / 14%);
+  --jf-text: #e5e5dd;
+  --jf-text-secondary: #a0a098;
+  --jf-text-inverse: #1a1a18;
+  --jf-decorative-muted: #6a6a62;
 
-  --ui-primary: var(--jf-primary);
-  --ui-text: var(--jf-ink);
-  --ui-text-muted: var(--jf-ink-2);
-  --ui-text-dimmed: var(--jf-ink-3);
-  --ui-bg: var(--jf-canvas);
-  --ui-bg-elevated: var(--jf-surface);
-  --ui-border: var(--jf-line);
+  --jf-text-on-primary: #1a1a18;
+  --jf-text-on-danger: #1a1a18;
+  --jf-text-on-warning: #1a1a18;
+  --jf-text-on-success: #1a1a18;
+  --jf-text-on-info: #1a1a18;
+
+  --jf-primary: #e5e5dd;
+  --jf-primary-hover: #f0f0ea;
+  --jf-primary-active: #d5d5cd;
+  --jf-primary-bg: #2e2e2a;
+
+  --jf-success: #4ade80;
+  --jf-success-bg: #052e16;
+  --jf-success-hover: #22c55e;
+  --jf-success-active: #16a34a;
+  --jf-success-border: #166534;
+  --jf-success-text: #4ade80;
+
+  --jf-warning: #fbbf24;
+  --jf-warning-bg: #451a03;
+  --jf-warning-hover: #f59e0b;
+  --jf-warning-active: #d97706;
+  --jf-warning-border: #854d0e;
+  --jf-warning-text: #fbbf24;
+
+  --jf-danger: #f87171;
+  --jf-danger-bg: #450a0a;
+  --jf-danger-hover: #ef4444;
+  --jf-danger-active: #dc2626;
+  --jf-danger-border: #b91c1c;
+  --jf-danger-text: #f87171;
+
+  --jf-info: #60a5fa;
+  --jf-info-bg: #172554;
+  --jf-info-hover: #3b82f6;
+  --jf-info-active: #2563eb;
+  --jf-info-border: #1e40af;
+  --jf-info-text: #60a5fa;
+
+  --jf-shadow-soft: 0 4px 20px rgb(0 0 0 / 0.15);
+  --jf-shadow-floating: 0 12px 32px rgb(0 0 0 / 0.20);
+  --jf-shadow-dropdown: 0 8px 24px rgb(0 0 0 / 0.25);
+  --jf-shadow-toast: 0 8px 24px rgb(0 0 0 / 0.30);
+  --jf-shadow-modal: 0 16px 48px rgb(0 0 0 / 0.35);
+  --jf-shadow-drawer: -4px 0 24px rgb(0 0 0 / 0.20);
+  --jf-shadow-command: 0 16px 48px rgb(0 0 0 / 0.40);
+
+  --jf-opacity-overlay: 0.55;
+  --jf-opacity-ghost-hover: 0.08;
+  --jf-opacity-ghost-active: 0.14;
+}
+
+/* ============================================================ */
+/* Reduced motion                                               */
+/* ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --jf-duration-instant: 0ms;
+    --jf-duration-fast: 0ms;
+    --jf-duration-normal: 0ms;
+    --jf-duration-overlay: 0ms;
+    --jf-duration-emphasis: 0ms;
+    --jf-duration-page: 0ms;
+    --jf-duration-exit-fast: 0ms;
+    --jf-duration-exit-normal: 0ms;
+    --jf-duration-exit-overlay: 0ms;
+    --jf-period-shimmer: 0s;
+    --jf-period-spinner: 0s;
+    --jf-period-progress: 0s;
+    --jf-period-pulse: 0s;
+  }
+}
+
+/* ============================================================ */
+/* Global utility classes                                       */
+/* ============================================================ */
+.jf-focus:focus-visible {
+  outline: var(--jf-border-width-focus) solid var(--jf-border-focus);
+  outline-offset: 2px;
+}
+
+.jf-mono {
+  font-family: var(--jf-font-mono);
+  font-variant-numeric: tabular-nums;
 }

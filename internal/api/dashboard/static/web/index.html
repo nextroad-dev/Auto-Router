@@ -7,19 +7,19 @@
     <meta name="theme-color" content="#F7F7F3" />
     <title>Auto Router · 管理控制台</title>
     <script>
-      // Anti-flash: apply persisted theme before first paint; keep .dark + data-theme in sync.
+      // Anti-flash: apply the persisted theme before first paint. The manual choice wins
+      // over the system preference; [data-theme] is the single switch the tokens read.
       try {
         var stored = window.localStorage.getItem('auto-router-color-mode');
         var mode = stored === 'dark' || stored === 'light'
           ? stored
           : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-        document.documentElement.classList.toggle('dark', mode === 'dark');
         document.documentElement.setAttribute('data-theme', mode);
         document.documentElement.style.colorScheme = mode;
       } catch (e) { /* first paint still uses light defaults */ }
     </script>
-    <script type="module" crossorigin src="/admin/static/web/assets/index-5uiZiguy.js"></script>
-    <link rel="stylesheet" crossorigin href="/admin/static/web/assets/index-CXdCMGPd.css">
+    <script type="module" crossorigin src="/admin/static/web/assets/index-BYTD2-mT.js"></script>
+    <link rel="stylesheet" crossorigin href="/admin/static/web/assets/index-DzpF7xr9.css">
   </head>
   <body>
     <div id="app"></div>

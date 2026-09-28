@@ -214,7 +214,6 @@ type debugRouteCandidate struct {
 	SupportsVision     bool   `json:"supports_vision"`
 	SupportsReasoning  bool   `json:"supports_reasoning"`
 	SupportsAudioInput bool   `json:"supports_audio_input"`
-	PairPriority       int    `json:"pair_priority"`
 	ProviderPriority   int    `json:"provider_priority"`
 }
 
@@ -304,7 +303,6 @@ func (r debugRouteRequest) candidateList() []decision.Candidate {
 			SupportsVision:     candidate.SupportsVision,
 			SupportsReasoning:  candidate.SupportsReasoning,
 			SupportsAudioInput: candidate.SupportsAudioInput,
-			PairPriority:       candidate.PairPriority,
 			ProviderPriority:   candidate.ProviderPriority,
 		})
 	}

@@ -1,11 +1,6 @@
 package api
 
-import (
-	"errors"
-	"net/http"
-)
-
-var ErrSyncAllowlistEmpty = errors.New("models.dev allowlist is empty")
+import "net/http"
 
 func (h *adminHandler) handleRegistrySync(w http.ResponseWriter, r *http.Request) {
 	if h.syncRegistry == nil {
@@ -14,10 +9,6 @@ func (h *adminHandler) handleRegistrySync(w http.ResponseWriter, r *http.Request
 	}
 	result, err := h.syncRegistry(r.Context())
 	if err != nil {
-		if errors.Is(err, ErrSyncAllowlistEmpty) {
-			writeAdminError(w, http.StatusUnprocessableEntity, "empty_allowlist", "add at least one provider/model to the models.dev allowlist in Settings before synchronizing", "registry.sync.include")
-			return
-		}
 		if h.logger != nil {
 			h.logger.Warn("models.dev synchronization failed", "error", err.Error())
 		}

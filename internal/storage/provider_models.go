@@ -64,14 +64,17 @@ func SelectProviderModel(ctx context.Context, db *sql.DB, providerKey, modelID s
 	} else if err != nil {
 		return false, fmt.Errorf("read provider: %w", err)
 	}
+	if err := removePairExclusion(ctx, tx, providerKey, modelID); err != nil {
+		return false, err
+	}
 
 	displayName := modelID
 	if metadata != nil && metadata.DisplayName != "" {
 		displayName = metadata.DisplayName
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO models (id, display_name, enabled, priority, source, admin_owned, updated_at)
-		VALUES (?, ?, 1, 0, 'local', 1, `+nowExpression+`)
+		INSERT INTO models (id, display_name, enabled, source, admin_owned, updated_at)
+		VALUES (?, ?, 1, 'local', 1, `+nowExpression+`)
 		ON CONFLICT(id) DO UPDATE SET
 			display_name = CASE WHEN models.display_name = models.id THEN excluded.display_name ELSE models.display_name END,
 			enabled=1, admin_owned=1, updated_at=`+nowExpression+`
@@ -102,8 +105,8 @@ func SelectProviderModel(ctx context.Context, db *sql.DB, providerKey, modelID s
 	if metadataApplied {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO provider_models (provider_key, model_id, upstream_model_id, context_window, max_output,
-				supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, admin_owned, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'modelsdev', 0, `+nowExpression+`)
+				supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source, admin_owned, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'modelsdev', 0, `+nowExpression+`)
 			ON CONFLICT(provider_key, model_id) DO UPDATE SET
 				upstream_model_id=excluded.upstream_model_id, context_window=excluded.context_window,
 				max_output=excluded.max_output, supports_tools=excluded.supports_tools,
@@ -117,8 +120,8 @@ func SelectProviderModel(ctx context.Context, db *sql.DB, providerKey, modelID s
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO provider_models (provider_key, model_id, upstream_model_id, context_window, max_output,
-				supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, admin_owned, updated_at)
-			VALUES (?, ?, ?, 32768, NULL, 0, 0, 0, 0, 1, 0, 'local', 1, `+nowExpression+`)
+				supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source, admin_owned, updated_at)
+			VALUES (?, ?, ?, 32768, NULL, 0, 0, 0, 0, 1, 'local', 1, `+nowExpression+`)
 		`, providerKey, modelID, modelID)
 	}
 	if err != nil {

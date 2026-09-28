@@ -66,3 +66,43 @@ func TestLookupModelMapsCustomPrefixAndPreservesProviderID(t *testing.T) {
 		t.Fatalf("pair = %+v, expected canonical model with original custom upstream ID", pair)
 	}
 }
+
+func TestMapAllMapsTheFullCatalogDeterministicallyAndSkipsUnusableModels(t *testing.T) {
+	document := Document{
+		"z-provider": {ID: "z-provider", Name: "Z Provider", Models: map[string]Model{
+			"z-model": {ID: "z-model", Name: "Z Model", Limit: &Limit{Context: 64000}},
+		}},
+		"a-provider": {ID: "a-provider", Name: "A Provider", Models: map[string]Model{
+			"a-model":    {ID: "a-model", Name: "A Model", Limit: &Limit{Context: 32000}},
+			"no-context": {ID: "no-context", Name: "No Context", Limit: &Limit{Context: 0}},
+		}},
+	}
+
+	result, scope, err := MapAll(document)
+	if err != nil {
+		t.Fatalf("MapAll failed: %v", err)
+	}
+	wantScope := []string{"a-provider/a-model", "a-provider/no-context", "z-provider/z-model"}
+	if len(scope) != len(wantScope) {
+		t.Fatalf("scope=%v, want %v", scope, wantScope)
+	}
+	for i := range wantScope {
+		if scope[i] != wantScope[i] {
+			t.Fatalf("scope=%v, want %v", scope, wantScope)
+		}
+	}
+	if len(result.Pairs) != 2 || result.Skipped != 1 || len(result.Warnings) != 1 {
+		t.Fatalf("mapped pairs=%d skipped=%d warnings=%v; want 2, 1 and one warning", len(result.Pairs), result.Skipped, result.Warnings)
+	}
+	if result.Pairs[0].ProviderKey != "a-provider" || result.Pairs[0].ModelID != "a-model" || result.Pairs[1].ProviderKey != "z-provider" {
+		t.Fatalf("catalog mapping order is not deterministic: %+v", result.Pairs)
+	}
+
+	again, secondScope, err := MapAll(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IncludeDigest(scope) != IncludeDigest(secondScope) || len(again.Pairs) != len(result.Pairs) {
+		t.Fatalf("repeated catalog mapping changed: scope=%v pairs=%d", secondScope, len(again.Pairs))
+	}
+}

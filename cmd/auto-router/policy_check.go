@@ -96,7 +96,6 @@ type policyCheckCandidate struct {
 	SupportsVision     bool   `json:"supports_vision"`
 	SupportsReasoning  bool   `json:"supports_reasoning"`
 	SupportsAudioInput bool   `json:"supports_audio_input"`
-	PairPriority       int    `json:"pair_priority"`
 	ProviderPriority   int    `json:"provider_priority"`
 }
 
@@ -248,7 +247,6 @@ func policyCandidates(path string) ([]decision.Candidate, string, error) {
 			SupportsVision:     entry.SupportsVision,
 			SupportsReasoning:  entry.SupportsReasoning,
 			SupportsAudioInput: entry.SupportsAudioInput,
-			PairPriority:       entry.PairPriority,
 			ProviderPriority:   entry.ProviderPriority,
 		})
 	}
@@ -349,22 +347,22 @@ func builtinPolicyCandidates() []decision.Candidate {
 			ModelID: "gpt-4o", ProviderKey: "openai", GatewayModel: "gpt-4o",
 			ContextWindow: 128000, MaxOutput: &output,
 			SupportsTools: true, SupportsVision: true,
-			PairPriority: 0, ProviderPriority: 0,
+			ProviderPriority: 0,
 		}, {
 			ModelID: "gpt-4o-mini", ProviderKey: "openai", GatewayModel: "gpt-4o-mini",
 			ContextWindow: 128000, MaxOutput: &output,
 			SupportsTools: true, SupportsVision: true,
-			PairPriority: 1, ProviderPriority: 0,
+			ProviderPriority: 0,
 		}, {
 			ModelID: "o4-mini", ProviderKey: "openai", GatewayModel: "o4-mini",
 			ContextWindow: 200000, MaxOutput: &output,
 			SupportsTools: true, SupportsReasoning: true,
-			PairPriority: 2, ProviderPriority: 0,
+			ProviderPriority: 0,
 		}, {
 			ModelID: "llama-3.3-70b", ProviderKey: "groq", GatewayModel: "llama-3.3-70b-versatile",
 			ContextWindow: 131072, MaxOutput: &output,
-			SupportsTools: true,
-			PairPriority:  3, ProviderPriority: 1,
+			SupportsTools:    true,
+			ProviderPriority: 1,
 		},
 	}
 }

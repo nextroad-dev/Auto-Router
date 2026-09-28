@@ -12,7 +12,7 @@ describe('error copy table', () => {
     // src/lib/errors.ts; this assertion guards the runtime shape those proofs rely on.
     expect(ADMIN_ERROR_CODES.length).toBe(new Set(ADMIN_ERROR_CODES).size)
     expect(INFERENCE_ERROR_CODES.length).toBe(new Set(INFERENCE_ERROR_CODES).size)
-    expect(uniqueCodes.length).toBe(56)
+    expect(uniqueCodes.length).toBe(55)
   })
 
   it('keeps invalid_request in both vocabularies because both envelopes can carry it', () => {

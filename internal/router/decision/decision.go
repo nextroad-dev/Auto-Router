@@ -39,9 +39,8 @@ type Candidate struct {
 	// image model does not accept audio.
 	SupportsAudioInput bool
 	SupportsReasoning  bool
-	// PairPriority and ProviderPriority are registry priorities. They are
-	// recorded for the decision log; the score uses the contract index.
-	PairPriority     int
+	// ProviderPriority is retained for decision diagnostics; candidate order
+	// itself is the final score tie-break.
 	ProviderPriority int
 }
 
@@ -160,17 +159,19 @@ const (
 	// ExclusionMaxOutputTooSmall means the client asked for more output tokens than
 	// the pair can produce.
 	ExclusionMaxOutputTooSmall ExclusionCode = "max_output_too_small"
-	// ExclusionNotInAllowlist means a non-empty allow list did not name the pair,
-	// model or provider.
+	// ExclusionNotInAllowlist is a legacy code retained for historical routing
+	// records. Current policy evaluation no longer applies identifier allowlists.
 	ExclusionNotInAllowlist ExclusionCode = "not_in_allowlist"
-	// ExclusionDenied means a deny list named the pair, model or provider.
+	// ExclusionDenied is a legacy code retained for historical routing records.
+	// Current policy evaluation no longer applies identifier denylists.
 	ExclusionDenied ExclusionCode = "denied"
 	// ExclusionTruncatedEvidence means the candidate was excluded only because the
 	// analyzer did not see the whole request and the policy refuses to guess.
 	ExclusionTruncatedEvidence ExclusionCode = "truncated_evidence"
 )
 
-// Valid reports whether the code is one of the defined codes.
+// Valid reports whether the code is one of the defined codes, including legacy
+// values that may appear in stored routing records.
 func (c ExclusionCode) Valid() bool {
 	switch c {
 	case ExclusionRequiresTools, ExclusionRequiresVision, ExclusionRequiresAudioInput,

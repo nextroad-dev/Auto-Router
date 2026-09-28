@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import JfAlert from './JfAlert.vue'
 import { errorNotice } from '@/lib/errors'
 
 /**
@@ -35,9 +36,9 @@ const notice = computed(() => {
 </script>
 
 <template>
-  <UAlert color="error" variant="soft" role="alert" :title="notice.title" :description="notice.description || undefined">
+  <JfAlert tone="danger" role="alert" :title="notice.title" :description="notice.description || undefined">
     <template v-if="$slots.actions" #actions>
       <slot name="actions" />
     </template>
-  </UAlert>
+  </JfAlert>
 </template>

@@ -104,7 +104,7 @@ func (h *adminHandler) dashboardModels(r *http.Request, stats []storage.AttemptS
 			SELECT 1 FROM provider_models pm JOIN providers p ON p.key=pm.provider_key
 			WHERE pm.model_id=m.id AND pm.enabled=1 AND p.enabled=1
 		)
-		ORDER BY m.priority, m.id LIMIT 200
+		ORDER BY m.id LIMIT 200
 	`)
 	if err != nil {
 		return nil, err

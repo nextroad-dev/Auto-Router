@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, getAllPages, type Pair } from '@/lib/api'
+import { createSerialAutosaveQueue } from '@/lib/autosave'
+import { showSavedToast } from '@/lib/save-toast'
 import { errorNotice } from '@/lib/errors'
 import ErrorAlert from '@/components/ErrorAlert.vue'
+import JfBadge from '@/components/JfBadge.vue'
+import JfButton from '@/components/JfButton.vue'
+import JfCard from '@/components/JfCard.vue'
+import JfCheckbox from '@/components/JfCheckbox.vue'
+import JfEmpty from '@/components/JfEmpty.vue'
+import JfSkeleton from '@/components/JfSkeleton.vue'
 import type { GroupModel, ModelGroupsDocument } from '@/lib/admin-contracts'
 import { router } from '@/router'
 
 type GroupName = 'simple' | 'medium' | 'complex'
+
 const groupDefinitions: Array<{ key: GroupName; label: string }> = [
-  { key: 'simple', label: '简单任务' },
-  { key: 'medium', label: '中等任务' },
-  { key: 'complex', label: '复杂任务' },
+  { key: 'simple', label: '简单任务组' },
+  { key: 'medium', label: '中等任务组' },
+  { key: 'complex', label: '复杂任务组' },
 ]
 
 const groups = ref<Record<GroupName, GroupModel[]>>({ simple: [], medium: [], complex: [] })
@@ -18,16 +27,36 @@ const availablePairs = ref<Pair[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const error = ref<unknown>()
-const success = ref('')
 
 function pairKey(pair: GroupModel) {
   return `${pair.provider}\u0000${pair.model}`
 }
 
+type GroupSnapshot = Record<GroupName, GroupModel[]>
+const saveQueue = createSerialAutosaveQueue<GroupSnapshot>(async snapshot => {
+  saving.value = true
+  try {
+    await api.put('/admin/v1/groups', snapshot)
+    error.value = undefined
+    showSavedToast()
+  } catch (cause) {
+    error.value = errorNotice(cause)
+  } finally {
+    saving.value = false
+  }
+}, (_current, next) => next)
+
+function persistGroups() {
+  saveQueue.enqueue({
+    simple: groups.value.simple.map(item => ({ ...item })),
+    medium: groups.value.medium.map(item => ({ ...item })),
+    complex: groups.value.complex.map(item => ({ ...item })),
+  })
+}
+
 async function loadGroups() {
   loading.value = true
   error.value = undefined
-  success.value = ''
   try {
     const [document, pairs] = await Promise.all([
       api.get<ModelGroupsDocument>('/admin/v1/groups'),
@@ -57,6 +86,7 @@ function togglePair(group: GroupName, pair: Pair, checked: boolean) {
   if (checked && existing < 0) current.push({ provider: pair.provider, model: pair.model })
   if (!checked && existing >= 0) current.splice(existing, 1)
   groups.value[group] = current
+  persistGroups()
 }
 
 function movePair(group: GroupName, index: number, direction: -1 | 1) {
@@ -65,85 +95,119 @@ function movePair(group: GroupName, index: number, direction: -1 | 1) {
   if (next < 0 || next >= current.length) return
   ;[current[index], current[next]] = [current[next]!, current[index]!]
   groups.value[group] = current
-}
-
-async function saveGroups() {
-  saving.value = true
-  error.value = undefined
-  success.value = ''
-  try {
-    await api.put('/admin/v1/groups', {
-      simple: groups.value.simple,
-      medium: groups.value.medium,
-      complex: groups.value.complex,
-    })
-    success.value = '分组和选择顺序已保存。'
-  } catch (cause) {
-    error.value = errorNotice(cause)
-  } finally {
-    saving.value = false
-  }
+  persistGroups()
 }
 
 onMounted(() => { void loadGroups() })
 </script>
 
 <template>
-  <div class="space-y-6">
-    <section class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+  <div class="jf-stack">
+    <!-- Toolbar -->
+    <section class="jf-toolbar">
       <div>
-        <p class="mt-1 text-sm text-muted">为不同复杂度的任务选择候选路由，并调整组内顺序。</p>
+        <h1 class="jf-page-title">模型分组</h1>
       </div>
-      <div class="flex gap-2">
-        <UButton color="neutral" variant="outline" icon="i-heroicons-arrow-path" :loading="loading" @click="loadGroups">刷新</UButton>
-        <UButton icon="i-heroicons-check" :loading="saving" @click="saveGroups">保存分组</UButton>
+      <div class="jf-action-group">
+        <JfButton variant="secondary" icon="arrow-path" :loading="loading || saving" @click="loadGroups">刷新</JfButton>
       </div>
     </section>
 
     <ErrorAlert v-if="error" :error="error" />
-    <UAlert v-if="success" color="success" variant="soft" :title="success" />
-    <UCard v-if="!availablePairs.length && !loading" class="jf-empty">
-      <div class="py-5 text-center">
-        <h3 class="font-medium">还没有可选路由</h3>
-        <p class="mt-1 text-sm text-muted">先在提供商页面添加模型。</p>
-        <UButton class="mt-4" variant="soft" @click="router.push('/providers')">前往提供商</UButton>
-      </div>
-    </UCard>
 
-    <section class="grid gap-4 xl:grid-cols-3">
-      <UCard v-for="definition in groupDefinitions" :key="definition.key" class="min-w-0">
-        <template #header>
-          <div class="flex items-center justify-between gap-3">
-            <h3 class="font-semibold">{{ definition.label }}</h3>
-            <UBadge color="neutral" variant="subtle">{{ groups[definition.key].length }} 个</UBadge>
-          </div>
+    <JfEmpty
+      v-if="!availablePairs.length && !loading"
+      variant="first-use"
+      title="尚无可用模型路由绑定"
+    >
+      <template #action>
+        <JfButton variant="secondary" @click="router.push('/providers')">前往配置提供商</JfButton>
+      </template>
+    </JfEmpty>
+
+    <!-- Group Cards Grid -->
+    <section class="grid gap-6 xl:grid-cols-3">
+      <JfCard
+        v-for="definition in groupDefinitions"
+        :key="definition.key"
+        density="compact"
+        :title="definition.label"
+      >
+        <template #actions>
+          <JfBadge tone="neutral">{{ groups[definition.key].length }} 个候选</JfBadge>
         </template>
-        <div v-if="loading" class="space-y-3"><USkeleton v-for="n in 4" :key="n" class="h-9 w-full" /></div>
-        <div v-else class="space-y-4">
-          <div class="max-h-72 space-y-2 overflow-y-auto">
-            <UCheckbox
-              v-for="pair in availablePairs"
-              :key="pairKey(pair)"
-              :model-value="isSelected(definition.key, pair)"
-              :label="`${pair.provider} · ${pair.model}`"
-              @update:model-value="togglePair(definition.key, pair, $event)"
-            />
-          </div>
-          <div class="h-2" aria-hidden="true" />
+
+        <div v-if="loading" class="grid gap-2" aria-busy="true">
+          <JfSkeleton v-for="n in 4" :key="n" height="36px" shape="block" />
+        </div>
+
+        <div v-else class="grid gap-4">
+          <!-- Candidate Picker -->
           <div>
-            <h4 class="mb-2 text-sm font-medium">选择顺序</h4>
-            <ol v-if="groups[definition.key].length" class="space-y-2">
-              <li v-for="(pair, index) in groups[definition.key]" :key="pairKey(pair)" class="flex items-center gap-2 rounded-lg border border-default px-3 py-2">
-                <span class="w-5 shrink-0 text-xs tabular-nums text-muted">{{ index + 1 }}</span>
-                <span class="min-w-0 flex-1 truncate text-xs"><span class="text-muted">{{ pair.provider }} · </span><span class="font-mono">{{ pair.model }}</span></span>
-                <UButton color="neutral" variant="ghost" size="xs" icon="i-heroicons-chevron-up" :aria-label="`上移 ${pair.provider} ${pair.model}`" :disabled="index === 0" @click="movePair(definition.key, index, -1)" />
-                <UButton color="neutral" variant="ghost" size="xs" icon="i-heroicons-chevron-down" :aria-label="`下移 ${pair.provider} ${pair.model}`" :disabled="index === groups[definition.key].length - 1" @click="movePair(definition.key, index, 1)" />
+            <h4 class="jf-module-title mb-2">选择候选模型</h4>
+            <div class="pair-picker max-h-64 overflow-y-auto rounded-[var(--jf-radius-control)] bg-tonal p-2.5">
+              <div v-if="availablePairs.length" class="space-y-0.5">
+                <JfCheckbox
+                  v-for="pair in availablePairs"
+                  :key="pairKey(pair)"
+                  :model-value="isSelected(definition.key, pair)"
+                  :label="`${pair.provider} · ${pair.model}`"
+                  class="rounded-[var(--jf-radius-control)] px-2 py-1 transition-colors hover:bg-tonal-hover"
+                  @update:model-value="togglePair(definition.key, pair, $event)"
+                />
+              </div>
+              <p v-else class="jf-caption text-ink-secondary py-2 text-center">暂无可用模型</p>
+            </div>
+          </div>
+
+          <!-- Priority Ordering -->
+          <div>
+            <h4 class="jf-module-title mb-2">组内候选优先次序</h4>
+            <ol v-if="groups[definition.key].length" class="grid gap-1.5">
+              <li
+                v-for="(pair, index) in groups[definition.key]"
+                :key="pairKey(pair)"
+                class="flex items-center gap-2 rounded-[var(--jf-radius-control)] bg-tonal px-3 py-2 transition-colors hover:bg-tonal-hover"
+              >
+                <span class="jf-caption jf-tabular jf-nowrap w-5 shrink-0 text-ink-secondary font-medium">
+                  {{ index + 1 }}
+                </span>
+                <span class="jf-caption jf-truncate flex-1">
+                  <span class="text-ink-secondary">{{ pair.provider }} · </span>
+                  <span class="font-mono font-medium">{{ pair.model }}</span>
+                </span>
+                <div class="flex items-center gap-1 shrink-0">
+                  <JfButton
+                    variant="ghost"
+                    square
+                    size="sm"
+                    icon="chevron-up"
+                    :aria-label="`上移 ${pair.provider} ${pair.model}`"
+                    :disabled="index === 0"
+                    @click="movePair(definition.key, index, -1)"
+                  />
+                  <JfButton
+                    variant="ghost"
+                    square
+                    size="sm"
+                    icon="chevron-down"
+                    :aria-label="`下移 ${pair.provider} ${pair.model}`"
+                    :disabled="index === groups[definition.key].length - 1"
+                    @click="movePair(definition.key, index, 1)"
+                  />
+                </div>
               </li>
             </ol>
-            <p v-else class="rounded-lg bg-elevated/50 px-3 py-4 text-center text-sm text-muted">选择路由以设置优先顺序。</p>
+            <p v-else class="py-2 text-center text-sm text-ink-secondary">暂无候选模型</p>
           </div>
         </div>
-      </UCard>
+      </JfCard>
     </section>
   </div>
 </template>
+
+<style scoped>
+.pair-picker :deep(.jf-checkbox-text) {
+  overflow-wrap: anywhere;
+}
+</style>

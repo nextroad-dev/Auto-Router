@@ -80,7 +80,6 @@ type Model struct {
 	ID          string
 	DisplayName string
 	Enabled     bool
-	Priority    int
 	Source      Source
 }
 
@@ -102,7 +101,6 @@ type Pair struct {
 	SupportsAudioInput bool
 	SupportsReasoning  bool
 	Enabled            bool
-	Priority           int
 	Source             Source
 }
 
@@ -195,9 +193,8 @@ func (c *Catalog) buildIndexes() {
 }
 
 // Sort applies the deterministic ordering contract shared by the router and the
-// admin surface: pair priority ascending, then provider priority ascending,
-// then provider key ascending, then model ID ascending. Providers are ordered
-// by priority then key; models by priority then ID.
+// admin surface: provider priority ascending, then provider key ascending, then
+// model ID ascending. Providers are ordered by priority then key; models by ID.
 func (c *Catalog) Sort() {
 	providerPriorities := make(map[string]int, len(c.Providers))
 	for _, provider := range c.Providers {
@@ -210,16 +207,10 @@ func (c *Catalog) Sort() {
 		return c.Providers[i].Key < c.Providers[j].Key
 	})
 	sort.SliceStable(c.Models, func(i, j int) bool {
-		if c.Models[i].Priority != c.Models[j].Priority {
-			return c.Models[i].Priority < c.Models[j].Priority
-		}
 		return c.Models[i].ID < c.Models[j].ID
 	})
 	sort.SliceStable(c.Pairs, func(i, j int) bool {
 		a, b := c.Pairs[i], c.Pairs[j]
-		if a.Priority != b.Priority {
-			return a.Priority < b.Priority
-		}
 		aPriority, bPriority := providerPriorities[a.ProviderKey], providerPriorities[b.ProviderKey]
 		if aPriority != bPriority {
 			return aPriority < bPriority

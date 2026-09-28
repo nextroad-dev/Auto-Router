@@ -283,7 +283,6 @@ type NewModel struct {
 	ID          string
 	DisplayName string
 	Enabled     bool
-	Priority    int
 }
 
 // CreateModel inserts an administrator-owned local logical model row.
@@ -293,9 +292,9 @@ func CreateModel(ctx context.Context, db *sql.DB, model NewModel) error {
 		displayName = model.ID
 	}
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO models (id, display_name, enabled, priority, source, admin_owned, updated_at)
-		VALUES (?, ?, ?, ?, 'local', 1, `+nowExpression+`)
-	`, model.ID, displayName, boolToInt(model.Enabled), model.Priority)
+		INSERT INTO models (id, display_name, enabled, source, admin_owned, updated_at)
+		VALUES (?, ?, ?, 'local', 1, `+nowExpression+`)
+	`, model.ID, displayName, boolToInt(model.Enabled))
 	if err != nil && isUniqueViolation(err) {
 		return &ConflictError{Message: "a model with this id already exists"}
 	}
@@ -315,14 +314,13 @@ func ListModels(ctx context.Context, db *sql.DB, cursor ModelCursor, limit int) 
 	return ListModelsFiltered(ctx, db, ModelFilter{}, cursor, limit)
 }
 
-// ListModelsFiltered returns logical models in contract order (priority ascending,
-// then ID ascending) after the position cursor encodes.
+// ListModelsFiltered returns logical models in ID order after the position cursor encodes.
 func ListModelsFiltered(ctx context.Context, db *sql.DB, filter ModelFilter, cursor ModelCursor, limit int) ([]ModelView, error) {
 	if err := checkQuery(limit); err != nil {
 		return nil, err
 	}
-	where := []string{"(m.priority > ? OR (m.priority = ? AND m.id > ?))"}
-	arguments := []any{cursor.Priority, cursor.Priority, cursor.ID}
+	where := []string{"m.id > ?"}
+	arguments := []any{cursor.ID}
 	if filter.Search != "" {
 		where = append(where, `(instr(lower(m.id), lower(?)) > 0 OR instr(lower(m.display_name), lower(?)) > 0)`)
 		arguments = append(arguments, filter.Search, filter.Search)
@@ -337,11 +335,11 @@ func ListModelsFiltered(ctx context.Context, db *sql.DB, filter ModelFilter, cur
 	}
 	arguments = append(arguments, limit+1)
 	rows, err := db.QueryContext(ctx, `
-		SELECT m.id, m.display_name, m.enabled, m.priority, m.source, m.admin_owned,
+		SELECT m.id, m.display_name, m.enabled, m.source, m.admin_owned,
 			(SELECT count(*) FROM provider_models p WHERE p.model_id = m.id)
 		FROM models m
 		WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY m.priority, m.id
+		ORDER BY m.id
 		LIMIT ?
 	`, arguments...)
 	if err != nil {
@@ -362,10 +360,9 @@ func ListModelsFiltered(ctx context.Context, db *sql.DB, filter ModelFilter, cur
 	return views, nil
 }
 
-// ModelCursor is the position of a model listing: priority, then ID.
+// ModelCursor is the position of a model listing.
 type ModelCursor struct {
-	Priority int
-	ID       string
+	ID string
 }
 
 // CountModels returns how many logical models the registry holds.
@@ -379,10 +376,10 @@ func GetModel(ctx context.Context, db *sql.DB, id string) (ModelView, bool, erro
 	var enabled, adminOwned int
 	var source string
 	err := db.QueryRowContext(ctx, `
-		SELECT m.id, m.display_name, m.enabled, m.priority, m.source, m.admin_owned,
+		SELECT m.id, m.display_name, m.enabled, m.source, m.admin_owned,
 			(SELECT count(*) FROM provider_models p WHERE p.model_id = m.id)
 		FROM models m WHERE m.id = ?
-	`, id).Scan(&view.Model.ID, &view.Model.DisplayName, &enabled, &view.Model.Priority, &source, &adminOwned, &view.PairCount)
+	`, id).Scan(&view.Model.ID, &view.Model.DisplayName, &enabled, &source, &adminOwned, &view.PairCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ModelView{}, false, nil
 	}
@@ -399,12 +396,11 @@ func GetModel(ctx context.Context, db *sql.DB, id string) (ModelView, bool, erro
 type ModelPatch struct {
 	DisplayName *string
 	Enabled     *bool
-	Priority    *int
 }
 
 // UpdateModel applies a patch and marks the row as administrator-owned.
 func UpdateModel(ctx context.Context, db *sql.DB, id string, patch ModelPatch) (bool, error) {
-	if patch.DisplayName == nil && patch.Enabled == nil && patch.Priority == nil {
+	if patch.DisplayName == nil && patch.Enabled == nil {
 		return false, nil
 	}
 	assignments := make([]string, 0, 4)
@@ -416,10 +412,6 @@ func UpdateModel(ctx context.Context, db *sql.DB, id string, patch ModelPatch) (
 	if patch.Enabled != nil {
 		assignments = append(assignments, "enabled = ?")
 		arguments = append(arguments, boolToInt(*patch.Enabled))
-	}
-	if patch.Priority != nil {
-		assignments = append(assignments, "priority = ?")
-		arguments = append(arguments, *patch.Priority)
 	}
 	assignments = append(assignments, "admin_owned = 1", "updated_at = "+nowExpression)
 	arguments = append(arguments, id)
@@ -484,7 +476,6 @@ func missingColumn(name string) string {
 // PairCursor is the position of a pair listing: it is exactly the contract order
 // prefix the ORDER BY uses.
 type PairCursor struct {
-	Priority         int
 	ProviderPriority int
 	ProviderKey      string
 	ModelID          string
@@ -496,8 +487,8 @@ type PairRow struct {
 	ProviderPriority int
 }
 
-// ListPairs returns pairs in contract order (pair priority, provider priority,
-// provider key, model ID) after the position cursor encodes. The filter is applied
+// ListPairs returns pairs in contract order (provider priority, provider key,
+// model ID) after the position cursor encodes. The filter is applied
 // in SQL, so a filtered listing is bounded by the same limit as an unfiltered one.
 func ListPairs(ctx context.Context, db *sql.DB, filter PairFilter, cursor PairCursor, limit int) ([]PairRow, error) {
 	if err := checkQuery(limit); err != nil {
@@ -524,19 +515,18 @@ func ListPairs(ctx context.Context, db *sql.DB, filter PairFilter, cursor PairCu
 	// exactly the order the contract sorts by. A zero cursor starts at the
 	// beginning for the same reason it does in ListProviders.
 	arguments = append(arguments,
-		cursor.Priority, cursor.Priority,
 		cursor.ProviderPriority, cursor.ProviderPriority,
 		cursor.ProviderKey, cursor.ProviderKey,
 		cursor.ModelID,
 	)
-	where = append(where, `(m.priority > ? OR (m.priority = ? AND (p.priority > ? OR (p.priority = ? AND (p.key > ? OR (p.key = ? AND m.model_id > ?))))))`)
+	where = append(where, `(p.priority > ? OR (p.priority = ? AND (p.key > ? OR (p.key = ? AND m.model_id > ?))))`)
 	query := `
 		SELECT m.provider_key, m.model_id, m.upstream_model_id, m.context_window, m.max_output,
 			m.supports_tools, m.supports_vision, m.supports_audio_input, m.supports_reasoning,
-			m.enabled, m.priority, m.source, m.admin_owned, p.priority
+			m.enabled, m.source, m.admin_owned, p.priority
 		FROM provider_models m JOIN providers p ON p.key = m.provider_key
 		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY m.priority, p.priority, p.key, m.model_id
+		ORDER BY p.priority, p.key, m.model_id
 		LIMIT ?`
 	arguments = append(arguments, limit+1)
 
@@ -573,11 +563,11 @@ func GetPair(ctx context.Context, db *sql.DB, providerKey, modelID string) (Pair
 	err := db.QueryRowContext(ctx, `
 		SELECT provider_key, model_id, upstream_model_id, context_window, max_output,
 			supports_tools, supports_vision, supports_audio_input, supports_reasoning,
-			enabled, priority, source, admin_owned
+			enabled, source, admin_owned
 		FROM provider_models WHERE provider_key = ? AND model_id = ?
 	`, providerKey, modelID).Scan(&view.Pair.ProviderKey, &view.Pair.ModelID, &view.Pair.UpstreamModelID,
 		&view.Pair.ContextWindow, &maxOutput, &tools, &vision, &audio, &reasoning,
-		&enabled, &view.Pair.Priority, &source, &adminOwned)
+		&enabled, &source, &adminOwned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PairView{}, false, nil
 	}
@@ -603,7 +593,6 @@ func GetPair(ctx context.Context, db *sql.DB, providerKey, modelID string) (Pair
 // different requests, and NULL is the stored representation of "no ceiling".
 type PairPatch struct {
 	Enabled            *bool
-	Priority           *int
 	UpstreamModelID    *string
 	ContextWindow      *int
 	MaxOutput          **int
@@ -626,9 +615,6 @@ func UpdatePair(ctx context.Context, db *sql.DB, providerKey, modelID string, pa
 	merged := current.Pair
 	if patch.Enabled != nil {
 		merged.Enabled = *patch.Enabled
-	}
-	if patch.Priority != nil {
-		merged.Priority = *patch.Priority
 	}
 	if patch.UpstreamModelID != nil {
 		merged.UpstreamModelID = *patch.UpstreamModelID
@@ -667,12 +653,12 @@ func UpdatePair(ctx context.Context, db *sql.DB, providerKey, modelID string, pa
 	assignments := []string{
 		"upstream_model_id = ?", "context_window = ?", "max_output = ?",
 		"supports_tools = ?", "supports_vision = ?", "supports_audio_input = ?", "supports_reasoning = ?",
-		"enabled = ?", "priority = ?", "admin_owned = 1", "updated_at = " + nowExpression,
+		"enabled = ?", "admin_owned = 1", "updated_at = " + nowExpression,
 	}
 	arguments := []any{
 		merged.UpstreamModelID, merged.ContextWindow, nullableInt(merged.MaxOutput),
 		boolToInt(merged.SupportsTools), boolToInt(merged.SupportsVision), boolToInt(merged.SupportsAudioInput), boolToInt(merged.SupportsReasoning),
-		boolToInt(merged.Enabled), merged.Priority,
+		boolToInt(merged.Enabled),
 		providerKey, modelID,
 	}
 	_, err = db.ExecContext(ctx, "UPDATE provider_models SET "+strings.Join(assignments, ", ")+" WHERE provider_key = ? AND model_id = ?", arguments...)
@@ -696,7 +682,6 @@ type NewPair struct {
 	SupportsAudioInput bool
 	SupportsReasoning  bool
 	Enabled            bool
-	Priority           int
 }
 
 // PairExists reports whether a pair already exists. It exists so the API can
@@ -773,7 +758,6 @@ func ValidateNewPair(pair NewPair) error {
 		SupportsAudioInput: pair.SupportsAudioInput,
 		SupportsReasoning:  pair.SupportsReasoning,
 		Enabled:            pair.Enabled,
-		Priority:           pair.Priority,
 		Source:             models.SourceLocal,
 	}
 	if err := models.ValidatePair(candidate); err != nil {
@@ -784,10 +768,9 @@ func ValidateNewPair(pair NewPair) error {
 
 // CreatePair inserts one administrator-owned binding. The row's source is left
 // unchanged in spirit — 'local' means "not synchronized metadata" — while
-// admin_owned marks it as owned by the management surface, which is what keeps an
-// import from touching it.
-//
-// There is deliberately no delete counterpart: stage 9 disables, never removes.
+// admin_owned marks it as owned by the management surface, which keeps an import
+// from touching it. The transaction also clears a matching deletion exclusion:
+// an explicit rebind is the operator's intent to make the pair available again.
 func CreatePair(ctx context.Context, db *sql.DB, pair NewPair) error {
 	candidate := models.Pair{
 		ProviderKey:        pair.ProviderKey,
@@ -800,23 +783,36 @@ func CreatePair(ctx context.Context, db *sql.DB, pair NewPair) error {
 		SupportsAudioInput: pair.SupportsAudioInput,
 		SupportsReasoning:  pair.SupportsReasoning,
 		Enabled:            pair.Enabled,
-		Priority:           pair.Priority,
 		Source:             models.SourceLocal,
 	}
 	if err := models.ValidatePair(candidate); err != nil {
 		return &ValidationError{Field: "pair", Message: err.Error()}
 	}
-	_, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin binding creation: %w", err)
+	}
+	defer tx.Rollback()
+	if err := removePairExclusion(ctx, tx, candidate.ProviderKey, candidate.ModelID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO provider_models (provider_key, model_id, upstream_model_id, context_window, max_output,
-			supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, admin_owned, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', 1, `+nowExpression+`)
+			supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source, admin_owned, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', 1, `+nowExpression+`)
 	`, candidate.ProviderKey, candidate.ModelID, candidate.UpstreamModelID, candidate.ContextWindow, nullableInt(candidate.MaxOutput),
 		boolToInt(candidate.SupportsTools), boolToInt(candidate.SupportsVision), boolToInt(candidate.SupportsAudioInput), boolToInt(candidate.SupportsReasoning),
-		boolToInt(candidate.Enabled), candidate.Priority)
+		boolToInt(candidate.Enabled))
 	if err != nil && isUniqueViolation(err) {
 		return &ConflictError{Message: "the binding already exists"}
 	}
-	return wrapWrite("create pair", err)
+	if err := wrapWrite("create pair", err); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit binding creation: %w", err)
+	}
+	return nil
 }
 
 // isUniqueViolation reports whether a database error is a primary-key or unique
@@ -861,7 +857,7 @@ func scanModelView(row scanner) (ModelView, error) {
 	var view ModelView
 	var enabled, adminOwned int
 	var source string
-	if err := row.Scan(&view.Model.ID, &view.Model.DisplayName, &enabled, &view.Model.Priority, &source, &adminOwned, &view.PairCount); err != nil {
+	if err := row.Scan(&view.Model.ID, &view.Model.DisplayName, &enabled, &source, &adminOwned, &view.PairCount); err != nil {
 		return ModelView{}, fmt.Errorf("scan model: %w", err)
 	}
 	view.Model.Enabled = enabled != 0
@@ -877,7 +873,7 @@ func scanPairRow(row scanner) (PairRow, error) {
 	var source string
 	if err := row.Scan(&result.View.Pair.ProviderKey, &result.View.Pair.ModelID, &result.View.Pair.UpstreamModelID,
 		&result.View.Pair.ContextWindow, &maxOutput, &tools, &vision, &audio, &reasoning,
-		&enabled, &result.View.Pair.Priority, &source, &adminOwned, &result.ProviderPriority); err != nil {
+		&enabled, &source, &adminOwned, &result.ProviderPriority); err != nil {
 		return PairRow{}, fmt.Errorf("scan pair: %w", err)
 	}
 	if maxOutput.Valid {

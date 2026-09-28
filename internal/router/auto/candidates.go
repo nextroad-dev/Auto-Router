@@ -11,9 +11,8 @@ import (
 
 // Candidates derives the policy engine's candidate list from a registry
 // snapshot. One enabled provider/model pair becomes exactly one candidate, in the
-// snapshot's contract order (pair priority, provider priority, provider key,
-// model ID ascending), which is the order the policy engine uses as its final
-// tie-break. The function is pure and allocates a new slice, so a caller cannot
+// snapshot's contract order (provider priority, provider key, model ID ascending),
+// which is the order the policy engine uses as its final tie-break. The function is pure and allocates a new slice, so a caller cannot
 // mutate the snapshot through it.
 //
 // Capabilities are copied per pair and never merged across providers: a logical
@@ -52,7 +51,6 @@ func Candidates(catalog *models.Catalog) []decision.Candidate {
 				SupportsVision:     pair.SupportsVision,
 				SupportsAudioInput: pair.SupportsAudioInput,
 				SupportsReasoning:  pair.SupportsReasoning,
-				PairPriority:       pair.Priority,
 				ProviderPriority:   provider.Priority,
 			})
 		}
@@ -63,9 +61,6 @@ func Candidates(catalog *models.Catalog) []decision.Candidate {
 	// makes the order explicit instead of relying on that coincidence.
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
-		if a.PairPriority != b.PairPriority {
-			return a.PairPriority < b.PairPriority
-		}
 		if a.ProviderPriority != b.ProviderPriority {
 			return a.ProviderPriority < b.ProviderPriority
 		}
@@ -86,6 +81,14 @@ func cloneGroupConfig(groups GroupConfig) GroupConfig {
 		return append([]GroupMember(nil), members...)
 	}
 	return GroupConfig{Simple: clone(groups.Simple), Medium: clone(groups.Medium), Complex: clone(groups.Complex)}
+}
+
+func cloneFailoverPolicy(policy FailoverPolicy) FailoverPolicy {
+	if policy.MaxAttempts > maxGroupMembers {
+		policy.MaxAttempts = maxGroupMembers
+	}
+	policy.RetryStatusCodes = append([]int(nil), policy.RetryStatusCodes...)
+	return policy
 }
 
 // orderedGroupCandidates intersects one configured group with the already

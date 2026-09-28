@@ -4,6 +4,11 @@ import { useRouter, useRoute } from 'vue-router'
 import { api, ApiError } from '@/lib/api'
 import { errorNotice } from '@/lib/errors'
 import ErrorAlert from '@/components/ErrorAlert.vue'
+import JfCard from '@/components/JfCard.vue'
+import JfField from '@/components/JfField.vue'
+import JfInput from '@/components/JfInput.vue'
+import JfButton from '@/components/JfButton.vue'
+import JfSkeleton from '@/components/JfSkeleton.vue'
 import type { PasswordSession, SetupStatus } from '@/lib/admin-contracts'
 import { sessionState } from '@/lib/session'
 
@@ -13,8 +18,8 @@ const initialized = ref<boolean>()
 const password = ref('')
 const confirmation = ref('')
 const busy = ref(false)
-// Holds either a thrown backend failure or a locally authored validation sentence;
-// ErrorAlert renders both without the page tracking which one it is.
+const setupStatusLoading = ref(false)
+const setupStatusFailed = ref(false)
 const errorMsg = ref<unknown>()
 
 function safeTarget(target: unknown): string {
@@ -27,12 +32,18 @@ function safeTarget(target: unknown): string {
 }
 
 async function loadSetupStatus() {
+  if (setupStatusLoading.value) return
+  setupStatusLoading.value = true
+  setupStatusFailed.value = false
   errorMsg.value = undefined
   try {
     const status = await api.get<SetupStatus>('/admin/v1/setup/status')
     initialized.value = status.password_set
   } catch (cause) {
+    setupStatusFailed.value = true
     errorMsg.value = errorNotice(cause)
+  } finally {
+    setupStatusLoading.value = false
   }
 }
 
@@ -46,7 +57,10 @@ async function establishSession(value: string) {
 
 async function submit() {
   errorMsg.value = undefined
-  if (!password.value) { errorMsg.value = initialized.value ? '请输入管理员密码。' : '请设置管理员密码。'; return }
+  if (!password.value) {
+    errorMsg.value = initialized.value ? '请输入管理员密码。' : '请设置管理员密码。'
+    return
+  }
   if (initialized.value === false && password.value !== confirmation.value) {
     errorMsg.value = '两次输入的密码不一致。'
     return
@@ -79,27 +93,54 @@ onMounted(() => { void loadSetupStatus() })
 </script>
 
 <template>
-  <UCard class="login-card w-full max-w-[440px] overflow-hidden">
-    <div class="mb-8 flex flex-col items-center text-center">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ initialized === false ? '设置管理员密码' : '登录' }}</h1>
+  <JfCard class="auth-card w-full max-w-[440px]">
+    <div class="mb-2 text-center">
+      <h1 class="jf-page-title">{{ initialized === false ? '设置管理员密码' : '登录 Auto Router' }}</h1>
     </div>
 
-    <ErrorAlert v-if="errorMsg" class="mb-5" :error="errorMsg" />
-    <USkeleton v-if="initialized === undefined && !errorMsg" class="mb-5 h-10 w-full" />
+    <ErrorAlert v-if="errorMsg" class="mt-5" :error="errorMsg">
+      <template v-if="setupStatusFailed" #actions>
+        <JfButton variant="secondary" :loading="setupStatusLoading" @click="loadSetupStatus">重试读取状态</JfButton>
+      </template>
+    </ErrorAlert>
+    <div v-if="initialized === undefined && !errorMsg" class="mt-5" aria-busy="true">
+      <JfSkeleton height="48px" shape="block" />
+    </div>
 
-    <form v-if="initialized !== undefined" class="space-y-5" @submit.prevent="submit">
-      <UFormField :label="initialized ? '管理员密码' : '新管理员密码'" name="admin-password" required>
-        <UInput v-model="password" type="password" :placeholder="initialized ? '输入管理员密码' : '创建管理员密码'" icon="i-heroicons-lock-closed" :disabled="busy" :autocomplete="initialized ? 'current-password' : 'new-password'" autofocus size="lg" class="w-full" />
-      </UFormField>
-      <UFormField v-if="!initialized" label="确认密码" name="confirm-password" required>
-        <UInput v-model="confirmation" type="password" placeholder="再次输入密码" :disabled="busy" autocomplete="new-password" size="lg" class="w-full" />
-      </UFormField>
-      <UButton type="submit" block size="lg" :loading="busy">{{ initialized ? '登录' : '设置密码并登录' }}</UButton>
+    <form v-if="initialized !== undefined" class="mt-6 grid gap-5" @submit.prevent="submit">
+      <JfField :label="initialized ? '管理员密码' : '新管理员密码'" name="admin-password" required>
+        <JfInput
+          v-model="password"
+          type="password"
+          :placeholder="initialized ? '输入管理员密码' : '创建管理员密码（≥12位）'"
+          icon="lock-closed"
+          size="lg"
+          :disabled="busy"
+          :autocomplete="initialized ? 'current-password' : 'new-password'"
+          autofocus
+        />
+      </JfField>
+      <JfField v-if="!initialized" label="确认密码" name="confirm-password" required>
+        <JfInput
+          v-model="confirmation"
+          type="password"
+          placeholder="再次输入密码"
+          size="lg"
+          :disabled="busy"
+          autocomplete="new-password"
+        />
+      </JfField>
+      <JfButton type="submit" block size="lg" :loading="busy">
+        {{ initialized ? '登录控制台' : '设置密码并登录' }}
+      </JfButton>
     </form>
-
-  </UCard>
+  </JfCard>
 </template>
 
 <style scoped>
-.login-card { border-radius: var(--jf-radius-lg); box-shadow: 0 12px 40px rgb(0 0 0 / 8%); }
+.auth-card {
+  box-shadow: var(--jf-shadow-floating);
+  border-radius: var(--jf-radius-dialog);
+  padding: var(--jf-space-8);
+}
 </style>

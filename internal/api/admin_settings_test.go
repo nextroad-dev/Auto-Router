@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/nextroad-dev/Auto-Router/internal/config"
+	"github.com/nextroad-dev/Auto-Router/internal/router/analyzer"
+	"github.com/nextroad-dev/Auto-Router/internal/router/decision"
 	"github.com/nextroad-dev/Auto-Router/internal/settings"
 	"github.com/nextroad-dev/Auto-Router/internal/storage"
 )
@@ -52,12 +54,109 @@ func TestSettingsReportCoversAllRuntimeMutableFields(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(settings.MutablePaths()) != 29 || len(report.Settings) != 29 {
-		t.Fatalf("mutable paths=%d reported fields=%d, want both 29", len(settings.MutablePaths()), len(report.Settings))
+	if len(settings.MutablePaths()) != len(report.Settings) {
+		t.Fatalf("mutable paths=%d reported fields=%d, want matching catalogue and report", len(settings.MutablePaths()), len(report.Settings))
 	}
 	for _, field := range report.Settings {
 		if !field.Mutable || field.RestartRequired {
 			t.Errorf("mutable setting %q has class mutable=%t restart_required=%t", field.Path, field.Mutable, field.RestartRequired)
+		}
+	}
+}
+
+func TestSettingsNoLongerExposesOrAcceptsPolicyLists(t *testing.T) {
+	_, store, handler := newSettingsAdminTest(t)
+	paths := []string{
+		"routing.policy.allow_models",
+		"routing.policy.deny_models",
+		"routing.policy.allow_providers",
+		"routing.policy.deny_providers",
+		"routing.policy.allow_pairs",
+		"routing.policy.deny_pairs",
+	}
+
+	get := settingsRequest(handler, http.MethodGet, "/admin/v1/settings", "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("settings status=%d body=%s", get.Code, get.Body.String())
+	}
+	var report settingsPayload
+	if err := json.Unmarshal(get.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		for _, field := range report.Settings {
+			if field.Path == path {
+				t.Errorf("removed policy setting %q is still reported", path)
+			}
+		}
+		if strings.Contains(get.Body.String(), path) {
+			t.Errorf("removed policy setting %q is still present in the settings response", path)
+		}
+
+		leaf := strings.TrimPrefix(path, "routing.policy.")
+		patch := `{"routing":{"policy":{"` + leaf + `":["model-a"]}}}`
+		response := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", patch)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "unsupported_setting") {
+			t.Errorf("PATCH %s status=%d body=%s; want unsupported_setting", path, response.Code, response.Body.String())
+		}
+	}
+	if store.Current().Version != 0 {
+		t.Fatalf("rejected policy-list patches changed settings version to %d", store.Current().Version)
+	}
+}
+
+func TestLegacyPolicyListsAreIgnoredAndRemovedFromTheNextSettingsWrite(t *testing.T) {
+	ctx := context.Background()
+	db, _, _ := newSettingsAdminTest(t)
+	legacy := `{"routing":{"policy":{"high_confidence":0.8,"allow_models":["model-a"],"deny_models":["model-b"],"allow_providers":["provider-a"],"deny_providers":["provider-b"],"allow_pairs":["provider-a/model-a"],"deny_pairs":["provider-b/model-b"]}}}`
+	if _, err := storage.WriteSettings(ctx, db, legacy, 0); err != nil {
+		t.Fatal(err)
+	}
+	store, err := settings.New(ctx, settings.Options{Base: config.Defaults(), DB: db})
+	if err != nil {
+		t.Fatalf("legacy settings overlay prevented startup: %v", err)
+	}
+	if store.Current().Version != 1 || store.Current().Config.Routing.Policy.HighConfidence != 0.8 {
+		t.Fatalf("legacy overlay lost supported settings: version=%d high_confidence=%v", store.Current().Version, store.Current().Config.Routing.Policy.HighConfidence)
+	}
+	overlayJSON, err := json.Marshal(store.Current().Overlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs"} {
+		if strings.Contains(string(overlayJSON), key) {
+			t.Errorf("legacy key %q survived in-memory overlay normalization: %s", key, overlayJSON)
+		}
+	}
+
+	candidates := []decision.Candidate{
+		{ModelID: "model-a", ProviderKey: "provider-a", GatewayModel: "upstream-a", ContextWindow: 128},
+		{ModelID: "model-b", ProviderKey: "provider-b", GatewayModel: "upstream-b", ContextWindow: 128},
+	}
+	eligible, err := store.Current().Engine.Eligible(analyzer.Features{}, candidates)
+	if err != nil || len(eligible) != len(candidates) {
+		t.Fatalf("legacy policy lists still restricted candidates: eligible=%v err=%v", eligible, err)
+	}
+
+	handler := NewAdmin(AdminOptions{DB: db, Settings: store})
+	get := settingsRequest(handler, http.MethodGet, "/admin/v1/settings", "")
+	for _, path := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs"} {
+		if strings.Contains(get.Body.String(), path) {
+			t.Errorf("legacy setting %q leaked through settings GET: %s", path, get.Body.String())
+		}
+	}
+
+	patch := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"policy":{"high_confidence":0.8}}}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("normal settings patch after legacy cleanup status=%d body=%s", patch.Code, patch.Body.String())
+	}
+	record, found, err := storage.LoadSettings(ctx, db)
+	if err != nil || !found {
+		t.Fatalf("settings row not persisted: found=%t err=%v", found, err)
+	}
+	for _, key := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs"} {
+		if strings.Contains(record.JSON, key) {
+			t.Errorf("legacy key %q survived next settings write: %s", key, record.JSON)
 		}
 	}
 }
@@ -234,6 +333,26 @@ func TestSettingsPersistAcrossStoreRestartAndResetOnlySettings(t *testing.T) {
 	keys, err := storage.LoadInboundCredentials(ctx, db)
 	if err != nil || len(keys) != 1 || keys[0].Name != "preserved-key" {
 		t.Fatalf("reset changed inbound credentials: keys=%+v err=%v", keys, err)
+	}
+}
+
+func TestSettingsPatchConfiguresGroupAndRetryPolicyAtomically(t *testing.T) {
+	_, store, handler := newSettingsAdminTest(t)
+	response := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"auto":{"default_group":"complex","failover":{"max_attempts":4,"retry_on":{"pre_request_failure":false,"timeout":true,"status_codes":[429,503]}}}}}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid retry policy patch status=%d body=%s", response.Code, response.Body.String())
+	}
+	cfg := store.Current().Config.Routing.Auto
+	if cfg.DefaultGroup != "complex" || cfg.Failover.MaxAttempts != 4 || cfg.Failover.RetryOn.PreRequestFailure || !cfg.Failover.RetryOn.Timeout || len(cfg.Failover.RetryOn.StatusCodes) != 2 || cfg.Failover.RetryOn.StatusCodes[0] != 429 || cfg.Failover.RetryOn.StatusCodes[1] != 503 {
+		t.Fatalf("runtime retry policy = %+v", cfg)
+	}
+	version := store.Current().Version
+	invalid := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"auto":{"failover":{"retry_on":{"status_codes":[401]}}}}}`)
+	if invalid.Code == http.StatusOK {
+		t.Fatalf("unsafe status code patch was accepted: %s", invalid.Body.String())
+	}
+	if store.Current().Version != version || store.Current().Config.Routing.Auto.Failover.RetryOn.StatusCodes[0] != 429 {
+		t.Fatal("invalid retry-policy patch changed the running configuration")
 	}
 }
 

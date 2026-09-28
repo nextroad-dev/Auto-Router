@@ -48,6 +48,7 @@ type ImportSummary struct {
 	PairsAdded        int
 	PairsUpdated      int
 	PairsDisabled     int
+	PairsExcluded     int
 	// The four *AdminOwned counts report rows the import left alone because the
 	// Admin API owns them. They are counted separately rather than folded into
 	// "updated = 0" so an operator reading the startup log can tell "nothing
@@ -75,8 +76,9 @@ type pairKey struct {
 // ApplyRegistryImport writes one source's registry entries in a single
 // transaction. Validation and every cross-reference check happen before the
 // first write, so a rejected batch leaves the database untouched. Removed pairs
-// (models.dev) and removed local entries are disabled, never deleted, so
-// historical references and credentials do not silently vanish.
+// (models.dev) and removed local entries are disabled, never deleted; an explicit
+// administrator deletion is kept in deleted_provider_models and suppresses later
+// imports until the operator explicitly binds that pair again.
 func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, in Import) (ImportSummary, error) {
 	var summary ImportSummary
 	if !source.Valid() {
@@ -122,6 +124,10 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 	if err != nil {
 		return summary, err
 	}
+	pairExclusions, err := readPairExclusions(ctx, tx)
+	if err != nil {
+		return summary, err
+	}
 
 	knownProviders := make(map[string]struct{}, len(existingProviders)+len(providers))
 	for key := range existingProviders {
@@ -149,7 +155,12 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 		if _, ok := knownModels[pair.ModelID]; !ok {
 			return summary, fmt.Errorf("pair %s/%s references a model that is neither stored nor part of this import", pair.ProviderKey, pair.ModelID)
 		}
-		importedPairs[pairKey{pair.ProviderKey, pair.ModelID}] = struct{}{}
+		key := pairKey{pair.ProviderKey, pair.ModelID}
+		if _, excluded := pairExclusions[key]; excluded {
+			summary.PairsExcluded++
+			continue
+		}
+		importedPairs[key] = struct{}{}
 	}
 
 	for _, provider := range providers {
@@ -190,7 +201,11 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 		}
 	}
 	for _, pair := range pairs {
-		existing, ok := existingPairs[pairKey{pair.ProviderKey, pair.ModelID}]
+		key := pairKey{pair.ProviderKey, pair.ModelID}
+		if _, excluded := pairExclusions[key]; excluded {
+			continue
+		}
+		existing, ok := existingPairs[key]
 		switch {
 		case !ok:
 			if err := insertPair(ctx, tx, source, pair); err != nil {
@@ -263,7 +278,14 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 	}
 
 	if in.Sync != nil {
-		if err := writeSyncState(ctx, tx, in.Sync); err != nil {
+		syncState := *in.Sync
+		if syncState.ImportedPairs < summary.PairsExcluded {
+			syncState.ImportedPairs = 0
+		} else {
+			syncState.ImportedPairs -= summary.PairsExcluded
+		}
+		syncState.SkippedPairs += summary.PairsExcluded
+		if err := writeSyncState(ctx, tx, &syncState); err != nil {
 			return summary, err
 		}
 	}
@@ -318,15 +340,15 @@ func disableProvider(ctx context.Context, tx *sql.Tx, key string) error {
 func insertModel(ctx context.Context, tx *sql.Tx, source models.Source, model models.Model) error {
 	if source == models.SourceModelsDev {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO models (id, display_name, enabled, priority, source, updated_at)
-			VALUES (?, ?, 1, 0, 'modelsdev', `+nowExpression+`)
+			INSERT INTO models (id, display_name, enabled, source, updated_at)
+			VALUES (?, ?, 1, 'modelsdev', `+nowExpression+`)
 		`, model.ID, model.DisplayName)
 		return wrapWrite("insert model", err)
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO models (id, display_name, enabled, priority, source, updated_at)
-		VALUES (?, ?, ?, ?, 'local', `+nowExpression+`)
-	`, model.ID, model.DisplayName, boolToInt(model.Enabled), model.Priority)
+		INSERT INTO models (id, display_name, enabled, source, updated_at)
+		VALUES (?, ?, ?, 'local', `+nowExpression+`)
+	`, model.ID, model.DisplayName, boolToInt(model.Enabled))
 	return wrapWrite("insert model", err)
 }
 
@@ -336,9 +358,9 @@ func updateModel(ctx context.Context, tx *sql.Tx, source models.Source, model mo
 		return wrapWrite("update model", err)
 	}
 	_, err := tx.ExecContext(ctx, `
-		UPDATE models SET display_name = ?, enabled = ?, priority = ?, source = 'local', updated_at = `+nowExpression+`
+		UPDATE models SET display_name = ?, enabled = ?, source = 'local', updated_at = `+nowExpression+`
 		WHERE id = ?
-	`, model.DisplayName, boolToInt(model.Enabled), model.Priority, model.ID)
+	`, model.DisplayName, boolToInt(model.Enabled), model.ID)
 	return wrapWrite("update model", err)
 }
 
@@ -354,26 +376,26 @@ func insertPair(ctx context.Context, tx *sql.Tx, source models.Source, pair mode
 		// itself is disabled the pair cannot be selected.
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO provider_models (provider_key, model_id, upstream_model_id, context_window, max_output,
-				supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'modelsdev', `+nowExpression+`)
+				supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'modelsdev', `+nowExpression+`)
 		`, pair.ProviderKey, pair.ModelID, pair.UpstreamModelID, pair.ContextWindow, nullableInt(pair.MaxOutput),
 			boolToInt(pair.SupportsTools), boolToInt(pair.SupportsVision), boolToInt(pair.SupportsAudioInput), boolToInt(pair.SupportsReasoning))
 		return wrapWrite("insert pair", err)
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO provider_models (provider_key, model_id, upstream_model_id, context_window, max_output,
-			supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', `+nowExpression+`)
+			supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', `+nowExpression+`)
 	`, pair.ProviderKey, pair.ModelID, pair.UpstreamModelID, pair.ContextWindow, nullableInt(pair.MaxOutput),
 		boolToInt(pair.SupportsTools), boolToInt(pair.SupportsVision), boolToInt(pair.SupportsAudioInput), boolToInt(pair.SupportsReasoning),
-		boolToInt(pair.Enabled), pair.Priority)
+		boolToInt(pair.Enabled))
 	return wrapWrite("insert pair", err)
 }
 
 func updatePair(ctx context.Context, tx *sql.Tx, source models.Source, pair models.Pair) error {
 	if source == models.SourceModelsDev {
-		// Capabilities and the upstream model ID are synchronized; enabled and
-		// priority stay under local control.
+		// Capabilities and the upstream model ID are synchronized; enabled remains
+		// under local control.
 		_, err := tx.ExecContext(ctx, `
 			UPDATE provider_models
 			SET upstream_model_id = ?, context_window = ?, max_output = ?,
@@ -388,11 +410,11 @@ func updatePair(ctx context.Context, tx *sql.Tx, source models.Source, pair mode
 		UPDATE provider_models
 		SET upstream_model_id = ?, context_window = ?, max_output = ?,
 			supports_tools = ?, supports_vision = ?, supports_audio_input = ?, supports_reasoning = ?,
-			enabled = ?, priority = ?, source = 'local', updated_at = `+nowExpression+`
+			enabled = ?, source = 'local', updated_at = `+nowExpression+`
 		WHERE provider_key = ? AND model_id = ?
 	`, pair.UpstreamModelID, pair.ContextWindow, nullableInt(pair.MaxOutput),
 		boolToInt(pair.SupportsTools), boolToInt(pair.SupportsVision), boolToInt(pair.SupportsAudioInput), boolToInt(pair.SupportsReasoning),
-		boolToInt(pair.Enabled), pair.Priority, pair.ProviderKey, pair.ModelID)
+		boolToInt(pair.Enabled), pair.ProviderKey, pair.ModelID)
 	return wrapWrite("update pair", err)
 }
 
@@ -576,7 +598,7 @@ func queryProviders(ctx context.Context, db *sql.DB) ([]models.Provider, error) 
 }
 
 func queryModels(ctx context.Context, db *sql.DB) ([]models.Model, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, display_name, enabled, priority, source FROM models`)
+	rows, err := db.QueryContext(ctx, `SELECT id, display_name, enabled, source FROM models`)
 	if err != nil {
 		return nil, fmt.Errorf("read models: %w", err)
 	}
@@ -586,7 +608,7 @@ func queryModels(ctx context.Context, db *sql.DB) ([]models.Model, error) {
 		var model models.Model
 		var enabled int
 		var source string
-		if err := rows.Scan(&model.ID, &model.DisplayName, &enabled, &model.Priority, &source); err != nil {
+		if err := rows.Scan(&model.ID, &model.DisplayName, &enabled, &source); err != nil {
 			return nil, fmt.Errorf("read model: %w", err)
 		}
 		model.Enabled = enabled != 0
@@ -602,7 +624,7 @@ func queryModels(ctx context.Context, db *sql.DB) ([]models.Model, error) {
 func queryPairs(ctx context.Context, db *sql.DB) ([]models.Pair, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT provider_key, model_id, upstream_model_id, context_window, max_output,
-			supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source
+			supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source
 		FROM provider_models
 	`)
 	if err != nil {
@@ -616,7 +638,7 @@ func queryPairs(ctx context.Context, db *sql.DB) ([]models.Pair, error) {
 		var supportsTools, supportsVision, supportsAudioInput, supportsReasoning, enabled int
 		var source string
 		if err := rows.Scan(&pair.ProviderKey, &pair.ModelID, &pair.UpstreamModelID, &pair.ContextWindow, &maxOutput,
-			&supportsTools, &supportsVision, &supportsAudioInput, &supportsReasoning, &enabled, &pair.Priority, &source); err != nil {
+			&supportsTools, &supportsVision, &supportsAudioInput, &supportsReasoning, &enabled, &source); err != nil {
 			return nil, fmt.Errorf("read pair: %w", err)
 		}
 		if maxOutput.Valid {

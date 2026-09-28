@@ -196,6 +196,7 @@ func NewAdmin(options AdminOptions) http.Handler {
 	mux.HandleFunc("POST /admin/v1/pairs", handler.handlePairCreate)
 	mux.HandleFunc("GET /admin/v1/pairs/{provider}/{model...}", handler.handlePairDetail)
 	mux.HandleFunc("PATCH /admin/v1/pairs/{provider}/{model...}", handler.handlePairPatch)
+	mux.HandleFunc("DELETE /admin/v1/pairs/{provider}/{model...}", handler.handlePairDelete)
 	mux.HandleFunc("GET /admin/v1/logs", handler.handleLogList)
 	mux.HandleFunc("GET /admin/v1/logs/stats", handler.handleLogStats)
 	// The summary is the one endpoint that owns the dashboard's metric definitions:

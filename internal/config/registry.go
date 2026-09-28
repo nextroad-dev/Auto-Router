@@ -44,9 +44,8 @@ type RegistryProvider struct {
 
 // RegistryModel is a local provider/model pair with explicit capabilities. It
 // can describe a private model or override a synchronized pair's upstream model
-// ID and capabilities. Absent enabled/priority values mean disabled and highest
-// priority respectively, so a partially written entry is never silently
-// routable.
+// ID and capabilities. An absent enabled value means disabled, so a partially
+// written entry is never silently routable.
 type RegistryModel struct {
 	Provider          string `json:"provider"`
 	Model             string `json:"model"`
@@ -62,7 +61,6 @@ type RegistryModel struct {
 	// audio is never sent to a pair whose audio input was never declared.
 	SupportsAudioInput bool `json:"supports_audio_input"`
 	Enabled            bool `json:"enabled"`
-	Priority           int  `json:"priority"`
 }
 
 func defaultRegistryConfig() RegistryConfig {
@@ -163,7 +161,6 @@ func (m RegistryModel) Domain() (models.Model, models.Pair) {
 		ID:          m.Model,
 		DisplayName: displayName,
 		Enabled:     m.Enabled,
-		Priority:    m.Priority,
 		Source:      models.SourceLocal,
 	}
 	maxOutput := m.MaxOutput
@@ -182,7 +179,6 @@ func (m RegistryModel) Domain() (models.Model, models.Pair) {
 		SupportsReasoning:  m.SupportsReasoning,
 		SupportsAudioInput: m.SupportsAudioInput,
 		Enabled:            m.Enabled,
-		Priority:           m.Priority,
 		Source:             models.SourceLocal,
 	}
 	return model, pair

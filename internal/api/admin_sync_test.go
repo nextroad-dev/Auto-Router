@@ -15,7 +15,6 @@ func TestRegistrySyncFailuresAreNeverReportedAsSuccess(t *testing.T) {
 		code        string
 		invocations int
 	}{
-		{name: "empty allowlist", cause: ErrSyncAllowlistEmpty, status: http.StatusUnprocessableEntity, code: "empty_allowlist", invocations: 1},
 		{name: "upstream failure", cause: context.DeadlineExceeded, status: http.StatusBadGateway, code: "sync_failed", invocations: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -3,6 +3,8 @@ import type { components } from '../src/lib/generated-api'
 import {
   buildJevPatch,
   buildSettingsPatch,
+  normalizeRetryStatusCodes,
+  retryStatusCodeOptions,
   routingPreferenceOptions,
   splitSettingList,
   validateTierRows,
@@ -24,6 +26,16 @@ const fields: SettingField[] = [
 describe('settings form helpers', () => {
   it('exposes all four supported global preference defaults', () => {
     expect(routingPreferenceOptions.map(option => option.value)).toEqual(['balanced', 'quality', 'cost', 'latency'])
+  })
+
+  it('normalizes the retry-status multi-select to unique ascending integers', () => {
+    expect(retryStatusCodeOptions).toEqual([408, 425, 429, 500, 502, 503, 504])
+    expect(normalizeRetryStatusCodes([503, 408, 503, 429])).toEqual([408, 429, 503])
+    expect(normalizeRetryStatusCodes([])).toEqual([])
+    expect(normalizeRetryStatusCodes([418])).toBeNull()
+    expect(normalizeRetryStatusCodes([429.5])).toBeNull()
+    expect(normalizeRetryStatusCodes(['429'])).toBeNull()
+    expect(normalizeRetryStatusCodes(null)).toBeNull()
   })
 
   it('creates nested partial patches for selected mutable fields only', () => {

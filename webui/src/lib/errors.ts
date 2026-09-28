@@ -52,7 +52,6 @@ export const ADMIN_ERROR_CODES = [
   'read_only_state',
   'storage_error',
   'snapshot_publish_failed',
-  'empty_allowlist',
   'sync_failed',
   'sync_unavailable',
   'discovery_failed',

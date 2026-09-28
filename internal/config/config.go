@@ -76,8 +76,8 @@ type RoutingConfig struct {
 	// tool that reports the extracted features of a request body. It is off by
 	// default and is never mounted on a non-loopback listener.
 	AnalyzerDebugEndpoint bool `json:"analyzer_debug_endpoint"`
-	// Policy is the policy engine configuration, including its runtime-adjustable
-	// lists and relative cost/latency tier tables.
+	// Policy is the policy engine configuration, including confidence thresholds,
+	// fallback behavior and relative cost/latency tier tables.
 	Policy RoutingPolicyConfig `json:"policy"`
 	// PolicyDebugEndpoint mounts POST /debug/route, an offline development tool
 	// that evaluates the policy over a request body and a caller-supplied

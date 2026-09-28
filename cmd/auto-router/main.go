@@ -297,9 +297,6 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		SyncRegistry: func(syncCtx context.Context) (any, error) {
 			return syncGate.Do(syncCtx, func(syncCtx context.Context) (any, error) {
 				current := settingsStore.Config()
-				if len(current.Registry.Sync.Include) == 0 {
-					return nil, api.ErrSyncAllowlistEmpty
-				}
 				if err := syncRegistry(syncCtx, current, db, logger); err != nil {
 					return nil, err
 				}
@@ -452,7 +449,10 @@ func newAutoRouter(cfg config.Config, store *models.Store, engine *policy.Engine
 		Engine:            engine,
 		DefaultPreference: cfg.Routing.DefaultPreference,
 		InputMode:         cfg.Jev.DomainInputMode(),
-		FailoverEnabled:   cfg.Routing.Auto.Failover.Enabled,
+		Failover:          autoFailoverPolicy(cfg.Routing.Auto.Failover),
+		DefaultGroup:      auto.GroupName(cfg.Routing.Auto.DefaultGroup),
+		LowConfidence:     cfg.Routing.Policy.LowConfidence,
+		HighConfidence:    cfg.Routing.Policy.HighConfidence,
 		GroupConfig:       groupConfigFromStorage(groups),
 	}
 	if settingsStore != nil {
@@ -493,12 +493,29 @@ func groupConfigFromStorage(groups *atomic.Pointer[storage.ModelGroups]) auto.Gr
 	return auto.GroupConfig{Simple: convert(stored.Simple), Medium: convert(stored.Medium), Complex: convert(stored.Complex)}
 }
 
+func autoFailoverPolicy(cfg config.RoutingAutoFailoverConfig) auto.FailoverPolicy {
+	return auto.FailoverPolicy{
+		Enabled:                cfg.Enabled,
+		MaxAttempts:            cfg.MaxAttempts,
+		RetryPreRequestFailure: cfg.RetryOn.PreRequestFailure,
+		RetryTimeout:           cfg.RetryOn.Timeout,
+		RetryStatusCodes:       append([]int(nil), cfg.RetryOn.StatusCodes...),
+	}
+}
+
 func autoRuntimeSnapshot(snapshot *settings.Snapshot, groups *atomic.Pointer[storage.ModelGroups]) auto.RuntimeSettings {
 	var client auto.JevCaller
 	if prepared, ok := snapshot.Runtime.(*jev.Client); ok && prepared != nil {
 		client = prepared
 	}
-	return auto.RuntimeSettings{Engine: snapshot.Engine, JevEnabled: snapshot.Config.Jev.Enabled, Jev: client, InputMode: snapshot.Config.Jev.DomainInputMode(), FailoverEnabled: snapshot.Config.Routing.Auto.Failover.Enabled, DefaultPreference: snapshot.Config.Routing.DefaultPreference, GroupConfig: groupConfigFromStorage(groups)}
+	cfg := snapshot.Config
+	return auto.RuntimeSettings{
+		Engine: snapshot.Engine, JevEnabled: cfg.Jev.Enabled, Jev: client,
+		InputMode: cfg.Jev.DomainInputMode(), Failover: autoFailoverPolicy(cfg.Routing.Auto.Failover),
+		DefaultGroup:  auto.GroupName(cfg.Routing.Auto.DefaultGroup),
+		LowConfidence: cfg.Routing.Policy.LowConfidence, HighConfidence: cfg.Routing.Policy.HighConfidence,
+		DefaultPreference: cfg.Routing.DefaultPreference, GroupConfig: groupConfigFromStorage(groups),
+	}
 }
 func (v settingsValues) RuntimeSnapshot() auto.RuntimeSettings {
 	return autoRuntimeSnapshot(v.store.Current(), v.groups)

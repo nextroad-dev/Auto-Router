@@ -91,23 +91,33 @@ type logAttemptPayload struct {
 // jevTracePayload is the stored Jev trace. It carries identifiers, counts,
 // durations and the normalized distribution, exactly as the table does.
 type jevTracePayload struct {
-	Status          string             `json:"status"`
-	FailureReason   *string            `json:"failure_reason"`
-	InputMode       string             `json:"input_mode"`
-	LatencyMS       *int64             `json:"latency_ms"`
-	CandidateCount  int                `json:"candidate_count"`
-	CandidateModels []string           `json:"candidate_models"`
-	ModelCount      int                `json:"model_count"`
-	SelectedModel   *string            `json:"selected_model"`
-	Confidence      *float64           `json:"confidence"`
-	ConfidenceBand  *string            `json:"confidence_band"`
-	FallbackReason  *string            `json:"fallback_reason"`
-	EvidenceHash    *string            `json:"evidence_hash"`
-	Probabilities   []modelProbability `json:"probabilities"`
+	Status             string             `json:"status"`
+	FailureReason      *string            `json:"failure_reason"`
+	InputMode          string             `json:"input_mode"`
+	LatencyMS          *int64             `json:"latency_ms"`
+	CandidateCount     int                `json:"candidate_count"`
+	CandidateModels    []string           `json:"candidate_models"`
+	ModelCount         int                `json:"model_count"`
+	SelectedModel      *string            `json:"selected_model"`
+	CandidateGroups    []string           `json:"candidate_groups"`
+	GroupCount         int                `json:"group_count"`
+	RecommendedGroup   *string            `json:"recommended_group"`
+	SelectedGroup      *string            `json:"selected_group"`
+	GroupProbabilities []groupProbability `json:"group_probabilities"`
+	Confidence         *float64           `json:"confidence"`
+	ConfidenceBand     *string            `json:"confidence_band"`
+	FallbackReason     *string            `json:"fallback_reason"`
+	EvidenceHash       *string            `json:"evidence_hash"`
+	Probabilities      []modelProbability `json:"probabilities"`
 }
 
 type modelProbability struct {
 	Model       string  `json:"model"`
+	Probability float64 `json:"probability"`
+}
+
+type groupProbability struct {
+	Group       string  `json:"group"`
 	Probability float64 `json:"probability"`
 }
 
@@ -515,23 +525,34 @@ func jevTracePayloadOf(trace *logging.JevTrace) *jevTracePayload {
 		return nil
 	}
 	payload := &jevTracePayload{
-		Status:          trace.Status,
-		FailureReason:   optionalString(trace.FailureReason),
-		InputMode:       trace.InputMode,
-		LatencyMS:       trace.LatencyMS,
-		CandidateCount:  trace.CandidateCount,
-		CandidateModels: append([]string{}, trace.CandidateModels...),
-		ModelCount:      trace.ModelCount,
-		SelectedModel:   optionalString(trace.Selected),
-		Confidence:      trace.Confidence,
-		ConfidenceBand:  optionalString(trace.ConfidenceBand),
-		FallbackReason:  optionalString(trace.FallbackReason),
-		EvidenceHash:    optionalString(trace.EvidenceHash),
-		Probabilities:   make([]modelProbability, 0, len(trace.Probabilities)),
+		Status:             trace.Status,
+		FailureReason:      optionalString(trace.FailureReason),
+		InputMode:          trace.InputMode,
+		LatencyMS:          trace.LatencyMS,
+		CandidateCount:     trace.CandidateCount,
+		CandidateModels:    append([]string{}, trace.CandidateModels...),
+		ModelCount:         trace.ModelCount,
+		SelectedModel:      optionalString(trace.Selected),
+		CandidateGroups:    append([]string{}, trace.CandidateGroups...),
+		GroupCount:         trace.GroupCount,
+		RecommendedGroup:   optionalString(trace.RecommendedGroup),
+		SelectedGroup:      optionalString(trace.SelectedGroup),
+		GroupProbabilities: make([]groupProbability, 0, len(trace.GroupProbabilities)),
+		Confidence:         trace.Confidence,
+		ConfidenceBand:     optionalString(trace.ConfidenceBand),
+		FallbackReason:     optionalString(trace.FallbackReason),
+		EvidenceHash:       optionalString(trace.EvidenceHash),
+		Probabilities:      make([]modelProbability, 0, len(trace.Probabilities)),
 	}
 	for _, probability := range trace.Probabilities {
 		payload.Probabilities = append(payload.Probabilities, modelProbability{
 			Model:       probability.Model,
+			Probability: probability.Probability,
+		})
+	}
+	for _, probability := range trace.GroupProbabilities {
+		payload.GroupProbabilities = append(payload.GroupProbabilities, groupProbability{
+			Group:       probability.Group,
 			Probability: probability.Probability,
 		})
 	}

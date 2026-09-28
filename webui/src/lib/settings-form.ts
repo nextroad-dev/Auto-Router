@@ -3,11 +3,20 @@ import type { components } from './generated-api'
 type SettingField = components['schemas']['SettingField']
 export interface TierRow { model?: string; provider?: string; tier: number }
 
+export const retryStatusCodeOptions = [408, 425, 429, 500, 502, 503, 504] as const
+
+/** Validate, deduplicate, and numerically sort selected transient HTTP statuses. */
+export function normalizeRetryStatusCodes(values: unknown): number[] | null {
+  if (!Array.isArray(values)) return null
+  if (values.some(value => typeof value !== 'number' || !Number.isInteger(value) || !retryStatusCodeOptions.includes(value as typeof retryStatusCodeOptions[number]))) return null
+  return [...new Set(values as number[])].sort((left, right) => left - right)
+}
+
 export const routingPreferenceOptions = [
-  { label: '均衡（balanced）', value: 'balanced' },
-  { label: '质量（quality）', value: 'quality' },
-  { label: '成本（cost）', value: 'cost' },
-  { label: '延迟（latency）', value: 'latency' },
+  { label: '均衡', value: 'balanced' },
+  { label: '质量', value: 'quality' },
+  { label: '成本', value: 'cost' },
+  { label: '延迟', value: 'latency' },
 ]
 
 export function splitSettingList(text: string) {

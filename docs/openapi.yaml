@@ -115,7 +115,7 @@ paths:
         has those capabilities or a one-million-token context window; the router still filters
         actual candidates against the request and each candidate's declared capability/context.
         After `auto`, the response lists enabled logical models that currently have at least one
-        routable binding, in registry order (model priority ascending, then model ID ascending).
+        routable binding, in registry order (model ID ascending).
         A logical model without an enabled pair is not advertised. `created` is deliberately absent:
         the registry has no creation timestamps and inventing one would be a fabricated fact. `data`
         is always an array, so an empty registry still contains `auto` rather than a null catalogue.
@@ -169,8 +169,7 @@ paths:
         1. `auto` — automatic routing. The policy engine chooses the pair from the eligible
            candidates; the analyzer and the configured Jev recommender contribute.
         2. Anything else — a logical model ID, resolved to the first routable binding in the
-           documented ordering contract (`pair.priority`, `provider.priority`, `provider.key`,
-           `model.id` ascending).
+           documented ordering contract (`provider.priority`, `provider.key`, `model.id` ascending).
 
         Responses are relayed transparently: the status line, end-to-end headers and body all come
         from the provider, streamed in 16 KiB chunks with a flush after every write when the client
@@ -683,7 +682,7 @@ paths:
       operationId: listAdminModels
       description: |
         Returns logical models from the database (the authority the published snapshot is built
-        from) in contract order: priority ascending, then ID ascending. `next_cursor` is an opaque
+        from) in contract order: ID ascending. `next_cursor` is an opaque
         position key rather than an offset, so a concurrent write cannot make a row appear twice or
         disappear.
       security:
@@ -1101,8 +1100,7 @@ paths:
       summary: List provider/model bindings
       operationId: listAdminPairs
       description: |
-        Returns bindings in contract order: pair priority, provider priority, provider key, model ID
-        ascending. `missing` answers the operator's "what could serve this kind of request" question
+        Returns bindings in contract order: provider priority, provider key, model ID ascending. `missing` answers the operator's "what could serve this kind of request" question
         by selecting rows that do **not** declare a capability.
       security:
         - adminSession: []
@@ -1265,6 +1263,42 @@ paths:
               schema: {$ref: '#/components/schemas/AdminError'}
         '413':
           $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+    delete:
+      tags: [Admin]
+      summary: Permanently remove one binding
+      operationId: deleteAdminPair
+      description: |
+        Permanently removes the provider/model binding, removes it from every routing group while
+        preserving the remaining order, and records an exclusion so later registry imports do not
+        recreate it. An explicit Admin API bind/select operation removes that exclusion.
+        Historical routing attempts are retained as snapshots.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The binding was removed.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, model, deleted]
+                properties:
+                  provider: {type: string}
+                  model: {type: string}
+                  deleted: {type: boolean, const: true}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such binding (`unknown_pair`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
         '500':
           $ref: '#/components/responses/AdminError'
 
@@ -1464,7 +1498,9 @@ paths:
       description: |
         Returns the runtime-mutable settings only: a flat `settings` list with each value's
         provenance, plus the masked `effective` document and the current validation warnings.
-        Fixed runtime constraints and inbound credentials are not part of the document.
+        Fixed runtime constraints and inbound credentials are not part of the document. The former
+        `routing.policy.allow_*` and `routing.policy.deny_*` settings are no longer reported or applied;
+        matching values in older stored overlays are ignored.
 
         `source` is `default` or `runtime` for settings the serving runtime owns; a mutable value
         with a stored SQLite overlay is reported as `runtime` and reflected in `overlay`. A
@@ -1494,10 +1530,17 @@ paths:
       operationId: patchAdminSettings
       description: |
         The body is a nested JSON document shaped like the configuration, restricted to
-        runtime-mutable paths. A change is a **candidate, never an edit**: it is merged onto the
-        current effective configuration, validated and compiled, and only a candidate that passes
-        both steps is stored and published. A refused change therefore leaves the running process
-        exactly as it was.
+        runtime-mutable paths; only paths reported as mutable by GET are accepted. Former
+        `routing.policy.allow_*` and `routing.policy.deny_*` settings are unsupported. Automatic routing
+        uses `routing.auto.default_group` as its deterministic Jev-failure/low-confidence group.
+        `routing.auto.failover.max_attempts` counts
+        the initial request and is bounded from 1 to 8. Retry classes are independently configurable:
+        pre-request failures default on, while timeouts and selected transient HTTP statuses default off.
+        Retrying after an uncertain timeout or HTTP response can duplicate a provider-side action.
+
+        A change is a **candidate, never an edit**: it is merged onto the current effective configuration,
+        validated and compiled, and only a candidate that passes both steps is stored and published. A
+        refused change therefore leaves the running process exactly as it was.
 
         The catalogue is consulted before the merge, so a request that mixes a mutable and an
         immutable setting changes nothing at all rather than applying the half it is allowed to.
@@ -1515,8 +1558,8 @@ paths:
               description: A nested partial configuration document using the configuration's own field names.
               additionalProperties: true
               examples:
-                enableFailover:
-                  value: {routing: {auto: {failover: {enabled: true}}}}
+                configureGroupFailover:
+                  value: {routing: {auto: {default_group: medium, failover: {enabled: true, max_attempts: 2, retry_on: {pre_request_failure: true, timeout: false, status_codes: []}}}}}
       responses:
         '200':
           description: The change was applied and published.
@@ -1599,13 +1642,16 @@ paths:
   /admin/v1/sync:
     post:
       tags: [Admin]
-      summary: Synchronize the models.dev allowlist now
+      summary: Synchronize the models.dev catalog
       operationId: postAdminSync
       description: |
-        Fetches models.dev and imports the configured allowlist into the registry. Synchronizations
-        are serialized: a second request while one is running waits rather than starting a second
-        import. An empty allowlist is refused before any network call, and a failed import changes
-        nothing — the snapshot is republished only after the transaction commits.
+        Fetches models.dev and imports every catalog provider/model pair with a usable context window.
+        An empty `registry.sync.include` selects the full catalog; a non-empty value remains an
+        explicit scope override. Entries without usable context metadata are skipped with warnings.
+        New providers remain disabled until local credentials and endpoints are configured. Local
+        overrides are preserved, and catalog entries no longer present are disabled rather than
+        deleted. Synchronizations are serialized, and a failed import changes nothing — the snapshot
+        is republished only after the transaction commits.
 
         No request body is read.
       security:
@@ -1622,11 +1668,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/InsufficientScope'
-        '422':
-          description: The models.dev allowlist is empty (`empty_allowlist`).
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/AdminError'}
         '502':
           description: The synchronization failed and the registry was not changed (`sync_failed`).
           content:
@@ -2443,7 +2484,6 @@ components:
         - read_only_state
         - storage_error
         - snapshot_publish_failed
-        - empty_allowlist
         - sync_failed
         - sync_unavailable
         - discovery_failed
@@ -2728,7 +2768,6 @@ components:
           type: boolean
           description: An independent capability, never a synonym for `supports_vision`.
         supports_reasoning: {type: boolean}
-        pair_priority: {type: integer}
         provider_priority: {type: integer}
       additionalProperties: false
 
@@ -2876,6 +2915,7 @@ components:
         provider_key: {type: string}
         code:
           type: string
+          description: '`not_in_allowlist` and `denied` are retained for historical routing records; current decisions no longer emit them.'
           enum: [requires_tools, requires_vision, requires_audio_input, context_insufficient, max_output_too_small, not_in_allowlist, denied, truncated_evidence]
         detail:
           type: string
@@ -2987,12 +3027,11 @@ components:
 
     Model:
       type: object
-      required: [id, display_name, enabled, priority, source, owner, pair_count]
+      required: [id, display_name, enabled, source, owner, pair_count]
       properties:
         id: {type: string}
         display_name: {type: string}
         enabled: {type: boolean}
-        priority: {type: integer, minimum: 0}
         source:
           type: string
           enum: [local, modelsdev]
@@ -3019,7 +3058,6 @@ components:
           type: string
           description: Non-empty, not padded with whitespace, no NUL. Defaults to the ID when empty.
         enabled: {type: boolean}
-        priority: {type: integer, minimum: 0}
       additionalProperties: false
 
     ModelPatch:
@@ -3028,7 +3066,6 @@ components:
       properties:
         display_name: {type: string}
         enabled: {type: boolean}
-        priority: {type: integer, minimum: 0}
       additionalProperties: false
 
     ModelDetail:
@@ -3145,7 +3182,7 @@ components:
 
     Pair:
       type: object
-      required: [provider, model, upstream_model_id, context_window, max_output, supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, priority, source, owner]
+      required: [provider, model, upstream_model_id, context_window, max_output, supports_tools, supports_vision, supports_audio_input, supports_reasoning, enabled, source, owner]
       properties:
         provider: {type: string}
         model: {type: string, description: The logical model ID.}
@@ -3161,7 +3198,6 @@ components:
           description: An independent capability. A text-and-audio model does not accept images, and an image model does not accept audio.
         supports_reasoning: {type: boolean}
         enabled: {type: boolean}
-        priority: {type: integer, minimum: 0}
         source:
           type: string
           enum: [local, modelsdev]
@@ -3190,7 +3226,6 @@ components:
         supports_audio_input: {type: boolean}
         supports_reasoning: {type: boolean}
         enabled: {type: boolean}
-        priority: {type: integer, minimum: 0}
       additionalProperties: false
 
     PairPatch:
@@ -3198,7 +3233,6 @@ components:
       description: A partial update. At least one field must be present; an explicit `null` for `max_output` clears the declared ceiling.
       properties:
         enabled: {type: boolean}
-        priority: {type: integer, minimum: 0}
         upstream_model_id: {type: string}
         context_window: {type: integer, minimum: 1}
         max_output: {type: [integer, 'null']}
@@ -3287,7 +3321,7 @@ components:
           description: A digest of the decision's inputs. It never covers request text.
         gateway_attempts:
           type: integer
-          description: How many upstream attempts were made — 1, or 2 after a failover.
+          description: How many upstream attempts were made. Automatic retries are bounded by the configured total-attempt limit (1–8).
         failover_used: {type: boolean}
         routing_latency_ms:
           type: [integer, 'null']
@@ -3346,7 +3380,7 @@ components:
         The optional diagnostic trace of one Jev call. It carries identifiers, counts, durations and the
         normalized distribution, and it has no field for a prompt, a system message, a tool description
         or raw bytes, so enabling it cannot leak a conversation.
-      required: [status, input_mode, candidate_count, candidate_models, model_count, probabilities]
+      required: [status, input_mode, candidate_count, candidate_models, model_count, candidate_groups, group_count, recommended_group, selected_group, group_probabilities, probabilities]
       properties:
         status: {type: string}
         failure_reason: {type: [string, 'null']}
@@ -3357,13 +3391,37 @@ components:
           type: [integer, 'null']
           format: int64
           description: "`null` when no call was made."
-        candidate_count: {type: integer, description: How many eligible pair-level candidates the models were derived from.}
+        candidate_count: {type: integer, description: How many hard-filtered provider/model pairs were eligible across the candidate groups.}
         candidate_models:
           type: array
-          description: The distinct logical model identifiers sent, sorted ascending. Empty when no call was made.
+          description: Legacy model-mode trace field. Empty for current group-level routing.
           items: {type: string}
-        model_count: {type: integer, description: Always the length of `candidate_models`.}
-        selected_model: {type: [string, 'null']}
+        model_count: {type: integer, description: Always the length of `candidate_models`; zero for group-level routing.}
+        selected_model: {type: [string, 'null'], description: Legacy model-mode recommendation; null for group-level routing.}
+        candidate_groups:
+          type: array
+          description: Ordered non-empty groups presented to Jev. The array order is simple, medium, complex.
+          items:
+            type: string
+            enum: [simple, medium, complex]
+        group_count: {type: integer, description: Always the length of `candidate_groups`.}
+        recommended_group:
+          type: [string, 'null']
+          enum: [simple, medium, complex, null]
+          description: Jev's recommended group when it produced a valid recommendation.
+        selected_group:
+          type: [string, 'null']
+          enum: [simple, medium, complex, null]
+          description: The group actually selected after confidence fallback.
+        group_probabilities:
+          type: array
+          description: Jev's normalized group distribution, ordered by descending probability and then group order.
+          items:
+            type: object
+            required: [group, probability]
+            properties:
+              group: {type: string, enum: [simple, medium, complex]}
+              probability: {type: number, format: double}
         confidence: {type: [number, 'null'], format: double}
         confidence_band: {type: [string, 'null']}
         fallback_reason: {type: [string, 'null']}

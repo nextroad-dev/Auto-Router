@@ -139,11 +139,11 @@ func Decode(payload []byte) (Document, error) {
 	return document, nil
 }
 
-// SkipReason for a whitelisted model that upstream cannot represent as a valid
+// SkipReason for an included model that upstream cannot represent as a valid
 // pair.
 const skipMissingContext = "missing or non-positive context window"
 
-// Result is a mapped allowlist import. Providers carry metadata only; base URLs
+// Result is a mapped catalog import. Providers carry metadata only; base URLs
 // and credentials remain local configuration.
 type Result struct {
 	Providers []models.Provider
@@ -153,18 +153,36 @@ type Result struct {
 	Skipped   int
 }
 
-// Map selects the allowlist entries from a document and converts them into
-// registry entries. Every allowlist entry must exist: an entry that cannot be
-// resolved fails the whole synchronization, because a silently ignored
-// allowlist entry leaves the operator believing a model is routable.
-//
+// Map selects the explicit include entries from a document and converts them
+// into registry entries. Every entry must exist: silently ignoring an explicit
+// scope entry would leave the operator believing a model is routable.
+func Map(document Document, include []string) (*Result, error) {
+	return mapSelected(document, include)
+}
+
+// MapAll maps every provider/model entry in the document. The returned scope is
+// sorted and is the exact set used for mapping, so sync-state digests describe
+// the full catalog deterministically. Entries without a usable context window
+// are skipped with warnings, as they cannot be evaluated safely by routing.
+func MapAll(document Document) (*Result, []string, error) {
+	include := make([]string, 0)
+	for providerKey, provider := range document {
+		for modelKey := range provider.Models {
+			include = append(include, providerKey+"/"+modelKey)
+		}
+	}
+	sort.Strings(include)
+	result, err := mapSelected(document, include)
+	return result, include, err
+}
+
 // Model references are matched by exact map key first, then by
 // "<provider>/<model>", and finally by a unique prefix/keyword match. The final
 // fallback handles upstreams that expose deployment-specific prefixes while
 // models.dev catalogs the underlying model. Ambiguous matches are treated as
 // missing rather than importing capabilities from the wrong model. Entries that
 // resolve to a model without a usable context window are skipped with a warning.
-func Map(document Document, include []string) (*Result, error) {
+func mapSelected(document Document, include []string) (*Result, error) {
 	result := &Result{}
 	missing := make([]string, 0)
 	seenInclude := make(map[string]struct{}, len(include))

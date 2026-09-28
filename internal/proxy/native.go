@@ -276,8 +276,8 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 				writeError(w, http.StatusUnprocessableEntity, "invalid_request_error", "unsupported_conversion", "the selected provider cannot preserve this native request")
 				return
 			}
-			if requestedModel == models.AutoModelID && attempt < maxAutoUpstreamAttempts && errors.Is(callErr, providers.ErrPreRequestFailure) {
-				next, retry := h.autoRouter.Failover(r.Context(), autoTarget, callErr)
+			if requestedModel == models.AutoModelID && attempt < autoAttemptLimit(autoTarget) {
+				next, retry := h.autoRouter.Failover(r.Context(), autoTarget, auto.AttemptFailure{Cause: callErr})
 				if retry {
 					autoTarget = next
 					target = targetFromAuto(h.catalog.Load(), autoTarget)
@@ -293,6 +293,23 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 			}
 			h.writeExecutorError(w, record, callErr)
 			return
+		}
+		if requestedModel == models.AutoModelID && response.StatusCode >= http.StatusBadRequest && attempt < autoAttemptLimit(autoTarget) {
+			next, retry := h.autoRouter.Failover(r.Context(), autoTarget, auto.AttemptFailure{StatusCode: response.StatusCode})
+			if retry {
+				h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", logging.Usage{})
+				_ = response.Body.Close()
+				autoTarget = next
+				target = targetFromAuto(h.catalog.Load(), autoTarget)
+				if target.Provider.Kind != expectedKind {
+					record.fail(http.StatusUnprocessableEntity, "unsupported_conversion")
+					writeError(w, http.StatusUnprocessableEntity, "invalid_request_error", "unsupported_conversion", "the selected provider does not support this native API")
+					return
+				}
+				record.FailoverUsed = true
+				record.applyRoutingDecision(autoTarget)
+				continue
+			}
 		}
 		defer response.Body.Close()
 		record.upstreamStatus = response.StatusCode

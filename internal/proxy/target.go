@@ -50,9 +50,8 @@ func (e *TargetError) Error() string { return e.Message }
 //  3. Anything else is a logical model ID resolved through the registry.
 //
 // A logical ID resolves to the first routable pair in the registry's
-// deterministic ordering contract. Before stage 7 there is no Policy engine, so
-// "first" means pair priority, then provider priority, then provider key, then
-// model ID ascending; this is a documented temporary rule.
+// deterministic ordering contract: provider priority, then provider key, then
+// model ID ascending.
 func ResolveTarget(catalog *models.Catalog, requested string, allowOverride bool) (Target, error) {
 	if requested == "" {
 		return Target{}, &TargetError{
@@ -193,8 +192,7 @@ type ModelEntry struct {
 }
 
 // ListTargets returns the models a client may request. The virtual auto model
-// is always first; routable logical models follow in registry order (model
-// priority ascending, then model ID ascending).
+// is always first; routable logical models follow in registry order (model ID ascending).
 //
 // Auto is a virtual routing target, so it is advertised even when no provider
 // is currently eligible. A logical model is advertised only when it has at

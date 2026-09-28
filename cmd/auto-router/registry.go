@@ -43,19 +43,22 @@ func (g *registrySyncGate) Do(ctx context.Context, run func(context.Context) (an
 	return run(ctx)
 }
 
-// syncRegistry fetches the models.dev catalog, imports the allowlisted models
-// and records the outcome. It never rewrites local overrides and never deletes
-// rows. On any error the transaction is rolled back and the database keeps its
-// previous registry.
+var errNoMappableRegistryModels = errors.New("models.dev catalog contains no models with a usable context window")
+
+// syncRegistry fetches models.dev and imports every mappable catalog entry when
+// no explicit include is configured. A non-empty include remains an explicit
+// scope override. Entries without usable context metadata are skipped with
+// warnings; a full-catalog sync with no mappable pairs fails before storage can
+// disable rows from the previous catalog. Local overrides and rows are never
+// deleted. On any error the transaction is rolled back and the registry is kept.
 func syncRegistry(ctx context.Context, cfg config.Config, db *sql.DB, logger *slog.Logger) error {
-	if len(cfg.Registry.Sync.Include) == 0 {
-		return errors.New("registry.sync.include is empty; refusing to synchronize an empty allowlist")
-	}
+	include := append([]string(nil), cfg.Registry.Sync.Include...)
+	fullCatalogScope := len(include) == 0
 	client, err := modelsdev.NewClient(cfg.Registry.Sync.URL, time.Duration(cfg.Registry.Sync.Timeout))
 	if err != nil {
 		return err
 	}
-	logger.Info("model registry sync starting", "url", client.URL(), "allowlisted_entries", len(cfg.Registry.Sync.Include))
+
 	payload, err := client.Fetch(ctx)
 	if err != nil {
 		return err
@@ -64,10 +67,23 @@ func syncRegistry(ctx context.Context, cfg config.Config, db *sql.DB, logger *sl
 	if err != nil {
 		return err
 	}
-	result, err := modelsdev.Map(document, cfg.Registry.Sync.Include)
+	var result *modelsdev.Result
+	if fullCatalogScope {
+		result, include, err = modelsdev.MapAll(document)
+		if err == nil && len(result.Pairs) == 0 {
+			return errNoMappableRegistryModels
+		}
+	} else {
+		result, err = modelsdev.Map(document, include)
+	}
 	if err != nil {
 		return err
 	}
+	scopeSource := "explicit_include"
+	if fullCatalogScope {
+		scopeSource = "modelsdev_catalog"
+	}
+	logger.Info("model registry sync starting", "url", client.URL(), "scope_entries", len(include), "scope_source", scopeSource)
 	summary, err := storage.ApplyRegistryImport(ctx, db, models.SourceModelsDev, storage.Import{
 		Providers: result.Providers,
 		Models:    result.Models,
@@ -75,7 +91,7 @@ func syncRegistry(ctx context.Context, cfg config.Config, db *sql.DB, logger *sl
 		Sync: &storage.SyncState{
 			URL:             client.URL(),
 			FetchedAt:       time.Now().UTC(),
-			AllowlistDigest: modelsdev.IncludeDigest(cfg.Registry.Sync.Include),
+			AllowlistDigest: modelsdev.IncludeDigest(include),
 			ImportedPairs:   len(result.Pairs),
 			SkippedPairs:    result.Skipped,
 			Warnings:        result.Warnings,
@@ -103,7 +119,7 @@ func logImportSummary(logger *slog.Logger, message string, summary storage.Impor
 	logger.Info(message,
 		slog.Group("providers", "added", summary.ProvidersAdded, "updated", summary.ProvidersUpdated, "disabled", summary.ProvidersDisabled, "admin_owned", summary.ProvidersAdminOwned),
 		slog.Group("models", "added", summary.ModelsAdded, "updated", summary.ModelsUpdated, "disabled", summary.ModelsDisabled, "admin_owned", summary.ModelsAdminOwned),
-		slog.Group("pairs", "added", summary.PairsAdded, "updated", summary.PairsUpdated, "disabled", summary.PairsDisabled, "admin_owned", summary.PairsAdminOwned),
+		slog.Group("pairs", "added", summary.PairsAdded, "updated", summary.PairsUpdated, "disabled", summary.PairsDisabled, "excluded", summary.PairsExcluded, "admin_owned", summary.PairsAdminOwned),
 	)
 	if summary.ProvidersAdminOwned+summary.ModelsAdminOwned+summary.PairsAdminOwned > 0 {
 		// This is not a warning: skipping administrator-owned rows is the documented

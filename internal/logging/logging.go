@@ -211,6 +211,12 @@ type ModelProbability struct {
 	Probability float64
 }
 
+// GroupProbability is one normalized Jev probability for a routing group.
+type GroupProbability struct {
+	Group       string  `json:"group"`
+	Probability float64 `json:"probability"`
+}
+
 // JevTrace is the optional debug trace of one Jev call. It is metadata only:
 // candidate identifiers, the normalized distribution, the selection and the
 // latency. There is no field for a prompt, a system message, a tool description
@@ -234,20 +240,27 @@ type JevTrace struct {
 	EvidenceHash string
 	// LatencyMS is how long the call took. Nil when no call was made.
 	LatencyMS *int64
-	// CandidateModels lists the distinct logical model identifiers sent to Jev,
-	// sorted ascending. It is empty when no call was made.
+	// CandidateModels lists legacy model-mode identifiers sent to Jev. It is
+	// empty for current group-mode routing.
 	CandidateModels []string
-	// ModelCount is the number of distinct logical models asked about; it is
-	// always len(CandidateModels). CandidateCount is the number of eligible
-	// pair-level candidates those models were derived from.
+	// ModelCount is always len(CandidateModels). CandidateCount is the number of
+	// hard-filtered provider/model pairs in group mode, or the pair-level count
+	// from which legacy model candidates were derived.
 	ModelCount     int
 	CandidateCount int
 	// Confidence is the recommendation confidence, nil when no recommendation
 	// was produced.
 	Confidence *float64
-	// Probabilities is the normalized distribution, ordered by descending
+	// Probabilities is the legacy model-mode distribution, ordered by descending
 	// probability with the model identifier ascending as the tie-break.
 	Probabilities []ModelProbability
+	// Group-level fields describe the current automatic routing contract. They are
+	// empty/zero for legacy model-level traces.
+	CandidateGroups    []string
+	GroupCount         int
+	RecommendedGroup   string
+	SelectedGroup      string
+	GroupProbabilities []GroupProbability
 }
 
 // Valid reports whether the trace is internally consistent. It never looks at
@@ -280,8 +293,52 @@ func (t JevTrace) Valid() error {
 	if t.ModelCount != len(t.CandidateModels) {
 		return errors.New("model count does not match the candidate model list")
 	}
-	if t.CandidateCount < t.ModelCount {
-		return errors.New("candidate count must not be smaller than the model count")
+	if t.GroupCount != len(t.CandidateGroups) {
+		return errors.New("group count does not match the candidate group list")
+	}
+	if t.GroupCount == 0 {
+		if t.CandidateCount < t.ModelCount {
+			return errors.New("candidate count must not be smaller than the model count")
+		}
+		if t.RecommendedGroup != "" || t.SelectedGroup != "" || len(t.GroupProbabilities) > 0 {
+			return errors.New("group recommendation fields require candidate groups")
+		}
+	} else {
+		if t.ModelCount != 0 || len(t.CandidateModels) != 0 {
+			return errors.New("group traces must not carry model-level candidates")
+		}
+		if t.CandidateCount < t.GroupCount {
+			return errors.New("candidate count must not be smaller than the group count")
+		}
+		if t.Selected != "" || len(t.Probabilities) > 0 {
+			return errors.New("group traces must not carry model-level recommendations")
+		}
+		seen := make(map[string]struct{}, len(t.CandidateGroups))
+		for _, group := range t.CandidateGroups {
+			if !validRoutingGroup(group) {
+				return errors.New("candidate group is not a known routing group")
+			}
+			if _, duplicate := seen[group]; duplicate {
+				return errors.New("candidate groups must be unique")
+			}
+			seen[group] = struct{}{}
+		}
+		if t.RecommendedGroup != "" && (!validRoutingGroup(t.RecommendedGroup) || !containsString(t.CandidateGroups, t.RecommendedGroup)) {
+			return errors.New("recommended group must be one of the candidate groups")
+		}
+		if t.SelectedGroup != "" && (!validRoutingGroup(t.SelectedGroup) || !containsString(t.CandidateGroups, t.SelectedGroup)) {
+			return errors.New("selected group must be one of the candidate groups")
+		}
+		seen = make(map[string]struct{}, len(t.GroupProbabilities))
+		for _, probability := range t.GroupProbabilities {
+			if !validRoutingGroup(probability.Group) || !containsString(t.CandidateGroups, probability.Group) {
+				return errors.New("group probability must reference a candidate group")
+			}
+			if _, duplicate := seen[probability.Group]; duplicate {
+				return errors.New("group probabilities must be unique")
+			}
+			seen[probability.Group] = struct{}{}
+		}
 	}
 	if t.Confidence != nil && !validUnitInterval(*t.Confidence) {
 		return errors.New("confidence must be a number between 0 and 1")
@@ -291,8 +348,8 @@ func (t JevTrace) Valid() error {
 			return errors.New("a probability must be a number between 0 and 1")
 		}
 	}
-	if t.Status != JevStatusOK && (t.Selected != "" || t.Probabilities != nil) {
-		return errors.New("only a successful call may carry a selection or a distribution")
+	if t.Status != JevStatusOK && (t.Selected != "" || t.Probabilities != nil || t.RecommendedGroup != "" || t.GroupProbabilities != nil) {
+		return errors.New("only a successful call may carry a recommendation or a distribution")
 	}
 	return nil
 }
@@ -522,6 +579,24 @@ func ValidInputMode(value string) bool {
 	}
 }
 
+func validRoutingGroup(value string) bool {
+	switch value {
+	case "simple", "medium", "complex":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 // EncodeCandidateModels renders the candidate model list for storage, reporting
 // false when the encoded value would exceed the per-column bound.
 func EncodeCandidateModels(models []string) (string, bool) {
@@ -542,6 +617,32 @@ func EncodeDistribution(probabilities []ModelProbability) (string, bool) {
 	encoded := make([]entry, 0, len(probabilities))
 	for _, probability := range probabilities {
 		encoded = append(encoded, entry{Model: probability.Model, Probability: probability.Probability})
+	}
+	return encodeBounded(encoded)
+}
+
+// EncodeCandidateGroups renders the bounded set of group identifiers for storage.
+func EncodeCandidateGroups(groups []string) (string, bool) {
+	if groups == nil {
+		groups = []string{}
+	}
+	for _, group := range groups {
+		if !validRoutingGroup(group) {
+			return "", false
+		}
+	}
+	return encodeBounded(groups)
+}
+
+// EncodeGroupDistribution renders Jev's normalized group distribution for storage.
+func EncodeGroupDistribution(probabilities []GroupProbability) (string, bool) {
+	type entry struct {
+		Group       string  `json:"group"`
+		Probability float64 `json:"probability"`
+	}
+	encoded := make([]entry, 0, len(probabilities))
+	for _, probability := range probabilities {
+		encoded = append(encoded, entry{Group: probability.Group, Probability: probability.Probability})
 	}
 	return encodeBounded(encoded)
 }

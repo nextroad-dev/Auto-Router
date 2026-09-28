@@ -30,7 +30,9 @@ docker rm auto-router
 
 ## 自动路由
 
-将请求中的 `model` 设为 `auto`，即可请求自动路由。启用 Jev 时，它推荐简单、中等或复杂路由组；本地策略根据请求特征、模型能力和上下文窗口过滤候选，再从所选模型组中决定具体上游。Jev 不可用或未启用时，服务仍按本地路由策略处理请求。
+将请求中的 `model` 设为 `auto`，即可请求自动路由。启用 Jev 时，它只在当前有合格成员的 `simple`、`medium`、`complex` 组中选择任务组；本地策略先按请求特征、模型能力、上下文窗口及硬限制过滤成员，再严格按组内配置顺序选择主模型。不会跨组重试，也不会由本地评分改变组内主备顺序。
+
+Jev 不可用、未启用或推荐置信度低于 `routing.policy.low_confidence` 时，使用 `routing.auto.default_group`（默认 `medium`）；所选组没有合格成员时明确失败，不自动切换任务等级。故障转移只尝试同组后续成员。`routing.auto.failover.max_attempts` 统计首次请求，范围为 1–8，默认 2；请求发送前可确认未送达的失败默认允许重试，超时与 HTTP 状态码默认不重试。启用超时或状态码重试可能导致重复计费或重复执行，状态码仅支持 408、425、429、500、502、503、504。以上设置可在管理台“系统设置 → 全局路由行为”调整。
 
 `GET /v1/models` 始终首先列出虚拟模型 `auto`，默认声明：
 
@@ -82,7 +84,7 @@ Anthropic 和 Gemini 原生接口要求所选上游支持相同协议。OpenAI C
 
 ## 发布前验证
 
-CI 运行 Go vet/test/race/build 与 WebUI 的 OpenAPI 类型生成一致性检查、Vitest、类型检查和生产构建；Playwright E2E 不在 CI 中运行，发布前需本地执行并检查失败 trace：
+CI 运行 Go vet/test/race/build 与 WebUI 的 OpenAPI 类型生成一致性检查、Vitest、Playwright E2E、类型检查、生产构建和嵌入资源一致性检查。发布前仍建议本地复跑 E2E，并检查失败 trace：
 
 ```sh
 cd webui

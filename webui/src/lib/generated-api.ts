@@ -64,7 +64,7 @@ export interface paths {
          *     has those capabilities or a one-million-token context window; the router still filters
          *     actual candidates against the request and each candidate's declared capability/context.
          *     After `auto`, the response lists enabled logical models that currently have at least one
-         *     routable binding, in registry order (model priority ascending, then model ID ascending).
+         *     routable binding, in registry order (model ID ascending).
          *     A logical model without an enabled pair is not advertised. `created` is deliberately absent:
          *     the registry has no creation timestamps and inventing one would be a fabricated fact. `data`
          *     is always an array, so an empty registry still contains `auto` rather than a null catalogue.
@@ -103,8 +103,7 @@ export interface paths {
          *     1. `auto` — automatic routing. The policy engine chooses the pair from the eligible
          *        candidates; the analyzer and the configured Jev recommender contribute.
          *     2. Anything else — a logical model ID, resolved to the first routable binding in the
-         *        documented ordering contract (`pair.priority`, `provider.priority`, `provider.key`,
-         *        `model.id` ascending).
+         *        documented ordering contract (`provider.priority`, `provider.key`, `model.id` ascending).
          *
          *     Responses are relayed transparently: the status line, end-to-end headers and body all come
          *     from the provider, streamed in 16 KiB chunks with a flush after every write when the client
@@ -400,7 +399,7 @@ export interface paths {
         /**
          * List logical models
          * @description Returns logical models from the database (the authority the published snapshot is built
-         *     from) in contract order: priority ascending, then ID ascending. `next_cursor` is an opaque
+         *     from) in contract order: ID ascending. `next_cursor` is an opaque
          *     position key rather than an offset, so a concurrent write cannot make a row appear twice or
          *     disappear.
          */
@@ -571,8 +570,7 @@ export interface paths {
         };
         /**
          * List provider/model bindings
-         * @description Returns bindings in contract order: pair priority, provider priority, provider key, model ID
-         *     ascending. `missing` answers the operator's "what could serve this kind of request" question
+         * @description Returns bindings in contract order: provider priority, provider key, model ID ascending. `missing` answers the operator's "what could serve this kind of request" question
          *     by selecting rows that do **not** declare a capability.
          */
         get: operations["listAdminPairs"];
@@ -616,7 +614,14 @@ export interface paths {
         get: operations["getAdminPair"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Permanently remove one binding
+         * @description Permanently removes the provider/model binding, removes it from every routing group while
+         *     preserving the remaining order, and records an exclusion so later registry imports do not
+         *     recreate it. An explicit Admin API bind/select operation removes that exclusion.
+         *     Historical routing attempts are retained as snapshots.
+         */
+        delete: operations["deleteAdminPair"];
         options?: never;
         head?: never;
         /**
@@ -743,7 +748,9 @@ export interface paths {
          * Report the effective settings
          * @description Returns the runtime-mutable settings only: a flat `settings` list with each value's
          *     provenance, plus the masked `effective` document and the current validation warnings.
-         *     Fixed runtime constraints and inbound credentials are not part of the document.
+         *     Fixed runtime constraints and inbound credentials are not part of the document. The former
+         *     `routing.policy.allow_*` and `routing.policy.deny_*` settings are no longer reported or applied;
+         *     matching values in older stored overlays are ignored.
          *
          *     `source` is `default` or `runtime` for settings the serving runtime owns; a mutable value
          *     with a stored SQLite overlay is reported as `runtime` and reflected in `overlay`. A
@@ -764,10 +771,17 @@ export interface paths {
         /**
          * Apply a runtime settings change
          * @description The body is a nested JSON document shaped like the configuration, restricted to
-         *     runtime-mutable paths. A change is a **candidate, never an edit**: it is merged onto the
-         *     current effective configuration, validated and compiled, and only a candidate that passes
-         *     both steps is stored and published. A refused change therefore leaves the running process
-         *     exactly as it was.
+         *     runtime-mutable paths; only paths reported as mutable by GET are accepted. Former
+         *     `routing.policy.allow_*` and `routing.policy.deny_*` settings are unsupported. Automatic routing
+         *     uses `routing.auto.default_group` as its deterministic Jev-failure/low-confidence group.
+         *     `routing.auto.failover.max_attempts` counts
+         *     the initial request and is bounded from 1 to 8. Retry classes are independently configurable:
+         *     pre-request failures default on, while timeouts and selected transient HTTP statuses default off.
+         *     Retrying after an uncertain timeout or HTTP response can duplicate a provider-side action.
+         *
+         *     A change is a **candidate, never an edit**: it is merged onto the current effective configuration,
+         *     validated and compiled, and only a candidate that passes both steps is stored and published. A
+         *     refused change therefore leaves the running process exactly as it was.
          *
          *     The catalogue is consulted before the merge, so a request that mixes a mutable and an
          *     immutable setting changes nothing at all rather than applying the half it is allowed to.
@@ -809,11 +823,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Synchronize the models.dev allowlist now
-         * @description Fetches models.dev and imports the configured allowlist into the registry. Synchronizations
-         *     are serialized: a second request while one is running waits rather than starting a second
-         *     import. An empty allowlist is refused before any network call, and a failed import changes
-         *     nothing — the snapshot is republished only after the transaction commits.
+         * Synchronize the models.dev catalog
+         * @description Fetches models.dev and imports every catalog provider/model pair with a usable context window.
+         *     An empty `registry.sync.include` selects the full catalog; a non-empty value remains an
+         *     explicit scope override. Entries without usable context metadata are skipped with warnings.
+         *     New providers remain disabled until local credentials and endpoints are configured. Local
+         *     overrides are preserved, and catalog entries no longer present are disabled rather than
+         *     deleted. Synchronizations are serialized, and a failed import changes nothing — the snapshot
+         *     is republished only after the transaction commits.
          *
          *     No request body is read.
          */
@@ -1131,7 +1148,7 @@ export interface components {
          *     contract change and not an ad-hoc string.
          * @enum {string}
          */
-        AdminErrorCode: "invalid_request" | "invalid_filter" | "invalid_cursor" | "invalid_group" | "invalid_scopes" | "invalid_model" | "invalid_password" | "invalid_session" | "invalid_api_key" | "insufficient_scope" | "cross_site_request" | "too_many_attempts" | "request_too_large" | "unknown_model" | "unknown_provider" | "unknown_pair" | "not_found" | "provider_exists" | "model_exists" | "pair_exists" | "provider_not_deletable" | "provider_not_configured" | "key_not_found" | "key_name_exists" | "credential_limit" | "password_already_set" | "password_not_set" | "settings_conflict" | "restart_required" | "unsupported_setting" | "read_only_state" | "storage_error" | "snapshot_publish_failed" | "empty_allowlist" | "sync_failed" | "sync_unavailable" | "discovery_failed" | "metadata_lookup_failed" | "dashboard_missing";
+        AdminErrorCode: "invalid_request" | "invalid_filter" | "invalid_cursor" | "invalid_group" | "invalid_scopes" | "invalid_model" | "invalid_password" | "invalid_session" | "invalid_api_key" | "insufficient_scope" | "cross_site_request" | "too_many_attempts" | "request_too_large" | "unknown_model" | "unknown_provider" | "unknown_pair" | "not_found" | "provider_exists" | "model_exists" | "pair_exists" | "provider_not_deletable" | "provider_not_configured" | "key_not_found" | "key_name_exists" | "credential_limit" | "password_already_set" | "password_not_set" | "settings_conflict" | "restart_required" | "unsupported_setting" | "read_only_state" | "storage_error" | "snapshot_publish_failed" | "sync_failed" | "sync_unavailable" | "discovery_failed" | "metadata_lookup_failed" | "dashboard_missing";
         OpenAIError: {
             error: {
                 /** @description Authored by this service and intentionally generic. */
@@ -1343,7 +1360,6 @@ export interface components {
             /** @description An independent capability, never a synonym for `supports_vision`. */
             supports_audio_input?: boolean;
             supports_reasoning?: boolean;
-            pair_priority?: number;
             provider_priority?: number;
         };
         /**
@@ -1447,7 +1463,10 @@ export interface components {
         Exclusion: {
             model_id: string;
             provider_key: string;
-            /** @enum {string} */
+            /**
+             * @description `not_in_allowlist` and `denied` are retained for historical routing records; current decisions no longer emit them.
+             * @enum {string}
+             */
             code: "requires_tools" | "requires_vision" | "requires_audio_input" | "context_insufficient" | "max_output_too_small" | "not_in_allowlist" | "denied" | "truncated_evidence";
             /**
              * @description A bounded string of numbers and enumerations only, for example
@@ -1552,7 +1571,6 @@ export interface components {
             id: string;
             display_name: string;
             enabled: boolean;
-            priority: number;
             /** @enum {string} */
             source: "local" | "modelsdev";
             /**
@@ -1573,13 +1591,11 @@ export interface components {
             /** @description Non-empty, not padded with whitespace, no NUL. Defaults to the ID when empty. */
             display_name?: string;
             enabled?: boolean;
-            priority?: number;
         };
         /** @description A partial update. At least one field must be present, and no listed field may be explicitly `null`. */
         ModelPatch: {
             display_name?: string;
             enabled?: boolean;
-            priority?: number;
         };
         ModelDetail: {
             model: components["schemas"]["Model"];
@@ -1668,7 +1684,6 @@ export interface components {
             supports_audio_input: boolean;
             supports_reasoning: boolean;
             enabled: boolean;
-            priority: number;
             /** @enum {string} */
             source: "local" | "modelsdev";
             /** @enum {string} */
@@ -1689,12 +1704,10 @@ export interface components {
             supports_audio_input?: boolean;
             supports_reasoning?: boolean;
             enabled?: boolean;
-            priority?: number;
         };
         /** @description A partial update. At least one field must be present; an explicit `null` for `max_output` clears the declared ceiling. */
         PairPatch: {
             enabled?: boolean;
-            priority?: number;
             upstream_model_id?: string;
             context_window?: number;
             max_output?: number | null;
@@ -1760,7 +1773,7 @@ export interface components {
             fallback_reason?: string | null;
             /** @description A digest of the decision's inputs. It never covers request text. */
             evidence_hash?: string | null;
-            /** @description How many upstream attempts were made — 1, or 2 after a failover. */
+            /** @description How many upstream attempts were made. Automatic retries are bounded by the configured total-attempt limit (1–8). */
             gateway_attempts: number;
             failover_used: boolean;
             /**
@@ -1829,13 +1842,35 @@ export interface components {
              * @description `null` when no call was made.
              */
             latency_ms?: number | null;
-            /** @description How many eligible pair-level candidates the models were derived from. */
+            /** @description How many hard-filtered provider/model pairs were eligible across the candidate groups. */
             candidate_count: number;
-            /** @description The distinct logical model identifiers sent, sorted ascending. Empty when no call was made. */
+            /** @description Legacy model-mode trace field. Empty for current group-level routing. */
             candidate_models: string[];
-            /** @description Always the length of `candidate_models`. */
+            /** @description Always the length of `candidate_models`; zero for group-level routing. */
             model_count: number;
+            /** @description Legacy model-mode recommendation; null for group-level routing. */
             selected_model?: string | null;
+            /** @description Ordered non-empty groups presented to Jev. The array order is simple, medium, complex. */
+            candidate_groups: ("simple" | "medium" | "complex")[];
+            /** @description Always the length of `candidate_groups`. */
+            group_count: number;
+            /**
+             * @description Jev's recommended group when it produced a valid recommendation.
+             * @enum {string|null}
+             */
+            recommended_group: "simple" | "medium" | "complex" | null;
+            /**
+             * @description The group actually selected after confidence fallback.
+             * @enum {string|null}
+             */
+            selected_group: "simple" | "medium" | "complex" | null;
+            /** @description Jev's normalized group distribution, ordered by descending probability and then group order. */
+            group_probabilities: {
+                /** @enum {string} */
+                group: "simple" | "medium" | "complex";
+                /** Format: double */
+                probability: number;
+            }[];
             /** Format: double */
             confidence?: number | null;
             confidence_band?: string | null;
@@ -3498,6 +3533,52 @@ export interface operations {
             500: components["responses"]["AdminError"];
         };
     };
+    deleteAdminPair: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The registry provider key of the binding. An unknown coordinate is `404 unknown_pair`. */
+                provider: components["parameters"]["PairProviderKey"];
+                /**
+                 * @description The logical model ID of the binding. The route is a Go rest-wildcard (`{model...}`), so the
+                 *     value may contain slashes. An unknown coordinate is `404 unknown_pair`.
+                 */
+                model: components["parameters"]["PairModelId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The binding was removed. */
+            200: {
+                headers: {
+                    "X-Request-Id": components["headers"]["XRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        provider: string;
+                        model: string;
+                        /** @constant */
+                        deleted: true;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["InsufficientScope"];
+            /** @description No such binding (`unknown_pair`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminError"];
+                };
+            };
+            500: components["responses"]["AdminError"];
+        };
+    };
     patchAdminPair: {
         parameters: {
             query?: never;
@@ -3925,15 +4006,6 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["InsufficientScope"];
-            /** @description The models.dev allowlist is empty (`empty_allowlist`). */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AdminError"];
-                };
-            };
             /** @description The synchronization failed and the registry was not changed (`sync_failed`). */
             502: {
                 headers: {

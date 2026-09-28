@@ -47,6 +47,10 @@ jobs:
         working-directory: webui
       - run: npm test
         working-directory: webui
+      - run: npx playwright install --with-deps chromium
+        working-directory: webui
+      - run: npm run test:e2e
+        working-directory: webui
       - run: npm run typecheck
         working-directory: webui
       - run: npm run build

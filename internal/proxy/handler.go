@@ -36,11 +36,9 @@ const (
 	routingModeAuto = "auto"
 )
 
-// maxAutoUpstreamAttempts bounds how many upstream attempts one automatic request
-// may make from the boundary's point of view. The orchestration layer owns the
-// retry semantics and already refuses a third attempt; this constant is a local
-// backstop so a misbehaving implementation cannot turn the forwarding loop into
-// an unbounded retry loop.
+// maxAutoUpstreamAttempts is the absolute safety ceiling. Each routed target also
+// carries the request-start configurable attempt limit; this constant only protects
+// the HTTP boundary if an AutoRouter implementation is misbehaving.
 const maxAutoUpstreamAttempts = 8
 
 // RequestIDHeader is the correlation identifier relayed to clients and passed
@@ -141,9 +139,9 @@ type Options struct {
 type AutoRouter interface {
 	// Route produces the first destination for one automatic request.
 	Route(ctx context.Context, request auto.Request) (auto.Target, error)
-	// Failover produces the destination for one additional upstream attempt
-	// after cause failed, reporting false when no further attempt may be made.
-	Failover(ctx context.Context, previous auto.Target, cause error) (auto.Target, bool)
+	// Failover produces the destination for the next bounded upstream attempt,
+	// reporting false when the captured policy disallows retrying the failure.
+	Failover(ctx context.Context, previous auto.Target, failure auto.AttemptFailure) (auto.Target, bool)
 }
 
 // Handler serves POST /v1/chat/completions and POST /v1/responses.
@@ -513,11 +511,11 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 			// a router that would always say "retry" cannot turn this loop into an
 			// unbounded one. attempt is the number of the attempt that just failed,
 			// so reaching the bound means there is no next attempt.
-			if attempt >= maxAutoUpstreamAttempts {
+			if attempt >= autoAttemptLimit(target) {
 				h.writeExecutorError(w, record, failure)
 				return
 			}
-			next, retry := h.autoRouter.Failover(r.Context(), target, failure)
+			next, retry := h.autoRouter.Failover(r.Context(), target, auto.AttemptFailure{Cause: failure})
 			if !retry {
 				h.writeExecutorError(w, record, failure)
 				return
@@ -526,6 +524,17 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 			record.FailoverUsed = true
 			record.applyRoutingDecision(target)
 			continue
+		}
+		if response.StatusCode >= http.StatusBadRequest && attempt < autoAttemptLimit(target) {
+			next, retry := h.autoRouter.Failover(r.Context(), target, auto.AttemptFailure{StatusCode: response.StatusCode})
+			if retry {
+				h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, response.StatusCode, "", logging.Usage{})
+				_ = response.Body.Close()
+				target = next
+				record.FailoverUsed = true
+				record.applyRoutingDecision(target)
+				continue
+			}
 		}
 		defer response.Body.Close()
 		record.upstreamStatus = response.StatusCode
@@ -537,6 +546,16 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 		h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, response.StatusCode, "", record.usage)
 		return
 	}
+}
+
+func autoAttemptLimit(target auto.Target) int {
+	if target.MaxAttempts < 1 {
+		return maxAutoUpstreamAttempts
+	}
+	if target.MaxAttempts > maxAutoUpstreamAttempts {
+		return maxAutoUpstreamAttempts
+	}
+	return target.MaxAttempts
 }
 
 func executorErrorCode(err error) string {
@@ -1223,24 +1242,40 @@ func jevTrace(target auto.Target) *logging.JevTrace {
 	}
 	source := target.JevTrace
 	trace := &logging.JevTrace{
-		Status:          source.Status,
-		FailureReason:   source.FailureReason,
-		InputMode:       source.InputMode,
-		Selected:        source.Selected,
-		ConfidenceBand:  source.ConfidenceBand,
-		FallbackReason:  source.FallbackReason,
-		EvidenceHash:    source.EvidenceHash,
-		LatencyMS:       source.LatencyMS,
-		CandidateModels: source.CandidateModels,
-		ModelCount:      source.ModelCount,
-		CandidateCount:  source.CandidateCount,
-		Confidence:      source.Confidence,
+		Status:           source.Status,
+		FailureReason:    source.FailureReason,
+		InputMode:        source.InputMode,
+		Selected:         source.Selected,
+		ConfidenceBand:   source.ConfidenceBand,
+		FallbackReason:   source.FallbackReason,
+		EvidenceHash:     source.EvidenceHash,
+		LatencyMS:        source.LatencyMS,
+		CandidateModels:  source.CandidateModels,
+		ModelCount:       source.ModelCount,
+		CandidateCount:   source.CandidateCount,
+		CandidateGroups:  make([]string, 0, len(source.CandidateGroups)),
+		GroupCount:       source.GroupCount,
+		Confidence:       source.Confidence,
+		RecommendedGroup: string(source.RecommendedGroup),
+		SelectedGroup:    string(source.SelectedGroup),
+	}
+	for _, group := range source.CandidateGroups {
+		trace.CandidateGroups = append(trace.CandidateGroups, string(group))
 	}
 	if len(source.Probabilities) > 0 {
 		trace.Probabilities = make([]logging.ModelProbability, 0, len(source.Probabilities))
 		for _, probability := range source.Probabilities {
 			trace.Probabilities = append(trace.Probabilities, logging.ModelProbability{
 				Model:       probability.Model,
+				Probability: probability.Probability,
+			})
+		}
+	}
+	if len(source.GroupProbabilities) > 0 {
+		trace.GroupProbabilities = make([]logging.GroupProbability, 0, len(source.GroupProbabilities))
+		for _, probability := range source.GroupProbabilities {
+			trace.GroupProbabilities = append(trace.GroupProbabilities, logging.GroupProbability{
+				Group:       string(probability.Group),
 				Probability: probability.Probability,
 			})
 		}

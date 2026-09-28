@@ -1,16 +1,32 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { api, pageURL, type Page, type Provider } from '@/lib/api'
+import { createDebouncedSave, createSerialAutosaveQueue } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
+import { showSavedToast } from '@/lib/save-toast'
 import ErrorAlert from '@/components/ErrorAlert.vue'
+import JfAlert from '@/components/JfAlert.vue'
+import JfBadge from '@/components/JfBadge.vue'
+import JfButton from '@/components/JfButton.vue'
+import JfCard from '@/components/JfCard.vue'
+import JfDrawer from '@/components/JfDrawer.vue'
+import JfField from '@/components/JfField.vue'
+import JfInput from '@/components/JfInput.vue'
+import JfSelect from '@/components/JfSelect.vue'
+import JfSkeleton from '@/components/JfSkeleton.vue'
+import JfSwitch from '@/components/JfSwitch.vue'
+import JfTable from '@/components/JfTable.vue'
+import type { JfColumn } from '@/lib/table'
 import type { DiscoveredModel, DiscoveredModelsDocument } from '@/lib/admin-contracts'
 import type { operations } from '@/lib/generated-api'
 
 type ProviderKind = 'openai' | 'openai_compatible' | 'anthropic' | 'gemini'
 type ProviderRow = Provider & { kind?: ProviderKind }
-type ProviderDetail = { provider: ProviderRow; pairs: Array<{ upstream_model_id: string }> }
+type ProviderPair = { model: string; upstream_model_id: string; enabled: boolean }
+type ProviderDetail = { provider: ProviderRow; pairs: ProviderPair[] }
 
 const loading = ref(false)
+const loadingMore = ref(false)
 const providers = ref<ProviderRow[]>([])
 const search = ref('')
 const enabled = ref('all')
@@ -24,28 +40,141 @@ const editing = ref(false)
 const saving = ref(false)
 const formError = ref<unknown>()
 const formData = reactive({
-  key: '', display_name: '', kind: 'openai_compatible' as ProviderKind,
-  base_url: '', api_key: '', enabled: true,
+  key: '',
+  display_name: '',
+  kind: 'openai_compatible' as ProviderKind,
+  base_url: '',
+  api_key: '',
+  enabled: true,
 })
+
+type ProviderFormField = 'display_name' | 'kind' | 'base_url' | 'api_key'
+type ProviderFormSave = {
+  key: string
+  body: Record<string, unknown>
+  versions: Map<ProviderFormField, number>
+  apiKeySnapshot?: string
+}
+const formDirty = new Set<ProviderFormField>()
+const formVersions = new Map<ProviderFormField, number>()
+const formTextSaves = new Map<ProviderFormField, ReturnType<typeof createDebouncedSave>>()
+const formSaveQueue = createSerialAutosaveQueue<ProviderFormSave>(persistProviderForm, (_current, next) => next)
+
 const kindOptions = [
   { label: 'OpenAI', value: 'openai' },
   { label: 'OpenAI 兼容', value: 'openai_compatible' },
   { label: 'Anthropic', value: 'anthropic' },
   { label: 'Gemini', value: 'gemini' },
 ]
+
 const enabledOptions = [
-  { label: '全部状态', value: 'all' }, { label: '已启用', value: 'true' }, { label: '已禁用', value: 'false' },
+  { label: '全部状态', value: 'all' },
+  { label: '已启用', value: 'true' },
+  { label: '已禁用', value: 'false' },
 ]
 
+function resetProviderAutosave() {
+  for (const saver of formTextSaves.values()) saver.cancel()
+  formTextSaves.clear()
+  formDirty.clear()
+  formVersions.clear()
+}
+
+function providerFieldSaver(field: ProviderFormField) {
+  let saver = formTextSaves.get(field)
+  if (!saver) {
+    saver = createDebouncedSave(() => enqueueProviderFormSave())
+    formTextSaves.set(field, saver)
+  }
+  return saver
+}
+
+function updateProviderField(field: ProviderFormField, value: string) {
+  formData[field] = value as never
+  formError.value = undefined
+  if (!editing.value) return
+  if (field === 'api_key' && !value.trim()) {
+    formTextSaves.get(field)?.cancel()
+    formDirty.delete(field)
+    formVersions.set(field, (formVersions.get(field) ?? 0) + 1)
+    return
+  }
+  formDirty.add(field)
+  formVersions.set(field, (formVersions.get(field) ?? 0) + 1)
+  if (field === 'kind') enqueueProviderFormSave()
+  else providerFieldSaver(field).schedule()
+}
+
+function flushProviderField(field: ProviderFormField) {
+  void providerFieldSaver(field).flush()
+}
+
+function enqueueProviderFormSave() {
+  if (!editing.value || !formDirty.size) return
+  if (formDirty.has('display_name') && !formData.display_name.trim()) {
+    formError.value = '提供商显示名称不能为空。'
+    return
+  }
+  const body: Record<string, unknown> = {}
+  if (formDirty.has('display_name')) body.display_name = formData.display_name.trim()
+  if (formDirty.has('kind')) body.kind = formData.kind
+  if (formDirty.has('base_url')) body.base_url = formData.base_url.trim()
+  if (formDirty.has('api_key') && formData.api_key.trim()) body.api_key = formData.api_key.trim()
+  if (!Object.keys(body).length) return
+  const versions = new Map([...formDirty].map(field => [field, formVersions.get(field) ?? 0]))
+  formSaveQueue.enqueue({
+    key: formData.key,
+    body,
+    versions,
+    ...(typeof body.api_key === 'string' ? { apiKeySnapshot: body.api_key } : {}),
+  })
+}
+
+async function persistProviderForm(task: ProviderFormSave) {
+  saving.value = true
+  try {
+    await api.patch(`/admin/v1/providers/${encodeURIComponent(task.key)}`, task.body)
+    if (formData.key === task.key) {
+      for (const [field, version] of task.versions) {
+        if (formVersions.get(field) !== version) continue
+        formDirty.delete(field)
+        if (field === 'api_key' && formData.api_key.trim() === task.apiKeySnapshot) formData.api_key = ''
+      }
+      formError.value = undefined
+    }
+    const row = providers.value.find(provider => provider.key === task.key)
+    if (row) {
+      if (typeof task.body.display_name === 'string') row.display_name = task.body.display_name
+      if (typeof task.body.kind === 'string') row.kind = task.body.kind as ProviderKind
+      if (typeof task.body.base_url === 'string') row.base_url = task.body.base_url
+      if (typeof task.body.api_key === 'string') row.api_key_set = true
+    }
+    showSavedToast()
+  } catch (cause) {
+    if (formData.key === task.key) formError.value = errorNotice(cause)
+  } finally {
+    saving.value = false
+  }
+}
+
 async function fetchProviders(reset = true) {
-  if (reset) { nextCursor.value = null; providers.value = [] }
-  loading.value = true
+  if (loading.value || loadingMore.value) return
+  if (!reset && (!hasMore.value || !nextCursor.value)) return
+
+  if (reset) {
+    nextCursor.value = null
+    hasMore.value = false
+    providers.value = []
+    loading.value = true
+  } else {
+    loadingMore.value = true
+  }
   error.value = undefined
   try {
     const result = await api.get<Page<ProviderRow>>(pageURL('/admin/v1/providers', {
       search: search.value.trim(),
       enabled: enabled.value === 'all' ? '' : enabled.value,
-      cursor: nextCursor.value,
+      cursor: reset ? null : nextCursor.value,
       limit: 50,
     }))
     providers.value.push(...result.items)
@@ -54,20 +183,30 @@ async function fetchProviders(reset = true) {
   } catch (cause) {
     error.value = errorNotice(cause)
   } finally {
-    loading.value = false
+    if (reset) loading.value = false
+    else loadingMore.value = false
   }
 }
 
 onMounted(() => { void fetchProviders() })
 
 function openCreate() {
+  resetProviderAutosave()
   editing.value = false
   formError.value = undefined
-  Object.assign(formData, { key: '', display_name: '', kind: 'openai_compatible', base_url: '', api_key: '', enabled: true })
+  Object.assign(formData, {
+    key: '',
+    display_name: '',
+    kind: 'openai_compatible',
+    base_url: '',
+    api_key: '',
+    enabled: true,
+  })
   formOpen.value = true
 }
 
 async function openEdit(provider: ProviderRow) {
+  resetProviderAutosave()
   editing.value = true
   formError.value = undefined
   try {
@@ -82,32 +221,69 @@ async function openEdit(provider: ProviderRow) {
     })
   } catch {
     Object.assign(formData, {
-      key: provider.key, display_name: provider.display_name, kind: provider.kind ?? 'openai_compatible',
-      base_url: provider.base_url, api_key: '', enabled: provider.enabled,
+      key: provider.key,
+      display_name: provider.display_name,
+      kind: provider.kind ?? 'openai_compatible',
+      base_url: provider.base_url,
+      api_key: '',
+      enabled: provider.enabled,
     })
   }
   formOpen.value = true
 }
 
-async function saveProvider() {
-  saving.value = true
-  formError.value = undefined
+async function toggleProvider(provider: ProviderRow) {
+  const previous = provider.enabled
+  const next = !previous
+  provider.enabled = next
   try {
-    let createdProvider: ProviderRow | undefined
+    await api.patch(`/admin/v1/providers/${encodeURIComponent(provider.key)}`, { enabled: next })
+    showSavedToast()
+  } catch (cause) {
+    provider.enabled = previous
+    error.value = errorNotice(cause)
+  }
+}
+
+async function deleteProvider(provider: ProviderRow) {
+  if (!window.confirm(`确定要删除提供商“${provider.display_name || provider.key}”吗？关联的绑定关系也将被清理。`)) return
+  deletingProvider.value = provider.key
+  try {
+    await api.delete(`/admin/v1/providers/${encodeURIComponent(provider.key)}`)
+    await fetchProviders(true)
+  } catch (cause) {
+    error.value = errorNotice(cause)
+  } finally {
+    deletingProvider.value = ''
+  }
+}
+
+async function saveProvider() {
+  formError.value = undefined
+  if (editing.value) {
+    for (const saver of formTextSaves.values()) void saver.flush()
+    enqueueProviderFormSave()
+    return
+  }
+  const key = formData.key.trim()
+  if (!key) {
+    formError.value = '提供商标识不能为空。'
+    return
+  }
+  saving.value = true
+  let createdProvider: ProviderRow | undefined
+  try {
     const common = {
       display_name: formData.display_name.trim(),
       kind: formData.kind,
       base_url: formData.base_url.trim(),
       enabled: formData.enabled,
     }
-    if (editing.value) {
-      const payload: Record<string, unknown> = { ...common }
-      if (formData.api_key) payload.api_key = formData.api_key
-      await api.patch(`/admin/v1/providers/${encodeURIComponent(formData.key)}`, payload)
-    } else {
-      const result = await api.post<operations['createAdminProvider']['responses'][201]['content']['application/json']>('/admin/v1/providers', { ...common, key: formData.key.trim(), api_key: formData.api_key })
-      createdProvider = result
-    }
+    const result = await api.post<operations['createAdminProvider']['responses'][201]['content']['application/json']>(
+      '/admin/v1/providers',
+      { ...common, key, api_key: formData.api_key },
+    )
+    createdProvider = result
     formOpen.value = false
     formData.api_key = ''
     await fetchProviders(true)
@@ -120,6 +296,12 @@ async function saveProvider() {
   }
 }
 
+watch(formOpen, isOpen => {
+  if (!isOpen && editing.value) {
+    for (const saver of formTextSaves.values()) void saver.flush()
+  }
+})
+
 const modelsOpen = ref(false)
 const modelsLoading = ref(false)
 const modelsError = ref<unknown>()
@@ -128,15 +310,16 @@ const modelsNoticeColor = ref<'success' | 'warning'>('success')
 const activeProvider = ref<ProviderRow>()
 const candidateModels = ref<DiscoveredModel[]>([])
 const candidateTruncated = ref(false)
-const configuredModels = ref<string[]>([])
+const configuredPairs = ref<ProviderPair[]>([])
 const manualModel = ref('')
 const selectingModel = ref('')
+const deletingModel = ref('')
 
 async function openModels(provider: ProviderRow) {
   activeProvider.value = provider
   candidateModels.value = []
   candidateTruncated.value = false
-  configuredModels.value = []
+  configuredPairs.value = []
   manualModel.value = ''
   modelsError.value = undefined
   modelsNotice.value = ''
@@ -144,53 +327,48 @@ async function openModels(provider: ProviderRow) {
   modelsLoading.value = true
   const encodedKey = encodeURIComponent(provider.key)
   try {
-    const [found, current] = await Promise.all([
+    const [discovery, detail] = await Promise.allSettled([
       api.get<DiscoveredModelsDocument>(`/admin/v1/providers/${encodedKey}/discover`),
       api.get<ProviderDetail>(`/admin/v1/providers/${encodedKey}`),
     ])
-    candidateModels.value = [...new Map((found.items ?? []).filter(model => model.id).map(model => [model.id, model])).values()]
-    candidateTruncated.value = found.truncated
-    configuredModels.value = [...new Set(current.pairs.map(pair => pair.upstream_model_id).filter(Boolean))]
-  } catch (cause) {
-    modelsError.value = errorNotice(cause)
+    if (discovery.status === 'fulfilled') {
+      const found = discovery.value
+      candidateModels.value = [...new Map((found.items ?? []).filter(model => model.id).map(model => [model.id, model])).values()]
+      candidateTruncated.value = found.truncated
+    } else {
+      modelsError.value = errorNotice(discovery.reason)
+    }
+    if (detail.status === 'fulfilled') {
+      configuredPairs.value = detail.value.pairs
+    } else {
+      modelsError.value ??= errorNotice(detail.reason)
+    }
   } finally {
     modelsLoading.value = false
   }
 }
 
-async function toggleProvider(provider: ProviderRow) {
-  try {
-    await api.patch(`/admin/v1/providers/${encodeURIComponent(provider.key)}`, { enabled: !provider.enabled })
-    await fetchProviders(true)
-  } catch (cause) {
-    error.value = errorNotice(cause)
-  }
+function isConfigured(modelId: string) {
+  return configuredPairs.value.some(pair => pair.model === modelId && pair.enabled)
 }
 
-async function deleteProvider(provider: ProviderRow) {
-  if (provider.owner !== 'admin' || deletingProvider.value) return
-  const name = provider.display_name || provider.key
-  if (!window.confirm(`确定删除提供商“${name}”吗？其模型绑定和路由分组引用也会移除，历史请求日志会保留。`)) return
-  deletingProvider.value = provider.key
-  error.value = undefined
-  try {
-    await api.delete(`/admin/v1/providers/${encodeURIComponent(provider.key)}`)
-    await fetchProviders(true)
-  } catch (cause) {
-    error.value = errorNotice(cause)
-  } finally {
-    deletingProvider.value = ''
-  }
-}
-
-async function selectModel(model: DiscoveredModel) {
-  if (!activeProvider.value) return
-  selectingModel.value = model.id
+async function addModelPair(upstreamId: string) {
+  if (!activeProvider.value || !upstreamId.trim() || deletingModel.value) return
+  selectingModel.value = upstreamId
   modelsError.value = undefined
   modelsNotice.value = ''
   try {
-    const result = await api.post<{ metadata_source: string; metadata_applied: boolean; metadata_match: string; metadata_model: string }>(`/admin/v1/providers/${encodeURIComponent(activeProvider.value.key)}/models`, { model: model.id })
-    if (!configuredModels.value.includes(model.id)) configuredModels.value.push(model.id)
+    const result = await api.post<operations['selectProviderModel']['responses'][200]['content']['application/json']>(
+      `/admin/v1/providers/${encodeURIComponent(activeProvider.value.key)}/models`,
+      { model: upstreamId.trim() },
+    )
+    const existing = configuredPairs.value.find(pair => pair.model === result.model)
+    if (existing) {
+      existing.upstream_model_id = upstreamId.trim()
+      existing.enabled = true
+    } else {
+      configuredPairs.value.push({ model: result.model, upstream_model_id: upstreamId.trim(), enabled: true })
+    }
     if (result.metadata_source === 'models.dev') {
       modelsNoticeColor.value = 'success'
       modelsNotice.value = `已从 models.dev 更新能力信息（${result.metadata_match} 匹配：${result.metadata_model}）。`
@@ -201,6 +379,7 @@ async function selectModel(model: DiscoveredModel) {
       modelsNoticeColor.value = 'warning'
       modelsNotice.value = 'models.dev 中未找到唯一匹配；此模型使用保守默认值，请到“模型管理”核对并编辑能力信息。'
     }
+    manualModel.value = ''
     await fetchProviders(true)
   } catch (cause) {
     modelsError.value = errorNotice(cause)
@@ -209,92 +388,343 @@ async function selectModel(model: DiscoveredModel) {
   }
 }
 
-function addManualModel() {
-  const model = manualModel.value.trim()
-  if (!model) return
-  if (!candidateModels.value.some(item => item.id === model)) candidateModels.value.push({ id: model, label: model })
-  manualModel.value = ''
+async function removeModelPair(pair: ProviderPair) {
+  const provider = activeProvider.value
+  if (!provider || deletingModel.value) return
+  if (!window.confirm(`确定永久解除“${provider.display_name || provider.key}”与“${pair.model}”的绑定吗？该绑定会从所有路由组移除，后续注册表同步不会自动恢复。`)) return
+
+  deletingModel.value = pair.model
+  modelsError.value = undefined
+  modelsNotice.value = ''
+  try {
+    await api.delete<operations['deleteAdminPair']['responses'][200]['content']['application/json']>(
+      `/admin/v1/pairs/${encodeURIComponent(provider.key)}/${encodeURIComponent(pair.model)}`,
+    )
+    configuredPairs.value = configuredPairs.value.filter(item => item.model !== pair.model)
+    const providerRow = providers.value.find(row => row.key === provider.key)
+    if (providerRow) providerRow.pair_count = Math.max(0, providerRow.pair_count - 1)
+    modelsNotice.value = `已永久解除绑定：${pair.model}`
+    modelsNoticeColor.value = 'success'
+    await fetchProviders(true)
+  } catch (cause) {
+    modelsError.value = errorNotice(cause)
+  } finally {
+    deletingModel.value = ''
+  }
 }
 
-async function saveModels() {
-  modelsOpen.value = false
-}
-
-const columns = [
-  { accessorKey: 'key', header: '提供商' },
-  { accessorKey: 'kind', header: '类型' },
-  { accessorKey: 'base_url', header: '端点' },
-  { accessorKey: 'api_key_set', header: '密钥' },
-  { accessorKey: 'enabled', header: '状态' },
-  { accessorKey: 'models', header: '模型' },
-  { accessorKey: 'actions', header: '操作' },
+const columns: JfColumn[] = [
+  { key: 'key', title: '提供商', nowrap: true },
+  { key: 'kind', title: '类型' },
+  { key: 'base_url', title: '端点地址' },
+  { key: 'api_key_set', title: 'API 密钥' },
+  { key: 'enabled', title: '状态' },
+  { key: 'models', title: '模型绑定' },
+  { key: 'actions', title: '操作', nowrap: true },
 ]
 </script>
 
 <template>
-  <div class="space-y-5">
-    <section class="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-      <div class="flex gap-2">
-        <UButton color="neutral" variant="outline" icon="i-heroicons-arrow-path" :loading="loading" @click="fetchProviders(true)">刷新</UButton>
-        <UButton icon="i-heroicons-plus" @click="openCreate">添加提供商</UButton>
+  <div class="jf-stack">
+    <!-- Toolbar -->
+    <section class="jf-toolbar">
+      <div>
+        <h1 class="jf-page-title">提供商</h1>
+      </div>
+      <div class="jf-action-group">
+        <JfButton variant="secondary" icon="arrow-path" :loading="loading" @click="fetchProviders(true)">刷新</JfButton>
+        <JfButton icon="plus" @click="openCreate">添加提供商</JfButton>
       </div>
     </section>
+
     <ErrorAlert v-if="error" :error="error" />
-    <UCard class="overflow-hidden">
+
+    <!-- Providers Table Card -->
+    <JfCard flush>
       <template #header>
-        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h3 class="font-semibold">已配置提供商 <UBadge color="neutral" variant="subtle" class="ml-1">{{ providers.length }}</UBadge></h3>
-          <div class="flex flex-wrap gap-2">
-            <UInput v-model="search" icon="i-heroicons-magnifying-glass" placeholder="搜索提供商" class="w-full sm:w-56" @keydown.enter="fetchProviders(true)" />
-            <USelect v-model="enabled" :items="enabledOptions" value-key="value" class="w-36" @update:model-value="fetchProviders(true)" />
-          </div>
+        <div class="flex items-center gap-2">
+          <h2 class="jf-section-title">已配置提供商</h2>
+          <JfBadge tone="neutral">{{ providers.length }}</JfBadge>
         </div>
       </template>
-      <div class="overflow-x-auto"><UTable :data="providers" :columns="columns" :loading="loading" empty="尚未配置提供商">
-        <template #key-cell="{ row }"><div class="font-medium">{{ row.original.display_name || row.original.key }}</div><code class="text-xs text-muted">{{ row.original.key }}</code></template>
-        <template #kind-cell="{ row }"><UBadge color="neutral" variant="subtle">{{ row.original.kind || 'OpenAI 兼容' }}</UBadge></template>
-        <template #base_url-cell="{ row }"><span class="block max-w-64 truncate font-mono text-xs text-muted" :title="row.original.base_url">{{ row.original.base_url || '—' }}</span></template>
-        <template #api_key_set-cell="{ row }"><UBadge :color="row.original.api_key_set ? 'success' : 'warning'" variant="subtle">{{ row.original.api_key_set ? '已配置' : '未配置' }}</UBadge></template>
-        <template #enabled-cell="{ row }"><USwitch :model-value="row.original.enabled" :aria-label="`${row.original.enabled ? '禁用' : '启用'} ${row.original.display_name || row.original.key}`" @update:model-value="toggleProvider(row.original)" /></template>
-        <template #models-cell="{ row }"><UButton color="neutral" variant="soft" size="sm" @click="openModels(row.original)">选择模型 · {{ row.original.pair_count }}</UButton></template>
-        <template #actions-cell="{ row }"><div class="flex items-center"><UButton color="neutral" variant="ghost" size="sm" icon="i-heroicons-pencil-square" @click="openEdit(row.original)">编辑</UButton><UButton v-if="row.original.owner === 'admin'" color="error" variant="ghost" size="sm" icon="i-heroicons-trash" :loading="deletingProvider === row.original.key" :disabled="Boolean(deletingProvider)" :aria-label="`删除 ${row.original.display_name || row.original.key}`" @click="deleteProvider(row.original)">删除</UButton></div></template>
-      </UTable></div>
-      <div v-if="hasMore" class="flex justify-center px-4 pt-2 pb-4"><UButton color="neutral" variant="soft" :loading="loading" @click="fetchProviders(false)">加载更多</UButton></div>
-    </UCard>
 
-    <USlideover v-model:open="formOpen" :title="editing ? '编辑提供商' : '添加提供商'" :ui="{ overlay: 'z-[100]', content: 'z-[101]' }">
-      <template #body><form class="space-y-4" @submit.prevent="saveProvider">
-        <UFormField v-if="!editing" label="提供商标识" required><UInput v-model="formData.key" placeholder="例如：openai" class="w-full" /></UFormField>
-        <UFormField label="显示名称"><UInput v-model="formData.display_name" placeholder="例如：OpenAI" class="w-full" /></UFormField>
-        <UFormField label="类型" required><USelect v-model="formData.kind" :items="kindOptions" value-key="value" class="w-full" :ui="{ content: 'z-[110]' }" /></UFormField>
-        <UFormField label="API 端点" required><UInput v-model="formData.base_url" type="url" placeholder="https://api.example.com/v1" class="w-full" /></UFormField>
-        <UFormField :label="editing ? '替换 API 密钥' : 'API 密钥'"><UInput v-model="formData.api_key" type="password" autocomplete="new-password" class="w-full" /></UFormField>
-        <ErrorAlert v-if="formError" :error="formError" />
-        <div class="flex justify-end gap-2 pt-3"><UButton color="neutral" variant="ghost" @click="formOpen = false">取消</UButton><UButton type="submit" :loading="saving">{{ editing ? '保存更改' : '添加并选择模型' }}</UButton></div>
-      </form></template>
-    </USlideover>
+      <template #actions>
+        <div class="jf-action-group">
+          <JfInput
+            v-model="search"
+            icon="magnifying-glass"
+            placeholder="搜索提供商名称或标识"
+            aria-label="搜索提供商名称或标识"
+            :disabled="loading || loadingMore"
+            class="w-48 sm:w-60"
+            @keydown.enter="fetchProviders(true)"
+          />
+          <JfSelect
+            v-model="enabled"
+            :items="enabledOptions"
+            label="提供商状态筛选"
+            :disabled="loading || loadingMore"
+            class="w-32"
+            @update:model-value="fetchProviders(true)"
+          />
+        </div>
+      </template>
 
-    <USlideover v-model:open="modelsOpen" :title="activeProvider ? `模型 · ${activeProvider.display_name || activeProvider.key}` : '选择模型'" :ui="{ overlay: 'z-[100]', content: 'z-[101]' }">
-      <template #body>
-        <div class="space-y-5">
-          <ErrorAlert v-if="modelsError" :error="modelsError"><template #actions><UButton color="error" variant="ghost" size="sm" :disabled="!activeProvider" @click="activeProvider && openModels(activeProvider)">重试发现</UButton></template></ErrorAlert>
-          <UAlert v-if="modelsNotice" :color="modelsNoticeColor" variant="soft" :title="modelsNotice" />
-          <div class="flex gap-2">
-            <UInput v-model="manualModel" class="min-w-0 flex-1" placeholder="手动输入模型 ID" @keydown.enter.prevent="addManualModel" />
-            <UButton color="neutral" variant="outline" :disabled="!manualModel.trim()" @click="addManualModel">添加</UButton>
-          </div>
-          <div v-if="modelsLoading" class="space-y-3"><USkeleton v-for="n in 5" :key="n" class="h-9 w-full" /></div>
-          <div v-else class="space-y-2">
-            <p class="text-sm text-muted">发现 {{ candidateModels.length }} 个候选 · 已选择 {{ configuredModels.length }} 个<span v-if="candidateTruncated"> · 结果已截断</span></p>
-            <div v-for="model in candidateModels" :key="model.id" class="flex items-center gap-3 rounded-lg border border-default px-3 py-2">
-              <div class="min-w-0 flex-1"><div class="truncate text-sm font-medium">{{ model.label || model.id }}</div><code class="block truncate text-xs text-muted">{{ model.id }}</code></div>
-              <UButton size="sm" color="neutral" :variant="configuredModels.includes(model.id) ? 'soft' : 'solid'" :loading="selectingModel === model.id" :disabled="Boolean(selectingModel)" @click="selectModel(model)">{{ configuredModels.includes(model.id) ? '更新元数据' : '快速选择' }}</UButton>
+      <div class="jf-scroll-x">
+        <JfTable :rows="providers" :columns="columns" :loading="loading" empty-text="尚未配置任何提供商">
+          <template #cell-key="{ row }">
+            <div class="font-medium">{{ row.display_name || row.key }}</div>
+            <code class="jf-caption font-mono text-ink-secondary">{{ row.key }}</code>
+          </template>
+
+          <template #cell-kind="{ row }">
+            <JfBadge tone="neutral" class="jf-nowrap">
+              {{ kindOptions.find(k => k.value === (row.kind ?? 'openai_compatible'))?.label || 'OpenAI 兼容' }}
+            </JfBadge>
+          </template>
+
+          <template #cell-base_url="{ row }">
+            <span class="jf-caption font-mono text-ink-secondary jf-anywhere">{{ row.base_url || '—' }}</span>
+          </template>
+
+          <template #cell-api_key_set="{ row }">
+            <JfBadge :tone="row.api_key_set ? 'success' : 'warning'" class="jf-nowrap">
+              {{ row.api_key_set ? '已配置' : '未配置' }}
+            </JfBadge>
+          </template>
+
+          <template #cell-enabled="{ row }">
+            <JfSwitch
+              :model-value="row.enabled"
+              :aria-label="`${row.enabled ? '禁用' : '启用'} ${row.display_name || row.key}`"
+              @update:model-value="toggleProvider(row)"
+            />
+          </template>
+
+          <template #cell-models="{ row }">
+            <JfButton variant="secondary" size="sm" @click="openModels(row)">
+              模型绑定 · {{ row.pair_count }}
+            </JfButton>
+          </template>
+
+          <template #cell-actions="{ row }">
+            <div class="jf-action-group justify-end">
+              <JfButton variant="ghost" size="sm" icon="pencil-square" @click="openEdit(row)">编辑</JfButton>
+              <JfButton
+                v-if="row.owner === 'admin'"
+                variant="danger-ghost"
+                size="sm"
+                icon="trash"
+                :loading="deletingProvider === row.key"
+                :disabled="Boolean(deletingProvider)"
+                :aria-label="`删除 ${row.display_name || row.key}`"
+                @click="deleteProvider(row)"
+              >
+                删除
+              </JfButton>
             </div>
-            <p v-if="!candidateModels.length && !modelsError" class="py-6 text-center text-sm text-muted">没有发现模型，可手动添加。</p>
-          </div>
-          <div class="flex justify-end pt-2"><UButton color="neutral" variant="ghost" @click="saveModels">完成</UButton></div>
+          </template>
+        </JfTable>
+      </div>
+
+      <template v-if="hasMore" #footer>
+        <div class="flex justify-center">
+          <JfButton
+            variant="secondary"
+            :loading="loadingMore"
+            :disabled="loading"
+            @click="fetchProviders(false)"
+          >
+            加载更多提供商
+          </JfButton>
         </div>
       </template>
-    </USlideover>
+    </JfCard>
+
+    <!-- Create / Edit Provider Drawer -->
+    <JfDrawer v-model:open="formOpen" :title="editing ? '编辑提供商' : '添加提供商'">
+      <form class="grid gap-5" @submit.prevent="saveProvider">
+        <JfField label="提供商标识" name="provider-key" required>
+          <JfInput
+            v-model="formData.key"
+            :disabled="editing || saving"
+            placeholder="例如 deepseek"
+            class="w-full font-mono"
+            required
+          />
+        </JfField>
+
+        <JfField label="显示名称" name="provider-name" required>
+          <JfInput
+            :model-value="formData.display_name"
+            :disabled="!editing && saving"
+            placeholder="例如 DeepSeek 官方"
+            class="w-full"
+            required
+            @update:model-value="updateProviderField('display_name', $event)"
+            @blur="flushProviderField('display_name')"
+          />
+        </JfField>
+
+        <JfField label="协议类型" name="provider-kind">
+          <JfSelect
+            :model-value="formData.kind"
+            :items="kindOptions"
+            :disabled="!editing && saving"
+            class="w-full"
+            @update:model-value="updateProviderField('kind', String($event))"
+          />
+        </JfField>
+
+        <JfField label="API 端点地址" name="provider-endpoint">
+          <JfInput
+            :model-value="formData.base_url"
+            :disabled="!editing && saving"
+            placeholder="https://api.example.com/v1"
+            class="w-full font-mono"
+            @update:model-value="updateProviderField('base_url', $event)"
+            @blur="flushProviderField('base_url')"
+          />
+        </JfField>
+
+        <JfField
+          label="API 密钥"
+          name="provider-apikey"
+        >
+          <JfInput
+            :model-value="formData.api_key"
+            type="password"
+            :disabled="!editing && saving"
+            :placeholder="editing ? '保持当前密钥不变' : 'sk-...'"
+            class="w-full font-mono"
+            @update:model-value="updateProviderField('api_key', $event)"
+            @blur="flushProviderField('api_key')"
+          />
+        </JfField>
+
+        <JfField v-if="!editing" label="启用该提供商" inline>
+          <JfSwitch v-model="formData.enabled" :disabled="saving" />
+        </JfField>
+
+        <ErrorAlert v-if="formError" :error="formError" />
+      </form>
+
+      <template #footer>
+        <div class="jf-action-group justify-end">
+          <JfButton v-if="editing" variant="secondary" @click="formOpen = false">完成</JfButton>
+          <template v-else>
+            <JfButton variant="ghost" :disabled="saving" @click="formOpen = false">取消</JfButton>
+            <JfButton :loading="saving" @click="saveProvider">创建提供商</JfButton>
+          </template>
+        </div>
+      </template>
+    </JfDrawer>
+
+    <!-- Model Discovery & Binding Drawer -->
+    <JfDrawer v-model:open="modelsOpen" :title="`管理模型绑定 · ${activeProvider?.display_name || activeProvider?.key}`" size="lg">
+      <div class="grid gap-5">
+        <ErrorAlert v-if="modelsError" :error="modelsError" />
+        <JfAlert v-if="modelsNotice" :tone="modelsNoticeColor" :title="modelsNotice" />
+
+        <!-- Manual addition row -->
+        <div class="rounded-[var(--jf-radius-control)] border border-line p-4">
+          <h3 class="jf-module-title mb-2">手动绑定模型</h3>
+          <div class="flex gap-2">
+            <JfInput
+              v-model="manualModel"
+              placeholder="输入上游模型 ID，例如 gpt-4o"
+              aria-label="输入上游模型 ID"
+              class="grow font-mono"
+              @keydown.enter.prevent="addModelPair(manualModel)"
+            />
+            <JfButton
+              variant="secondary"
+              :disabled="!manualModel.trim() || Boolean(selectingModel)"
+              :loading="selectingModel === manualModel.trim()"
+              @click="addModelPair(manualModel)"
+            >
+              绑定
+            </JfButton>
+          </div>
+        </div>
+
+        <div v-if="configuredPairs.length">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="jf-module-title">当前模型绑定</h3>
+            <JfBadge tone="neutral">{{ configuredPairs.length }}</JfBadge>
+          </div>
+          <div class="grid gap-2">
+            <div
+              v-for="pair in configuredPairs"
+              :key="pair.model"
+              class="flex items-center justify-between gap-3 rounded-[var(--jf-radius-control)] bg-tonal px-3.5 py-2.5"
+            >
+              <div class="min-w-0">
+                <code class="font-mono font-medium block jf-truncate">{{ pair.model }}</code>
+                <span class="jf-caption text-ink-secondary block">上游 ID：{{ pair.upstream_model_id }}</span>
+              </div>
+              <div class="jf-action-group shrink-0">
+                <JfBadge :tone="pair.enabled ? 'success' : 'neutral'">{{ pair.enabled ? '已启用' : '已停用' }}</JfBadge>
+                <JfButton
+                  size="sm"
+                  variant="danger-ghost"
+                  :loading="deletingModel === pair.model"
+                  :disabled="Boolean(deletingModel) || Boolean(selectingModel)"
+                  :aria-label="`解除绑定 ${pair.model}`"
+                  @click="removeModelPair(pair)"
+                >
+                  解除绑定
+                </JfButton>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discovered models list -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="jf-module-title">发现的上游模型</h3>
+            <JfBadge tone="neutral">{{ candidateModels.length }}</JfBadge>
+          </div>
+
+          <div v-if="modelsLoading" class="grid gap-2" aria-busy="true">
+            <JfSkeleton v-for="n in 5" :key="n" height="40px" shape="block" />
+          </div>
+
+          <div v-else-if="candidateModels.length" class="grid gap-2 max-h-[460px] overflow-y-auto pr-1">
+            <div
+              v-for="model in candidateModels"
+              :key="model.id"
+              class="flex items-center justify-between gap-3 rounded-[var(--jf-radius-control)] bg-tonal px-3.5 py-2.5"
+            >
+              <div class="min-w-0">
+                <code class="font-mono font-medium block jf-truncate">{{ model.id }}</code>
+                <span v-if="model.label" class="jf-caption text-ink-secondary block">{{ model.label }}</span>
+              </div>
+              <div class="shrink-0">
+                <JfBadge v-if="isConfigured(model.id)" tone="success">已绑定</JfBadge>
+                <JfButton
+                  v-else
+                  size="sm"
+                  variant="ghost"
+                  :loading="selectingModel === model.id"
+                  @click="addModelPair(model.id)"
+                >
+                  绑定
+                </JfButton>
+              </div>
+            </div>
+          </div>
+
+          <p v-else class="py-6 text-center text-sm text-ink-secondary">未发现可用模型</p>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="jf-action-group justify-end">
+          <JfButton variant="secondary" @click="modelsOpen = false">完成</JfButton>
+        </div>
+      </template>
+    </JfDrawer>
   </div>
 </template>
