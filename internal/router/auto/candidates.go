@@ -1,12 +1,10 @@
 package auto
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 	"github.com/nextroad-dev/Auto-Router/internal/router/decision"
-	"github.com/nextroad-dev/Auto-Router/internal/router/jev"
 )
 
 // Candidates derives the policy engine's candidate list from a registry
@@ -196,51 +194,4 @@ func modelEnvelopes(candidates []decision.Candidate) []modelEnvelope {
 	}
 	sort.Slice(envelopes, func(i, j int) bool { return envelopes[i].Model < envelopes[j].Model })
 	return envelopes
-}
-
-// jevCandidates renders the envelopes in the Jev client's own candidate type. The
-// mapping is total: the client's validation rejects only empty identifiers,
-// non-positive context windows and impossible output ceilings, none of which a
-// registry snapshot can contain.
-//
-// Each candidate carries an explicit description, because the derived summary
-// would describe a logical model as if it had one provider's capabilities, while
-// the envelope is the conservative guarantee across every provider pair that is
-// currently eligible for it.
-func jevCandidates(envelopes []modelEnvelope) []jev.Candidate {
-	candidates := make([]jev.Candidate, 0, len(envelopes))
-	for _, envelope := range envelopes {
-		candidates = append(candidates, jev.Candidate{
-			Model:             envelope.Model,
-			ContextWindow:     envelope.ContextWindow,
-			MaxOutput:         envelope.MaxOutput,
-			SupportsTools:     envelope.SupportsTools,
-			SupportsVision:    envelope.SupportsVision,
-			SupportsReasoning: envelope.SupportsReasoning,
-			Description:       envelopeDescription(envelope),
-		})
-	}
-	return candidates
-}
-
-// envelopeDescription renders the capability summary shown next to a model name
-// in the Jev request. It states the guarantee explicitly, because "context window
-// 128000" alone would read as a property of the model rather than as the floor
-// across its eligible providers.
-func envelopeDescription(envelope modelEnvelope) string {
-	output := "unknown"
-	if envelope.MaxOutput != nil {
-		output = fmt.Sprintf("%d", *envelope.MaxOutput)
-	}
-	return fmt.Sprintf("context window %d tokens, max output %s tokens, tools %s, images %s, audio %s, reasoning %s, guaranteed across all currently eligible provider pairs",
-		envelope.ContextWindow, output,
-		yesNo(envelope.SupportsTools), yesNo(envelope.SupportsVision),
-		yesNo(envelope.SupportsAudioInput), yesNo(envelope.SupportsReasoning))
-}
-
-func yesNo(value bool) string {
-	if value {
-		return "yes"
-	}
-	return "no"
 }

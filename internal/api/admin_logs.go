@@ -31,40 +31,37 @@ import (
 // pointer field is a column that can be NULL, and NULL is reported as JSON null
 // rather than as a zero: "the upstream did not report this" is not "zero".
 type logEventPayload struct {
-	ID                int64    `json:"id"`
-	RequestID         string   `json:"request_id"`
-	StartedAt         string   `json:"started_at"`
-	DurationMS        int64    `json:"duration_ms"`
-	Protocol          string   `json:"protocol"`
-	RoutingMode       *string  `json:"routing_mode"`
-	SelectionMode     *string  `json:"selection_mode"`
-	RequestedModel    *string  `json:"requested_model"`
-	EffectiveModel    *string  `json:"effective_model"`
-	JevTopModel       *string  `json:"jev_top_model"`
-	ProviderKey       *string  `json:"provider"`
-	UpstreamModel     *string  `json:"upstream_model"`
-	Status            int      `json:"status"`
-	UpstreamStatus    *int     `json:"upstream_status"`
-	ErrorCode         *string  `json:"error_code"`
-	Stream            bool     `json:"stream"`
-	BytesWritten      int64    `json:"bytes_written"`
-	ClientIP          *string  `json:"client_ip"`
-	RoutingPreference *string  `json:"routing_preference"`
-	PreferenceSource  *string  `json:"preference_source"`
-	JevStatus         *string  `json:"jev_status"`
-	Confidence        *float64 `json:"confidence"`
-	ConfidenceBand    *string  `json:"confidence_band"`
-	FallbackReason    *string  `json:"fallback_reason"`
-	EvidenceHash      *string  `json:"evidence_hash"`
-	GatewayAttempts   int      `json:"gateway_attempts"`
-	FailoverUsed      bool     `json:"failover_used"`
-	RoutingLatencyMS  *int64   `json:"routing_latency_ms"`
-	JevLatencyMS      *int64   `json:"jev_latency_ms"`
-	InputTokens       *int64   `json:"input_tokens"`
-	OutputTokens      *int64   `json:"output_tokens"`
-	TotalTokens       *int64   `json:"total_tokens"`
-	UsageStatus       string   `json:"usage_status"`
-	UsageSource       *string  `json:"usage_source"`
+	ID               int64    `json:"id"`
+	RequestID        string   `json:"request_id"`
+	StartedAt        string   `json:"started_at"`
+	DurationMS       int64    `json:"duration_ms"`
+	Protocol         string   `json:"protocol"`
+	RoutingMode      *string  `json:"routing_mode"`
+	SelectionMode    *string  `json:"selection_mode"`
+	RequestedModel   *string  `json:"requested_model"`
+	EffectiveModel   *string  `json:"effective_model"`
+	ProviderKey      *string  `json:"provider"`
+	UpstreamModel    *string  `json:"upstream_model"`
+	Status           int      `json:"status"`
+	UpstreamStatus   *int     `json:"upstream_status"`
+	ErrorCode        *string  `json:"error_code"`
+	Stream           bool     `json:"stream"`
+	BytesWritten     int64    `json:"bytes_written"`
+	ClientIP         *string  `json:"client_ip"`
+	JevStatus        *string  `json:"jev_status"`
+	Confidence       *float64 `json:"confidence"`
+	ConfidenceBand   *string  `json:"confidence_band"`
+	FallbackReason   *string  `json:"fallback_reason"`
+	EvidenceHash     *string  `json:"evidence_hash"`
+	GatewayAttempts  int      `json:"gateway_attempts"`
+	FailoverUsed     bool     `json:"failover_used"`
+	RoutingLatencyMS *int64   `json:"routing_latency_ms"`
+	JevLatencyMS     *int64   `json:"jev_latency_ms"`
+	InputTokens      *int64   `json:"input_tokens"`
+	OutputTokens     *int64   `json:"output_tokens"`
+	TotalTokens      *int64   `json:"total_tokens"`
+	UsageStatus      string   `json:"usage_status"`
+	UsageSource      *string  `json:"usage_source"`
 	// JevTrace is present only when a trace was stored for this request, which is
 	// what makes the request_id filter the one way to read a detail view: the trace
 	// belongs to the event, not to a second identifier namespace.
@@ -499,13 +496,10 @@ func logEventPayloadOf(entry storage.StoredEvent) logEventPayload {
 	payload.SelectionMode = optionalString(event.SelectionMode)
 	payload.RequestedModel = optionalString(event.RequestedModel)
 	payload.EffectiveModel = optionalString(event.EffectiveModel)
-	payload.JevTopModel = optionalString(event.JevTopModel)
 	payload.ProviderKey = optionalString(event.ProviderKey)
 	payload.UpstreamModel = optionalString(event.UpstreamModel)
 	payload.ErrorCode = optionalString(event.ErrorCode)
 	payload.ClientIP = optionalString(event.ClientIP)
-	payload.RoutingPreference = optionalString(event.RoutingPreference)
-	payload.PreferenceSource = optionalString(event.PreferenceSource)
 	payload.JevStatus = optionalString(event.JevStatus)
 	payload.ConfidenceBand = optionalString(event.ConfidenceBand)
 	payload.FallbackReason = optionalString(event.FallbackReason)

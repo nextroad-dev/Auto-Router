@@ -232,7 +232,7 @@ func TestDebugEndpointsAnswerOnTheInferenceEnvelope(t *testing.T) {
 	enums := openAPIEnums(t)
 	inference, admin := enums[inferenceEnvelope], enums[adminEnvelope]
 
-	for _, code := range []string{"invalid_request", "invalid_routing_preference", "request_too_large", "debug_route_unavailable"} {
+	for _, code := range []string{"invalid_request", "request_too_large", "debug_route_unavailable"} {
 		if _, ok := inference[code]; !ok {
 			t.Errorf("%s is emitted on the OpenAI envelope by the diagnostic endpoints but is not in %s", code, inferenceEnvelope)
 		}

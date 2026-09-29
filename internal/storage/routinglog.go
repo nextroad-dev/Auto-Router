@@ -18,13 +18,13 @@ import (
 // schema in one place only.
 const routingEventColumns = `request_id, started_at, duration_ms, protocol, routing_mode, selection_mode, requested_model,
 	provider_key, upstream_model, status, upstream_status, error_code, stream, bytes_written, client_ip,
-	routing_preference, preference_source, jev_status, confidence, confidence_band, fallback_reason, evidence_hash,
+	jev_status, confidence, confidence_band, fallback_reason, evidence_hash,
 	gateway_attempts, failover_used, routing_latency_ms, jev_latency_ms,
-	input_tokens, output_tokens, total_tokens, usage_status, usage_source, effective_model, jev_top_model`
+	input_tokens, output_tokens, total_tokens, usage_status, usage_source, effective_model`
 
 // routingEventPlaceholders is one "?" per column of routingEventColumns, in the
 // same order.
-const routingEventPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
+const routingEventPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
 
 // RoutingLog is the routing log store: batched inserts through the single
 // connection pool and bounded retention deletes. Reads are deliberately limited
@@ -438,8 +438,6 @@ func newStoredRow(event logging.Event) storedRow {
 			boolInt(event.Stream),
 			event.BytesWritten,
 			nullString(event.ClientIP),
-			nullString(event.RoutingPreference),
-			nullString(event.PreferenceSource),
 			nullString(event.JevStatus),
 			nullFloat64(event.Confidence),
 			nullString(event.ConfidenceBand),
@@ -459,7 +457,6 @@ func newStoredRow(event logging.Event) storedRow {
 			// created in, which is what keeps a future column from silently shifting
 			// every value by one.
 			nullString(event.EffectiveModel),
-			nullString(event.JevTopModel),
 		},
 	}
 	if event.Jev != nil {
@@ -582,42 +579,39 @@ type scanner interface {
 // scanStoredEvent reads one row of routing_events in routingEventColumns order.
 func scanStoredEvent(row scanner) (StoredEvent, error) {
 	var (
-		entry            StoredEvent
-		startedAt        string
-		routingMode      sql.NullString
-		selectionMode    sql.NullString
-		requestedModel   sql.NullString
-		providerKey      sql.NullString
-		upstreamModel    sql.NullString
-		upstreamStatus   sql.NullInt64
-		errorCode        sql.NullString
-		stream           int
-		clientIP         sql.NullString
-		preference       sql.NullString
-		preferenceSource sql.NullString
-		jevStatus        sql.NullString
-		confidence       sql.NullFloat64
-		band             sql.NullString
-		fallbackReason   sql.NullString
-		evidenceHash     sql.NullString
-		failoverUsed     int
-		routingLatency   sql.NullInt64
-		jevLatency       sql.NullInt64
-		inputTokens      sql.NullInt64
-		outputTokens     sql.NullInt64
-		totalTokens      sql.NullInt64
-		usageSource      sql.NullString
-		effectiveModel   sql.NullString
-		jevTopModel      sql.NullString
+		entry          StoredEvent
+		startedAt      string
+		routingMode    sql.NullString
+		selectionMode  sql.NullString
+		requestedModel sql.NullString
+		providerKey    sql.NullString
+		upstreamModel  sql.NullString
+		upstreamStatus sql.NullInt64
+		errorCode      sql.NullString
+		stream         int
+		clientIP       sql.NullString
+		jevStatus      sql.NullString
+		confidence     sql.NullFloat64
+		band           sql.NullString
+		fallbackReason sql.NullString
+		evidenceHash   sql.NullString
+		failoverUsed   int
+		routingLatency sql.NullInt64
+		jevLatency     sql.NullInt64
+		inputTokens    sql.NullInt64
+		outputTokens   sql.NullInt64
+		totalTokens    sql.NullInt64
+		usageSource    sql.NullString
+		effectiveModel sql.NullString
 	)
 	if err := row.Scan(
 		&entry.ID, &entry.Event.RequestID, &startedAt, &entry.Event.DurationMS, &entry.Event.Protocol,
 		&routingMode, &selectionMode, &requestedModel, &providerKey, &upstreamModel,
 		&entry.Event.Status, &upstreamStatus, &errorCode, &stream, &entry.Event.BytesWritten,
-		&clientIP, &preference, &preferenceSource, &jevStatus, &confidence, &band, &fallbackReason,
+		&clientIP, &jevStatus, &confidence, &band, &fallbackReason,
 		&evidenceHash, &entry.Event.GatewayAttempts, &failoverUsed, &routingLatency, &jevLatency,
 		&inputTokens, &outputTokens, &totalTokens, &entry.Event.Usage.Status, &usageSource,
-		&effectiveModel, &jevTopModel,
+		&effectiveModel,
 	); err != nil {
 		return StoredEvent{}, fmt.Errorf("scan routing event: %w", err)
 	}
@@ -637,8 +631,6 @@ func scanStoredEvent(row scanner) (StoredEvent, error) {
 	entry.Event.ErrorCode = errorCode.String
 	entry.Event.Stream = stream == 1
 	entry.Event.ClientIP = clientIP.String
-	entry.Event.RoutingPreference = preference.String
-	entry.Event.PreferenceSource = preferenceSource.String
 	entry.Event.JevStatus = jevStatus.String
 	if confidence.Valid {
 		value := confidence.Float64
@@ -655,7 +647,6 @@ func scanStoredEvent(row scanner) (StoredEvent, error) {
 	entry.Event.Usage.TotalTokens = optionalInt64(totalTokens)
 	entry.Event.Usage.Source = usageSource.String
 	entry.Event.EffectiveModel = effectiveModel.String
-	entry.Event.JevTopModel = jevTopModel.String
 	return entry, nil
 }
 

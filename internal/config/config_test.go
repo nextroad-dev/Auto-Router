@@ -20,8 +20,7 @@ func TestLoadUsesCodeDefaultsInsteadOfFilesOrEnvironment(t *testing.T) {
 	}
 	want := Defaults()
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Load result differs from code defaults: got preference %q and database %q, want %q and %q",
-			got.Routing.DefaultPreference, got.Database.Path, want.Routing.DefaultPreference, want.Database.Path)
+		t.Fatalf("Load result differs from code defaults: got database %q, want %q", got.Database.Path, want.Database.Path)
 	}
 }
 

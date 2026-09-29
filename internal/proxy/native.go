@@ -149,15 +149,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 	var target Target
 	group := ""
 	autoTarget := auto.Target{}
-	preference, preferenceSource, preferenceErr := parsePreferenceHeader(r.Header.Values(PreferenceHeader), h.currentPreference(r))
 	r.Header.Del(PreferenceHeader)
-	if preferenceErr != nil {
-		record.fail(http.StatusBadRequest, "invalid_routing_preference")
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_routing_preference", preferenceErr.Error())
-		return
-	}
-	record.RoutingPreference = string(preference)
-	record.PreferenceSource = string(preferenceSource)
 	if requestedModel == models.AutoModelID {
 		record.RoutingMode = routingModeAuto
 		if h.autoRouter == nil {
@@ -179,7 +171,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 			return
 		}
 		autoTarget, err = h.autoRouter.Route(r.Context(), auto.Request{
-			Protocol: providers.ProtocolChatCompletions, Body: autoBody, Preference: preference, PreferenceSource: preferenceSource,
+			Protocol: providers.ProtocolChatCompletions, Body: autoBody,
 			RequestID: requestID, Runtime: runtime,
 		})
 		if err != nil {

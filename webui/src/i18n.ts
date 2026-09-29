@@ -212,10 +212,6 @@ export const messages = {
           title: '该提供商无法保持请求语义',
           description: '检查表单中的必填项与格式后重试。改用兼容协议或简化请求。',
         },
-        invalid_routing_preference: {
-          title: '路由偏好无效',
-          description: '检查表单中的必填项与格式后重试。X-Routing-Preference 仅支持 balanced/quality/cost/latency。',
-        },
         provider_override_disabled: {
           title: '未启用提供商覆盖语法',
           description: '请重新登录管理台，或改用具备该权限的凭据。需管理员开启 routing.allow_provider_override。',
@@ -308,16 +304,6 @@ export const messages = {
         blend: '混合决策',
         default_model: '默认模型兜底',
         first_eligible: '首个可用候选',
-      },
-      routingPreference: {
-        balanced: '均衡',
-        quality: '质量',
-        cost: '成本',
-        latency: '延迟',
-      },
-      preferenceSource: {
-        default: '全局默认',
-        header: '请求头覆盖',
       },
       confidenceBand: {
         high: '高',

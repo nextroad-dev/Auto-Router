@@ -57,36 +57,3 @@ func WrapFallback(err error, sentinels JevSentinels) (decision.FallbackReason, b
 	}
 	return decision.ReasonNone, false
 }
-
-// JevSignalFromResult builds the engine input from a successful call. It exists so
-// the three fields that must agree — availability, the selected model and the
-// confidence — are set in one place rather than at each call site.
-func JevSignalFromResult(selected string, confidence float64, probabilities map[string]float64) JevSignal {
-	return JevSignal{
-		Available:     true,
-		Selected:      selected,
-		Confidence:    confidence,
-		Probabilities: probabilities,
-	}
-}
-
-// JevSignalFromError builds the engine input from a failed or skipped call. An
-// unrecognized error is reported as not_requested rather than as a fabricated
-// failure: an operator reading the routing log sees "no recommendation", which is
-// true, instead of a specific cause that may be wrong.
-func JevSignalFromError(err error, sentinels JevSentinels) JevSignal {
-	if err == nil {
-		return NotRequested()
-	}
-	if reason, ok := WrapFallback(err, sentinels); ok && reason != decision.ReasonNone {
-		return JevSignal{Available: false, Failure: reason}
-	}
-	return NotRequested()
-}
-
-// NotRequested is the signal for a request where Jev was never called. It is
-// distinct from a failure: a caller that skipped the call must say so rather than
-// let the engine guess.
-func NotRequested() JevSignal {
-	return JevSignal{Available: false, Failure: decision.ReasonNotRequested}
-}

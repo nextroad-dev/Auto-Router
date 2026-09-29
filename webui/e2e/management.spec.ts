@@ -2,17 +2,13 @@ import { expect, test, type Page } from '@playwright/test'
 
 const preferenceValues = {
   'routing.allow_provider_override': false,
-  'routing.default_preference': 'balanced',
   'routing.analyzer_debug_endpoint': false,
   'routing.policy_debug_endpoint': false,
   'routing.auto.failover.enabled': true,
   'routing.auto.failover.retry_on.status_codes': [],
-  'routing.policy.high_confidence': 0.7,
-  'routing.policy.low_confidence': 0.3,
+  'routing.auto.default_group': 'medium',
+  'routing.policy.low_confidence': 0.45,
   'routing.policy.refuse_truncated_evidence': true,
-  'routing.policy.default_model': '',
-  'routing.policy.cost_tiers': [],
-  'routing.policy.latency_tiers': [],
   'routing.log.enabled': true,
   'routing.log.store_client_ip': false,
   'routing.log.retention_days': 30,
@@ -125,7 +121,7 @@ async function installApiMocks(page: Page) {
         conflictNextPatch = false
         return json({ error: { code: 'settings_conflict', message: 'settings changed' } }, 409)
       }
-      return json({ ...settingsReport(), version: 1, changed: ['routing.default_preference'] })
+      return json({ ...settingsReport(), version: 1, changed: ['routing.auto.default_group'] })
     }
     if (path === '/admin/v1/settings' && request.method() === 'DELETE') {
       deleteSettingsCount++
@@ -238,7 +234,7 @@ async function installApiMocks(page: Page) {
         { name: 'auto_usage_rate', numerator: 6, denominator: 10, value: 0.6, numerator_label: 'automatic requests', denominator_label: 'requests' },
         { name: 'auto_decision_success_rate', numerator: 5, denominator: 6, value: 5 / 6, numerator_label: 'decisions', denominator_label: 'automatic requests' },
         { name: 'jev_invocation_rate', numerator: 4, denominator: 6, value: 2 / 3, numerator_label: 'successful Jev calls', denominator_label: 'automatic requests' },
-        { name: 'jev_top1_adoption_rate', numerator: 2, denominator: 3, value: 2 / 3, numerator_label: 'top-1 adoption', denominator_label: 'recommendations' },
+        { name: 'jev_group_adoption_rate', numerator: 2, denominator: 3, value: 2 / 3, numerator_label: 'automatic requests routed to the Jev-recommended group', denominator_label: 'automatic requests whose Jev call succeeded' },
       ],
       latency: overallLatencyOnly
         ? { all: { count: 2, mean_duration_ms: 0, p95_duration_ms: 0 }, auto: { count: 0, mean_duration_ms: null, p95_duration_ms: null } }
@@ -285,8 +281,11 @@ test('settings auto-save, status multi-select, shared toast and global reset', a
   await expect(page.getByRole('heading', { name: '管理会话与 models.dev 同步范围' })).toHaveCount(0)
   await expect(page.getByText('管理员会话有效时长')).toHaveCount(0)
   await expect(page.getByText('models.dev 同步范围覆盖')).toHaveCount(0)
-  await expect(page.getByText('全局默认路由偏好')).toBeVisible()
+  await expect(page.getByText('Jev 不可用或低置信度时的默认组')).toBeVisible()
   for (const label of [
+    '全局默认路由偏好',
+    '高置信度阈值',
+    '低置信度默认兜底模型',
     '允许调用的模型白名单',
     '禁止调用的模型黑名单',
     '允许的提供商白名单',
@@ -301,9 +300,9 @@ test('settings auto-save, status multi-select, shared toast and global reset', a
   await expect(page.getByRole('button', { name: /保存/ })).toHaveCount(0)
 
   await page.getByRole('combobox').first().click()
-  await page.getByRole('option', { name: /成本/ }).click()
+  await page.getByRole('option', { name: '复杂' }).click()
   await expect.poll(() => mock.patchCount).toBe(1)
-  expect(mock.patchBody).toEqual({ routing: { default_preference: 'cost' } })
+  expect(mock.patchBody).toEqual({ routing: { auto: { default_group: 'complex' } } })
   await expect(page.getByText('更改已保存', { exact: true })).toBeVisible()
 
   await page.getByRole('checkbox', { name: '429' }).check()
@@ -325,11 +324,11 @@ test('settings conflicts reload and rebase once without manual retry', async ({ 
   await expect(page.getByRole('heading', { name: '系统设置' })).toBeVisible()
   mock.conflictPatch()
   await page.getByRole('combobox').first().click()
-  await page.getByRole('option', { name: /成本/ }).click()
+  await page.getByRole('option', { name: '复杂' }).click()
   await expect.poll(() => mock.patchCount).toBe(2)
   expect(mock.settingsPatchBodies).toEqual([
-    { routing: { default_preference: 'cost' } },
-    { routing: { default_preference: 'cost' } },
+    { routing: { auto: { default_group: 'complex' } } },
+    { routing: { auto: { default_group: 'complex' } } },
   ])
   await expect(page.getByText('更改已保存', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /确认并重试/ })).toHaveCount(0)

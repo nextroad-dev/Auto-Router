@@ -128,10 +128,8 @@ type summaryStatuses struct {
 
 // summaryModel is one scoreboard row.
 type summaryModel struct {
-	Model           string `json:"model"`
-	Decisions       int64  `json:"decisions"`
-	AdoptedTop1     int64  `json:"adopted_top1"`
-	RecommendedTop1 int64  `json:"recommended_top1"`
+	Model     string `json:"model"`
+	Decisions int64  `json:"decisions"`
 }
 
 // summaryWindowPayload names the window the numbers were computed over, so a
@@ -187,7 +185,7 @@ const summaryRecentLimit = 10
 //   - three Stats calls supply the routing-mode, selection-mode and Jev-status
 //     distributions plus the latency and token aggregates, so the summary cannot
 //     define a rate differently from /logs/stats;
-//   - one ModelScoreboard call supplies the adoption counts;
+//   - one ModelScoreboard call supplies the per-model decision counts;
 //   - one event query supplies the recent rows and, with the mode totals, the
 //     request distribution.
 //
@@ -263,7 +261,7 @@ func (h *adminHandler) handleLogSummary(w http.ResponseWriter, r *http.Request) 
 	}
 	payload.Requests.Total = total
 
-	// The Jev invocation count and the two adoption counts come from the storage
+	// The Jev invocation count and the adoption count come from the storage
 	// layer's own metric queries, so every predicate that defines a rate lives next
 	// to the scoreboard that reports the same numbers.
 	jevOK, err := store.CountJevOK(r.Context(), from, now)
@@ -275,23 +273,18 @@ func (h *adminHandler) handleLogSummary(w http.ResponseWriter, r *http.Request) 
 	for _, score := range scores {
 		decisionsWithModel += score.Decisions
 	}
-	recommendations, err := store.CountRecordedTop1(r.Context(), from, now)
-	if err != nil {
-		storageFailure(w, h, "count recorded recommendations", err)
-		return
-	}
-	adopted, err := store.CountAdoptedTop1(r.Context(), from, now)
+	adopted, err := store.CountJevAdopted(r.Context(), from, now)
 	if err != nil {
 		storageFailure(w, h, "count adopted recommendations", err)
 		return
 	}
-	if adopted > recommendations {
+	if adopted > jevOK {
 		// The numerator is a subset of the denominator by construction: both are
-		// counts over the same window with the adoption count adding one equality.
+		// counts over the same window with the adoption count adding one predicate.
 		// A larger numerator would mean the two predicates disagree, which is a bug
 		// rather than a finding, so it is reported instead of published.
 		h.logger.Error("the adoption numerator exceeds its denominator",
-			"adopted", adopted, "recommendations", recommendations)
+			"adopted", adopted, "recommendations", jevOK)
 		storageFailure(w, h, "read the adoption counts", errAdoptionInconsistent)
 		return
 	}
@@ -304,8 +297,8 @@ func (h *adminHandler) handleLogSummary(w http.ResponseWriter, r *http.Request) 
 			"automatic requests that produced a model", "automatic requests"),
 		ratio("jev_invocation_rate", jevOK, payload.Requests.Auto,
 			"automatic requests whose Jev call succeeded", "automatic requests"),
-		ratio("jev_top1_adoption_rate", adopted, recommendations,
-			"decisions whose final model was the Jev top-1", "decisions with a recorded Jev top-1"),
+		ratio("jev_group_adoption_rate", adopted, jevOK,
+			"automatic requests routed to the Jev-recommended group", "automatic requests whose Jev call succeeded"),
 	}
 
 	payload.Latency.All = latencyOf(overall)
@@ -324,10 +317,8 @@ func (h *adminHandler) handleLogSummary(w http.ResponseWriter, r *http.Request) 
 	payload.Models = make([]summaryModel, 0, len(scores))
 	for _, score := range scores {
 		payload.Models = append(payload.Models, summaryModel{
-			Model:           score.Model,
-			Decisions:       score.Decisions,
-			AdoptedTop1:     score.AdoptedTop1,
-			RecommendedTop1: score.RecommendedTop1,
+			Model:     score.Model,
+			Decisions: score.Decisions,
 		})
 	}
 	payload.Recent = make([]logEventPayload, 0, len(recentPage.Events))

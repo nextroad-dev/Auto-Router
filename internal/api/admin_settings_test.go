@@ -108,7 +108,7 @@ func TestSettingsNoLongerExposesOrAcceptsPolicyLists(t *testing.T) {
 func TestLegacyPolicyListsAreIgnoredAndRemovedFromTheNextSettingsWrite(t *testing.T) {
 	ctx := context.Background()
 	db, _, _ := newSettingsAdminTest(t)
-	legacy := `{"routing":{"policy":{"high_confidence":0.8,"allow_models":["model-a"],"deny_models":["model-b"],"allow_providers":["provider-a"],"deny_providers":["provider-b"],"allow_pairs":["provider-a/model-a"],"deny_pairs":["provider-b/model-b"]}}}`
+	legacy := `{"routing":{"default_preference":"cost","policy":{"low_confidence":0.3,"high_confidence":0.8,"default_model":"model-a","cost_tiers":[{"model":"model-a","tier":0}],"latency_tiers":[],"allow_models":["model-a"],"deny_models":["model-b"],"allow_providers":["provider-a"],"deny_providers":["provider-b"],"allow_pairs":["provider-a/model-a"],"deny_pairs":["provider-b/model-b"]}}}`
 	if _, err := storage.WriteSettings(ctx, db, legacy, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -116,14 +116,14 @@ func TestLegacyPolicyListsAreIgnoredAndRemovedFromTheNextSettingsWrite(t *testin
 	if err != nil {
 		t.Fatalf("legacy settings overlay prevented startup: %v", err)
 	}
-	if store.Current().Version != 1 || store.Current().Config.Routing.Policy.HighConfidence != 0.8 {
-		t.Fatalf("legacy overlay lost supported settings: version=%d high_confidence=%v", store.Current().Version, store.Current().Config.Routing.Policy.HighConfidence)
+	if store.Current().Version != 1 || store.Current().Config.Routing.Policy.LowConfidence != 0.3 {
+		t.Fatalf("legacy overlay lost supported settings: version=%d low_confidence=%v", store.Current().Version, store.Current().Config.Routing.Policy.LowConfidence)
 	}
 	overlayJSON, err := json.Marshal(store.Current().Overlay)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs"} {
+	for _, key := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs", "default_preference", "high_confidence", "default_model", "cost_tiers", "latency_tiers"} {
 		if strings.Contains(string(overlayJSON), key) {
 			t.Errorf("legacy key %q survived in-memory overlay normalization: %s", key, overlayJSON)
 		}
@@ -140,13 +140,13 @@ func TestLegacyPolicyListsAreIgnoredAndRemovedFromTheNextSettingsWrite(t *testin
 
 	handler := NewAdmin(AdminOptions{DB: db, Settings: store})
 	get := settingsRequest(handler, http.MethodGet, "/admin/v1/settings", "")
-	for _, path := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs"} {
+	for _, path := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs", "default_preference", "high_confidence", "default_model", "cost_tiers", "latency_tiers"} {
 		if strings.Contains(get.Body.String(), path) {
 			t.Errorf("legacy setting %q leaked through settings GET: %s", path, get.Body.String())
 		}
 	}
 
-	patch := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"policy":{"high_confidence":0.8}}}`)
+	patch := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"policy":{"low_confidence":0.4}}}`)
 	if patch.Code != http.StatusOK {
 		t.Fatalf("normal settings patch after legacy cleanup status=%d body=%s", patch.Code, patch.Body.String())
 	}
@@ -154,7 +154,7 @@ func TestLegacyPolicyListsAreIgnoredAndRemovedFromTheNextSettingsWrite(t *testin
 	if err != nil || !found {
 		t.Fatalf("settings row not persisted: found=%t err=%v", found, err)
 	}
-	for _, key := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs"} {
+	for _, key := range []string{"allow_models", "deny_models", "allow_providers", "deny_providers", "allow_pairs", "deny_pairs", "default_preference", "high_confidence", "default_model", "cost_tiers", "latency_tiers"} {
 		if strings.Contains(record.JSON, key) {
 			t.Errorf("legacy key %q survived next settings write: %s", key, record.JSON)
 		}
@@ -164,7 +164,7 @@ func TestLegacyPolicyListsAreIgnoredAndRemovedFromTheNextSettingsWrite(t *testin
 func TestSettingsPatchesPreserveOtherSectionsAndNeverEchoSecrets(t *testing.T) {
 	_, store, handler := newSettingsAdminTest(t)
 	for _, body := range []string{
-		`{"routing":{"default_preference":"cost"}}`,
+		`{"routing":{"auto":{"default_group":"simple"}}}`,
 		`{"routing":{"auto":{"failover":{"enabled":false}}}}`,
 		`{"jev":{"api_key":"super-secret-value"}}`,
 	} {
@@ -176,8 +176,8 @@ func TestSettingsPatchesPreserveOtherSectionsAndNeverEchoSecrets(t *testing.T) {
 			t.Fatal("settings patch response echoed a Jev credential")
 		}
 	}
-	if store.Current().Config.Routing.DefaultPreference != "cost" || store.Current().Config.Routing.Auto.Failover.Enabled {
-		t.Fatalf("unrelated settings were lost: preference=%q failover=%t", store.Current().Config.Routing.DefaultPreference, store.Current().Config.Routing.Auto.Failover.Enabled)
+	if store.Current().Config.Routing.Auto.DefaultGroup != "simple" || store.Current().Config.Routing.Auto.Failover.Enabled {
+		t.Fatalf("unrelated settings were lost: default_group=%q failover=%t", store.Current().Config.Routing.Auto.DefaultGroup, store.Current().Config.Routing.Auto.Failover.Enabled)
 	}
 	get := settingsRequest(handler, http.MethodGet, "/admin/v1/settings", "")
 	if strings.Contains(get.Body.String(), "super-secret-value") {
@@ -198,14 +198,19 @@ func TestSettingsPatchesPreserveOtherSectionsAndNeverEchoSecrets(t *testing.T) {
 	t.Fatal("Jev API key field missing from report")
 }
 
-func TestSettingsRejectInvalidDuplicateTierWithoutEchoingValues(t *testing.T) {
+func TestSettingsRejectRemovedPolicySettings(t *testing.T) {
 	_, _, handler := newSettingsAdminTest(t)
-	response := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"policy":{"cost_tiers":[{"model":"model-a","tier":0},{"model":"model-a","tier":1}]}}}`)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("invalid tier status = %d, body=%s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), "model-a") {
-		t.Fatalf("invalid tier response echoed its value: %s", response.Body.String())
+	for _, body := range []string{
+		`{"routing":{"default_preference":"cost"}}`,
+		`{"routing":{"policy":{"high_confidence":0.8}}}`,
+		`{"routing":{"policy":{"default_model":"model-a"}}}`,
+		`{"routing":{"policy":{"cost_tiers":[{"model":"model-a","tier":0}]}}}`,
+		`{"routing":{"policy":{"latency_tiers":[]}}}`,
+	} {
+		response := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", body)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "unsupported_setting") {
+			t.Fatalf("removed setting patch %s status = %d, body=%s", body, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -241,7 +246,7 @@ func TestSettingsRejectInvalidUnknownAndReadOnlyPatchesWithoutPublishing(t *test
 		},
 		{
 			name:       "invalid value",
-			body:       `{"routing":{"default_preference":"private-invalid-value"}}`,
+			body:       `{"routing":{"auto":{"default_group":"private-invalid-value"}}}`,
 			status:     http.StatusBadRequest,
 			code:       "invalid_request",
 			mustNotLog: "private-invalid-value",
@@ -294,7 +299,7 @@ func TestSettingsPersistAcrossStoreRestartAndResetOnlySettings(t *testing.T) {
 	}
 
 	const secret = "restart-persisted-jev-secret"
-	patch := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"default_preference":"cost"},"jev":{"api_key":"`+secret+`"}}`)
+	patch := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"auto":{"default_group":"simple"}},"jev":{"api_key":"`+secret+`"}}`)
 	if patch.Code != http.StatusOK {
 		t.Fatalf("patch status=%d body=%s", patch.Code, patch.Body.String())
 	}
@@ -306,7 +311,7 @@ func TestSettingsPersistAcrossStoreRestartAndResetOnlySettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.Current().Config.Routing.DefaultPreference != "cost" || restarted.Current().Config.Jev.APIKey != secret {
+	if restarted.Current().Config.Routing.Auto.DefaultGroup != "simple" || restarted.Current().Config.Jev.APIKey != secret {
 		t.Fatal("runtime settings did not survive store recreation")
 	}
 
@@ -358,16 +363,16 @@ func TestSettingsPatchConfiguresGroupAndRetryPolicyAtomically(t *testing.T) {
 
 func TestSettingsResetAndConflictResponses(t *testing.T) {
 	db, store, handler := newSettingsAdminTest(t)
-	if response := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"default_preference":"quality"}}`); response.Code != http.StatusOK {
+	if response := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"auto":{"default_group":"simple"}}}`); response.Code != http.StatusOK {
 		t.Fatalf("initial patch status = %d, body=%s", response.Code, response.Body.String())
 	}
 
 	// Simulate a second process updating the row behind this Store's published
 	// snapshot. Its next write must receive the documented conflict.
-	if _, err := storage.WriteSettings(context.Background(), db, `{"routing":{"default_preference":"latency"}}`, 1); err != nil {
+	if _, err := storage.WriteSettings(context.Background(), db, `{"routing":{"auto":{"default_group":"complex"}}}`, 1); err != nil {
 		t.Fatal(err)
 	}
-	conflict := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"default_preference":"cost"}}`)
+	conflict := settingsRequest(handler, http.MethodPatch, "/admin/v1/settings", `{"routing":{"auto":{"default_group":"medium"}}}`)
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("conflict status = %d, body=%s", conflict.Code, conflict.Body.String())
 	}
@@ -376,7 +381,7 @@ func TestSettingsResetAndConflictResponses(t *testing.T) {
 	if reset.Code != http.StatusOK {
 		t.Fatalf("reset status = %d, body=%s", reset.Code, reset.Body.String())
 	}
-	if store.Current().Config.Routing.DefaultPreference != config.Defaults().Routing.DefaultPreference || store.HasOverlay() {
-		t.Fatalf("reset did not restore defaults: preference=%q overlay=%t", store.Current().Config.Routing.DefaultPreference, store.HasOverlay())
+	if store.Current().Config.Routing.Auto.DefaultGroup != config.Defaults().Routing.Auto.DefaultGroup || store.HasOverlay() {
+		t.Fatalf("reset did not restore defaults: default_group=%q overlay=%t", store.Current().Config.Routing.Auto.DefaultGroup, store.HasOverlay())
 	}
 }

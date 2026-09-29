@@ -1,6 +1,5 @@
 // Package decision holds the routing decision data types shared by the policy
-// engine (stage 6), the auto-routing orchestration (stage 7) and the routing log
-// (stage 8).
+// engine, the auto-routing orchestration and the routing log.
 //
 // The package is deliberately inert: types, closed enumerations and their
 // validation only. It contains no scoring, no filtering, no I/O and no
@@ -44,50 +43,36 @@ type Candidate struct {
 	ProviderPriority int
 }
 
-// ConfidenceBand is the coarse classification of one routing decision. It is
-// closed: a new band is a contract change, not a runtime discovery.
+// ConfidenceBand is the coarse classification of one routing decision: high when
+// a Jev group recommendation was adopted, low when the group came from a
+// fallback. It is closed: a new band is a contract change.
 type ConfidenceBand string
 
 const (
-	BandHigh   ConfidenceBand = "high"
-	BandMedium ConfidenceBand = "medium"
-	BandLow    ConfidenceBand = "low"
+	BandHigh ConfidenceBand = "high"
+	BandLow  ConfidenceBand = "low"
 )
 
-// Valid reports whether the band is one of the three defined bands.
+// Valid reports whether the band is one of the defined bands.
 func (b ConfidenceBand) Valid() bool {
-	return b == BandHigh || b == BandMedium || b == BandLow
+	return b == BandHigh || b == BandLow
 }
 
 // Origin names the rule that produced the selection.
 type Origin string
 
 const (
-	// OriginJev means the Jev recommendation was adopted unchanged.
-	OriginJev Origin = "jev"
-	// OriginBlend means the selection came from the blended final score.
-	OriginBlend Origin = "blend"
-	// OriginDefaultModel means the configured default model was selected by the
-	// low-confidence fallback.
-	OriginDefaultModel Origin = "default_model"
-	// OriginFirstEligible means the low-confidence fallback fell back to the
-	// first hard-filtered candidate in contract order.
+	// OriginFirstEligible means the first hard-filtered member of the selected
+	// group, in configured order, was chosen.
 	OriginFirstEligible Origin = "first_eligible"
 )
 
-// Valid reports whether the origin is one of the four defined origins.
-func (o Origin) Valid() bool {
-	switch o {
-	case OriginJev, OriginBlend, OriginDefaultModel, OriginFirstEligible:
-		return true
-	default:
-		return false
-	}
-}
+// Valid reports whether the origin is a defined origin.
+func (o Origin) Valid() bool { return o == OriginFirstEligible }
 
-// FallbackReason explains why the decision did not simply adopt a Jev
-// recommendation. It is a closed enumeration so the routing log of stage 8 can
-// group decisions without parsing free text.
+// FallbackReason explains why the group did not come from an adopted Jev
+// recommendation. It is a closed enumeration so the routing log can group
+// decisions without parsing free text.
 type FallbackReason string
 
 const (
@@ -97,9 +82,6 @@ const (
 	ReasonNotRequested FallbackReason = "not_requested"
 	// ReasonConfidenceLow means Jev answered, but below routing.policy.low_confidence.
 	ReasonConfidenceLow FallbackReason = "confidence_low"
-	// ReasonSelectedModelIneligible means Jev named a pair outside the candidate
-	// set or one the hard filters excluded.
-	ReasonSelectedModelIneligible FallbackReason = "selected_model_ineligible"
 	// ReasonJevTimeout, ReasonJevUnavailable, ReasonJevRejected,
 	// ReasonJevInvalidResult and ReasonJevCanceled mirror the Jev client's
 	// sentinels. WrapFallback maps them; nothing else invents them.
@@ -118,7 +100,7 @@ const (
 // Valid reports whether the reason is one of the defined reasons.
 func (r FallbackReason) Valid() bool {
 	switch r {
-	case ReasonNone, ReasonNotRequested, ReasonConfidenceLow, ReasonSelectedModelIneligible,
+	case ReasonNone, ReasonNotRequested, ReasonConfidenceLow,
 		ReasonJevTimeout, ReasonJevUnavailable, ReasonJevRejected, ReasonJevInvalidResult,
 		ReasonJevCanceled, ReasonTruncatedEvidence, ReasonNoCandidates:
 		return true
@@ -201,20 +183,15 @@ type Signal struct {
 	Value float64 `json:"value"`
 }
 
-// FallbackInfo describes how the low-confidence fallback resolved.
+// FallbackInfo describes how the group was chosen when Jev was not adopted.
 type FallbackInfo struct {
-	// Used is true when the selection did not come from an adopted Jev
-	// recommendation at high confidence.
+	// Used is true when the group did not come from an adopted Jev
+	// recommendation.
 	Used bool `json:"used"`
 	// Reason is the closed classification of the fallback.
 	Reason FallbackReason `json:"reason"`
-	// RequestedModel is routing.policy.default_model, empty when unconfigured.
-	RequestedModel string `json:"requested_model,omitempty"`
-	// Eligible reports whether RequestedModel survived the hard filters. It is
-	// only meaningful when RequestedModel is non-empty.
-	Eligible bool `json:"eligible"`
-	// Detail explains a non-obvious outcome with enumerations and numbers only,
-	// for example "not_configured" or "not_eligible:requires_tools".
+	// Detail explains the selection rule with enumerations only, for example
+	// "group_order".
 	Detail string `json:"detail,omitempty"`
 }
 
@@ -244,8 +221,8 @@ type Decision struct {
 	Signals []Signal `json:"signals"`
 
 	// EvidenceHash identifies the exact inputs of this decision (protocol,
-	// preference, candidate metadata and exclusion codes) so stage 8 can
-	// correlate a logged decision with the request that produced it.
+	// request shape, candidate metadata, exclusion codes and group verdict) so
+	// the routing log can correlate a decision with the request that produced it.
 	EvidenceHash string `json:"evidence_hash"`
 }
 

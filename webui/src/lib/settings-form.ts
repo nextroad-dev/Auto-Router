@@ -1,7 +1,6 @@
 import type { components } from './generated-api'
 
 type SettingField = components['schemas']['SettingField']
-export interface TierRow { model?: string; provider?: string; tier: number }
 
 export const retryStatusCodeOptions = [408, 425, 429, 500, 502, 503, 504] as const
 
@@ -12,13 +11,6 @@ export function normalizeRetryStatusCodes(values: unknown): number[] | null {
   return [...new Set(values as number[])].sort((left, right) => left - right)
 }
 
-export const routingPreferenceOptions = [
-  { label: '均衡', value: 'balanced' },
-  { label: '质量', value: 'quality' },
-  { label: '成本', value: 'cost' },
-  { label: '延迟', value: 'latency' },
-]
-
 export function splitSettingList(text: string) {
   return text.split(/\r?\n/).map(item => item.trim()).filter(Boolean)
 }
@@ -26,20 +18,6 @@ export function splitSettingList(text: string) {
 export function validateUniqueList(text: string, label: string) {
   const entries = splitSettingList(text)
   return new Set(entries).size === entries.length ? '' : `${label} 中存在重复条目。`
-}
-
-export function validateTierRows(rows: TierRow[], label: string) {
-  const seen = new Set<string>()
-  for (const row of rows) {
-    const model = row.model?.trim() ?? ''
-    const provider = row.provider?.trim() ?? ''
-    if ((!model && !provider) || (model && provider)) return `${label}的每一行必须只填写模型或提供商其中之一。`
-    if (!Number.isInteger(Number(row.tier)) || Number(row.tier) < 0) return `${label}等级必须是非负整数。`
-    const key = model ? `model:${model}` : `provider:${provider}`
-    if (seen.has(key)) return `${label}中不能重复声明同一模型或提供商。`
-    seen.add(key)
-  }
-  return ''
 }
 
 function setNested(target: Record<string, unknown>, path: string, value: unknown) {

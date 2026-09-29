@@ -22,12 +22,6 @@ describe('enumLabel', () => {
   })
 
   it('renders the preference, band, observation and class vocabularies', () => {
-    expect(enumLabel('routingPreference', 'balanced')).toBe('均衡')
-    expect(enumLabel('routingPreference', 'quality')).toBe('质量')
-    expect(enumLabel('routingPreference', 'cost')).toBe('成本')
-    expect(enumLabel('routingPreference', 'latency')).toBe('延迟')
-    expect(enumLabel('preferenceSource', 'default')).toBe('全局默认')
-    expect(enumLabel('preferenceSource', 'header')).toBe('请求头覆盖')
     expect(enumLabel('confidenceBand', 'high')).toBe('高')
     expect(enumLabel('confidenceBand', 'medium')).toBe('中')
     expect(enumLabel('confidenceBand', 'low')).toBe('低')
@@ -45,7 +39,7 @@ describe('enumLabel', () => {
   })
 
   it('covers every declared member of each vocabulary', () => {
-    const namespaces = ['protocol', 'routingMode', 'selectionMode', 'routingPreference', 'preferenceSource', 'confidenceBand', 'usageStatus', 'statusClass', 'inputMode'] as const
+    const namespaces = ['protocol', 'routingMode', 'selectionMode', 'confidenceBand', 'usageStatus', 'statusClass', 'inputMode'] as const
     for (const namespace of namespaces) {
       const table = labels[namespace] as Record<string, string>
       expect(Object.keys(table).length).toBeGreaterThan(0)

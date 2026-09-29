@@ -124,16 +124,12 @@ const (
 const (
 	// JevStatusDisabled means no usable Jev client is configured.
 	JevStatusDisabled = "disabled"
-	// JevStatusSkippedSingleModel means fewer than minModelsForJev distinct
-	// eligible models were left, so a recommendation could not express a choice.
+	// JevStatusSkippedSingleModel means only one group had an eligible member,
+	// so a recommendation could not express a choice.
 	JevStatusSkippedSingleModel = "skipped_single_model"
 	// JevStatusSkippedInsufficientEvidence means the selected input mode left
 	// nothing to judge — no system text and no conversation text.
 	JevStatusSkippedInsufficientEvidence = "skipped_insufficient_evidence"
-	// JevStatusSkippedTooManyModels means the eligible model set exceeds the
-	// verified candidate limit of the Jev API, so the question could not be asked
-	// as a single Choice.
-	JevStatusSkippedTooManyModels = "skipped_too_many_models"
 	// JevStatusOK means a recommendation was produced and used as engine input.
 	JevStatusOK = "ok"
 	// JevStatusFailurePrefix prefixes the closed fallback reason of a call that
@@ -169,6 +165,9 @@ type RefusalError struct {
 	Code string
 	// Message is a short, generic explanation with no identifiers in it.
 	Message string
+	// Refusal is the policy explanation behind a request-shaped refusal. The
+	// client boundary never writes it; the loopback debug endpoint does.
+	Refusal policy.Refusal
 }
 
 func (e *RefusalError) Error() string { return e.Message }
@@ -215,16 +214,14 @@ type FailoverPolicy struct {
 }
 
 type RuntimeSettings struct {
-	Engine            *policy.Engine
-	JevEnabled        bool
-	Jev               JevCaller
-	InputMode         jev.InputMode
-	Failover          FailoverPolicy
-	DefaultGroup      GroupName
-	LowConfidence     float64
-	HighConfidence    float64
-	DefaultPreference analyzer.Preference
-	GroupConfig       GroupConfig
+	Engine        *policy.Engine
+	JevEnabled    bool
+	Jev           JevCaller
+	InputMode     jev.InputMode
+	Failover      FailoverPolicy
+	DefaultGroup  GroupName
+	LowConfidence float64
+	GroupConfig   GroupConfig
 }
 
 type Settings interface {
@@ -246,19 +243,13 @@ type Options struct {
 	// refused with 503: a process that cannot evaluate candidates must not
 	// pretend to have routed.
 	Engine *policy.Engine
-	// DefaultPreference is routing.default_preference, applied when the request
-	// carried no preference header. The boundary passes the already-resolved
-	// preference per request, so this is only the fallback for a caller that
-	// passes none.
-	DefaultPreference analyzer.Preference
 	// InputMode selects how much of the conversation reaches Jev.
 	InputMode jev.InputMode
-	// Failover, DefaultGroup and confidence thresholds are the static values
+	// Failover, DefaultGroup and the confidence threshold are the static values
 	// used when Settings is nil.
-	Failover       FailoverPolicy
-	DefaultGroup   GroupName
-	LowConfidence  float64
-	HighConfidence float64
+	Failover      FailoverPolicy
+	DefaultGroup  GroupName
+	LowConfidence float64
 	// Settings supplies the live values above. Nil means the static fields are used
 	// unchanged.
 	Settings Settings
@@ -271,18 +262,16 @@ type Options struct {
 // and the only mutable state (the snapshot pointer) is published atomically by
 // models.Store.
 type Router struct {
-	catalog           *models.Store
-	analyzer          Analyzer
-	jev               JevCaller
-	engine            *policy.Engine
-	defaultPreference analyzer.Preference
-	inputMode         jev.InputMode
-	failover          FailoverPolicy
-	defaultGroup      GroupName
-	lowConfidence     float64
-	highConfidence    float64
-	settings          Settings
-	groupConfig       GroupConfig
+	catalog       *models.Store
+	analyzer      Analyzer
+	jev           JevCaller
+	engine        *policy.Engine
+	inputMode     jev.InputMode
+	failover      FailoverPolicy
+	defaultGroup  GroupName
+	lowConfidence float64
+	settings      Settings
+	groupConfig   GroupConfig
 }
 
 // currentEngine returns the compiled policy engine in effect right now. It is read
@@ -295,17 +284,13 @@ func (r *Router) runtimeSnapshot() RuntimeSettings {
 	return r.normalizeRuntime(RuntimeSettings{
 		Engine: r.engine, JevEnabled: r.jev != nil, Jev: r.jev, InputMode: r.inputMode,
 		Failover: r.failover, DefaultGroup: r.defaultGroup,
-		LowConfidence: r.lowConfidence, HighConfidence: r.highConfidence,
-		DefaultPreference: r.defaultPreference, GroupConfig: r.groupConfig,
+		LowConfidence: r.lowConfidence, GroupConfig: r.groupConfig,
 	})
 }
 
 func (r *Router) normalizeRuntime(snapshot RuntimeSettings) RuntimeSettings {
 	if snapshot.Engine == nil {
 		snapshot.Engine = r.engine
-	}
-	if !snapshot.DefaultPreference.Valid() {
-		snapshot.DefaultPreference = r.defaultPreference
 	}
 	if _, err := jev.ParseInputMode(string(snapshot.InputMode)); err != nil {
 		snapshot.InputMode = r.inputMode
@@ -319,22 +304,16 @@ func (r *Router) normalizeRuntime(snapshot RuntimeSettings) RuntimeSettings {
 	if snapshot.DefaultGroup != GroupSimple && snapshot.DefaultGroup != GroupMedium && snapshot.DefaultGroup != GroupComplex {
 		snapshot.DefaultGroup = r.defaultGroup
 	}
-	if !validConfidenceThresholds(snapshot.LowConfidence, snapshot.HighConfidence) {
+	if !validConfidenceThreshold(snapshot.LowConfidence) {
 		snapshot.LowConfidence = r.lowConfidence
-		snapshot.HighConfidence = r.highConfidence
-		if !validConfidenceThresholds(snapshot.LowConfidence, snapshot.HighConfidence) {
-			defaults := policy.DefaultConfig()
-			snapshot.LowConfidence = defaults.LowConfidence
-			snapshot.HighConfidence = defaults.HighConfidence
-		}
 	}
 	snapshot.Failover = cloneFailoverPolicy(snapshot.Failover)
 	snapshot.GroupConfig = cloneGroupConfig(snapshot.GroupConfig)
 	return snapshot
 }
 
-func validConfidenceThresholds(low, high float64) bool {
-	return !math.IsNaN(low) && !math.IsInf(low, 0) && !math.IsNaN(high) && !math.IsInf(high, 0) && low >= 0 && low < high && high <= 1
+func validConfidenceThreshold(low float64) bool {
+	return !math.IsNaN(low) && !math.IsInf(low, 0) && low >= 0 && low <= 1
 }
 
 // jevEnabled reports whether Jev may be called right now. A router without a live
@@ -344,17 +323,11 @@ func validConfidenceThresholds(low, high float64) bool {
 
 // failoverAllowed reports whether one bounded retry is allowed right now.
 
-// preference reports routing.default_preference right now.
-
 // New builds the orchestrator. It never returns nil and never fails: a router
 // missing a component answers every request with 503 routing_unavailable, which
 // is the same contract the forwarding path uses for an unassembled orchestrator
 // and is far easier to diagnose than a panic.
 func New(options Options) *Router {
-	preference := options.DefaultPreference
-	if !preference.Valid() {
-		preference = analyzer.PreferenceBalanced
-	}
 	inputMode := options.InputMode
 	if _, err := jev.ParseInputMode(string(inputMode)); err != nil {
 		inputMode = jev.InputModeRedacted
@@ -370,42 +343,32 @@ func New(options Options) *Router {
 	if failover.MaxAttempts > maxGroupMembers {
 		failover.MaxAttempts = maxGroupMembers
 	}
-	lowConfidence, highConfidence := options.LowConfidence, options.HighConfidence
-	if !validConfidenceThresholds(lowConfidence, highConfidence) {
-		defaults := policy.DefaultConfig()
-		lowConfidence, highConfidence = defaults.LowConfidence, defaults.HighConfidence
+	lowConfidence := options.LowConfidence
+	if !validConfidenceThreshold(lowConfidence) {
+		lowConfidence = policy.DefaultLowConfidence
 	}
 	return &Router{
-		catalog:           options.Catalog,
-		analyzer:          options.Analyzer,
-		jev:               options.Jev,
-		engine:            options.Engine,
-		defaultPreference: preference,
-		inputMode:         inputMode,
-		failover:          cloneFailoverPolicy(failover),
-		defaultGroup:      defaultGroup,
-		lowConfidence:     lowConfidence,
-		highConfidence:    highConfidence,
-		settings:          options.Settings,
-		groupConfig:       cloneGroupConfig(options.GroupConfig),
+		catalog:       options.Catalog,
+		analyzer:      options.Analyzer,
+		jev:           options.Jev,
+		engine:        options.Engine,
+		inputMode:     inputMode,
+		failover:      cloneFailoverPolicy(failover),
+		defaultGroup:  defaultGroup,
+		lowConfidence: lowConfidence,
+		settings:      options.Settings,
+		groupConfig:   cloneGroupConfig(options.GroupConfig),
 	}
 }
 
-// Request is one automatic routing question: the raw body the client sent, the
-// preference the HTTP boundary already resolved, and the correlation identifier.
+// Request is one automatic routing question: the raw body the client sent and the
+// correlation identifier.
 type Request struct {
 	Protocol providers.Protocol
 	Body     []byte
 	// Runtime is the request-start settings snapshot supplied by an integrated
 	// HTTP boundary. Nil uses the router's settings source.
 	Runtime *RuntimeSettings
-	// Preference is the routing preference that applies to this request, already
-	// resolved and validated at the HTTP boundary.
-	Preference analyzer.Preference
-	// PreferenceSource says whether Preference came from the request header or
-	// from the configured default, so the analyzer reports the same source the
-	// boundary logged.
-	PreferenceSource analyzer.PreferenceSource
 	// RequestID is the correlation identifier. It is carried for logging by the
 	// caller; it never reaches Jev or the selected Provider from here.
 	RequestID string
@@ -426,7 +389,7 @@ type Target struct {
 	// paths without the boundary having to remember what it sent.
 	RoutingModel string
 	// SelectionMode is the closed name of the rule that produced the selection:
-	// the policy origin (jev, blend, default_model, first_eligible).
+	// the policy origin (always first_eligible for group routing).
 	SelectionMode string
 	// SelectedGroup is the accepted Jev group or configured default group.
 	SelectedGroup GroupName
@@ -476,10 +439,6 @@ type JevTrace struct {
 	// InputMode is the configured jev.input_mode, recorded so a stored trace says
 	// how much of the conversation the call was allowed to see.
 	InputMode string
-	// Selected is the recommended logical model. It is empty unless the call
-	// succeeded, and it is an identifier from the candidate list rather than a
-	// provider pair.
-	Selected string
 	// SelectedGroup is the group actually used for routing, including deterministic
 	// fallback when Jev is disabled, unavailable or below the confidence threshold.
 	SelectedGroup GroupName
@@ -495,17 +454,12 @@ type JevTrace struct {
 	// CandidateGroups lists only groups with at least one hard-filtered member.
 	CandidateGroups []GroupName
 	GroupCount      int
-	// CandidateModels and ModelCount remain for backwards-compatible model-mode
-	// traces. Group routing leaves them empty; CandidateCount is always the number
-	// of hard-filtered provider/model pairs, independent of choice count.
-	CandidateModels []string
-	ModelCount      int
-	CandidateCount  int
+	// CandidateCount is the number of hard-filtered provider/model pairs,
+	// independent of the group choice count.
+	CandidateCount int
 	// Confidence is the recommendation confidence, nil when no recommendation was
 	// produced.
 	Confidence *float64
-	// Probabilities is the normalized model distribution for legacy model-mode traces.
-	Probabilities []ModelProbability
 	// GroupProbabilities is the normalized Jev distribution for group-mode traces.
 	GroupProbabilities []GroupProbability
 }
@@ -516,17 +470,20 @@ type GroupProbability struct {
 	Probability float64
 }
 
-// ModelProbability is one entry of the normalized distribution.
-type ModelProbability struct {
-	Model       string
-	Probability float64
+// Features reports the request features the decision was derived from. It is
+// false for a zero Target.
+func (t Target) Features() (analyzer.Features, bool) {
+	if t.state == nil {
+		return analyzer.Features{}, false
+	}
+	return t.state.features, true
 }
 
 // routeState is the immutable part of a decision that failover reuses.
 type routeState struct {
 	features        analyzer.Features
 	candidates      []decision.Candidate
-	jev             policy.JevSignal
+	verdict         policy.GroupVerdict
 	runtime         RuntimeSettings
 	group           GroupName
 	groupCandidates []decision.Candidate
@@ -561,7 +518,7 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 	if err := ctx.Err(); err != nil {
 		return Target{}, fmt.Errorf("%w: %w", ErrCanceled, err)
 	}
-	analysis, err := r.analyzer.Analyze(r.input(request, runtime))
+	analysis, err := r.analyzer.Analyze(analyzer.Input{Protocol: request.Protocol, Body: request.Body})
 	if err != nil {
 		// The analyzer only rejects router-owned input (an unknown protocol or an
 		// unusable preference). Reaching this branch means this process was
@@ -602,7 +559,8 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 	if err := ctx.Err(); err != nil {
 		return Target{}, fmt.Errorf("%w: %w", ErrCanceled, err)
 	}
-	outcome, err := engine.EvaluateFirstEligible(features, groupCandidates, policy.NotRequested())
+	verdict := groupVerdict(trace)
+	outcome, err := engine.Select(features, groupCandidates, verdict)
 	if err != nil {
 		// The survivor set cannot have changed between the pre-check and this
 		// call, so a refusal here repeats the pre-check's reason.
@@ -628,7 +586,7 @@ func (r *Router) Route(ctx context.Context, request Request) (Target, error) {
 		state: &routeState{
 			features:        features,
 			candidates:      groupCandidates,
-			jev:             policy.NotRequested(),
+			verdict:         verdict,
 			runtime:         runtime,
 			group:           group,
 			groupCandidates: groupCandidates,
@@ -669,7 +627,7 @@ func (r *Router) Failover(ctx context.Context, previous Target, failure AttemptF
 		// request-shaped refusal.
 		return Target{}, false
 	}
-	outcome, err := engine.EvaluateFirstEligible(state.features, remaining, state.jev)
+	outcome, err := engine.Select(state.features, remaining, state.verdict)
 	if err != nil {
 		// The retry could not produce a target either. Reporting the original
 		// upstream failure is more accurate than surfacing a second refusal about
@@ -696,7 +654,7 @@ func (r *Router) Failover(ctx context.Context, previous Target, failure AttemptF
 		state: &routeState{
 			features:        state.features,
 			candidates:      remaining,
-			jev:             state.jev,
+			verdict:         state.verdict,
 			runtime:         state.runtime,
 			group:           state.group,
 			groupCandidates: remaining,
@@ -755,23 +713,15 @@ func withoutPair(candidates []decision.Candidate, providerKey, modelID string) [
 	return remaining
 }
 
-// input renders the analyzer input. The preference the boundary already resolved
-// is passed in the form that reproduces the same preference and the same source,
-// so the analyzer never sees (and never has to re-reject) client text that has
-// already been accepted.
-func (r *Router) input(request Request, runtime RuntimeSettings) analyzer.Input {
-	input := analyzer.Input{
-		Protocol:          request.Protocol,
-		Body:              request.Body,
-		DefaultPreference: runtime.DefaultPreference,
+// groupVerdict summarizes how recommendGroup chose the group, in the policy
+// engine's terms, so the decision and the routing log explain the group choice.
+func groupVerdict(trace *JevTrace) policy.GroupVerdict {
+	verdict := policy.GroupVerdict{FallbackReason: decision.FallbackReason(trace.FallbackReason)}
+	if trace.Confidence != nil {
+		verdict.Confidence = *trace.Confidence
 	}
-	switch {
-	case request.PreferenceSource == analyzer.SourceHeader && request.Preference.Valid():
-		input.HeaderPreference = string(request.Preference)
-	case request.Preference.Valid():
-		input.DefaultPreference = request.Preference
-	}
-	return input
+	verdict.JevAdopted = trace.Status == JevStatusOK && verdict.FallbackReason == decision.ReasonNone
+	return verdict
 }
 
 // recommendGroup asks Jev to choose among groups that currently contain at least
@@ -825,9 +775,8 @@ func (r *Router) recommendGroup(ctx context.Context, features analyzer.Features,
 	latency := time.Since(start).Milliseconds()
 	trace.LatencyMS = &latency
 	if err != nil {
-		signal := policy.JevSignalFromError(err, jevSentinels())
-		failure := signal.Failure
-		if failure == "" || failure == decision.ReasonNotRequested {
+		failure, ok := policy.WrapFallback(err, jevSentinels())
+		if !ok || failure == decision.ReasonNone {
 			failure = decision.ReasonJevUnavailable
 		}
 		trace.Status = JevStatusFailurePrefix + string(failure)
@@ -845,7 +794,7 @@ func (r *Router) recommendGroup(ctx context.Context, features analyzer.Features,
 	trace.Status = JevStatusOK
 	trace.RecommendedGroup = selected
 	trace.Confidence = float64Pointer(result.Confidence)
-	trace.ConfidenceBand = groupConfidenceBand(result.Confidence, runtime.LowConfidence, runtime.HighConfidence)
+	trace.ConfidenceBand = groupConfidenceBand(result.Confidence, runtime.LowConfidence)
 	trace.GroupProbabilities = sortedGroupProbabilities(result.Probabilities)
 	if result.Confidence < runtime.LowConfidence {
 		trace.FallbackReason = string(decision.ReasonConfidenceLow)
@@ -865,12 +814,9 @@ func containsGroup(groups []GroupName, candidate GroupName) bool {
 	return false
 }
 
-func groupConfidenceBand(confidence, low, high float64) string {
-	if confidence >= high {
-		return string(decision.BandHigh)
-	}
+func groupConfidenceBand(confidence, low float64) string {
 	if confidence >= low {
-		return string(decision.BandMedium)
+		return string(decision.BandHigh)
 	}
 	return string(decision.BandLow)
 }
@@ -902,99 +848,6 @@ func groupRank(group GroupName) int {
 	default:
 		return maxGroupMembers + 1
 	}
-}
-
-// recommend produces the policy engine's recommendation input. It makes at most
-// one Jev call and reports why it made none, together with the diagnostic trace of
-// the call it made.
-//
-// The trace is built from identifiers and counts only. It never sees the prompt:
-// the prompt exists inside this method and is handed to the client directly, so a
-// trace that cannot carry text is a structural property rather than a promise.
-func (r *Router) recommend(ctx context.Context, features analyzer.Features, view analyzer.View, envelopes []modelEnvelope, eligibleCount int, runtime RuntimeSettings) (policy.JevSignal, *JevTrace) {
-	inputMode := runtime.InputMode
-	trace := &JevTrace{
-		Status:          JevStatusDisabled,
-		InputMode:       string(inputMode),
-		CandidateModels: candidateModelIDs(envelopes),
-		ModelCount:      len(envelopes),
-		CandidateCount:  eligibleCount,
-	}
-	if !runtime.JevEnabled || runtime.Jev == nil {
-		// "Jev is off" and "Jev failed" are different facts, and an administrator can
-		// turn the first one on and off without a restart.
-		return policy.NotRequested(), trace
-	}
-	trace.Status = JevStatusSkippedSingleModel
-	if len(envelopes) < minModelsForJev {
-		return policy.NotRequested(), trace
-	}
-	if len(envelopes) > maxJevModels {
-		// The verified Choice primitive accepts at most 255 options, so a larger
-		// set could only be rejected upstream. Skipping is honest; truncating the
-		// candidate list would silently answer a different question.
-		trace.Status = JevStatusSkippedTooManyModels
-		return policy.NotRequested(), trace
-	}
-	built, ok := r.buildPrompt(features, view, envelopes, inputMode)
-	if !ok {
-		trace.Status = JevStatusSkippedInsufficientEvidence
-		return policy.NotRequested(), trace
-	}
-	started := time.Now()
-	result, err := runtime.Jev.Route(ctx, jev.Request{
-		Protocol:     features.Protocol,
-		Candidates:   jevCandidates(envelopes),
-		Messages:     built.messages,
-		SystemPrompt: built.system,
-		Tools:        built.tools,
-	})
-	latency := time.Since(started).Milliseconds()
-	trace.LatencyMS = &latency
-	if err != nil {
-		signal := policy.JevSignalFromError(err, jevSentinels())
-		trace.Status = JevStatusFailurePrefix + string(signal.Failure)
-		trace.FailureReason = string(signal.Failure)
-		return signal, trace
-	}
-	probabilities := make(map[string]float64, len(result.Probabilities))
-	for _, entry := range result.Probabilities {
-		probabilities[entry.Model] = entry.Probability
-	}
-	trace.Status = JevStatusOK
-	trace.Selected = result.Selected
-	confidence := result.Confidence
-	trace.Confidence = &confidence
-	trace.Probabilities = sortedProbabilities(result.Probabilities)
-	return policy.JevSignalFromResult(result.Selected, result.Confidence, probabilities), trace
-}
-
-// candidateModelIDs returns the distinct logical model identifiers of an envelope
-// list. The envelopes are already sorted by model ID and already distinct, so the
-// result is a copy in ascending order.
-func candidateModelIDs(envelopes []modelEnvelope) []string {
-	ids := make([]string, 0, len(envelopes))
-	for _, envelope := range envelopes {
-		ids = append(ids, envelope.Model)
-	}
-	return ids
-}
-
-// sortedProbabilities orders a normalized distribution by descending probability
-// with the model identifier ascending as the tie-break, so two runs over the same
-// reply store byte-identical JSON.
-func sortedProbabilities(entries []jev.CandidateProbability) []ModelProbability {
-	sorted := make([]ModelProbability, 0, len(entries))
-	for _, entry := range entries {
-		sorted = append(sorted, ModelProbability{Model: entry.Model, Probability: entry.Probability})
-	}
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].Probability != sorted[j].Probability {
-			return sorted[i].Probability > sorted[j].Probability
-		}
-		return sorted[i].Model < sorted[j].Model
-	})
-	return sorted
 }
 
 // traceForDecision copies a trace and refreshes the fields that describe the
@@ -1033,12 +886,14 @@ func refusalFor(err error) error {
 			Status:  statusUnprocessableEntity,
 			Code:    CodeTruncatedEvidence,
 			Message: "the request could not be routed on the evidence that was read",
+			Refusal: policy.RefusalOf(err),
 		}
 	case errors.Is(err, policy.ErrNoEligibleCandidate):
 		return &RefusalError{
 			Status:  statusUnprocessableEntity,
 			Code:    CodeNoEligibleCandidate,
 			Message: "no candidate can serve this request",
+			Refusal: policy.RefusalOf(err),
 		}
 	default:
 		return &RefusalError{

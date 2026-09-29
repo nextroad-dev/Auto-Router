@@ -8,23 +8,6 @@ import (
 	"github.com/nextroad-dev/Auto-Router/internal/router/jev"
 )
 
-// Fixed bounds of the automatic routing pipeline. They are named constants
-// rather than settings for the same reason the analyzer's bounds are: a decision
-// must be reproducible across deployments, and a deployment that could raise the
-// Jev attempt count or the number of models in one question could make routing
-// behavior differ for reasons that never appear in a decision record.
-const (
-	// minModelsForJev is the number of distinct eligible logical models below
-	// which Jev is not asked. With one model a recommendation cannot express a
-	// choice, so the call would cost money to answer a question whose answer is
-	// already known.
-	minModelsForJev = 2
-	// maxJevModels is the verified limit of the Choice primitive (255 options).
-	// A larger set could only be rejected upstream, so it is skipped locally and
-	// reported as such instead of being truncated into a different question.
-	maxJevModels = 255
-)
-
 // prompt is the conversation part of one Jev request.
 type prompt struct {
 	system   string
@@ -76,7 +59,7 @@ func hasTextMessages(messages []jev.Message) bool {
 }
 
 // featuresMessage renders the features-only question: length class and token
-// estimate, protocol, preference, tool count, and the media booleans. Every value
+// estimate, protocol, tool count, and the media booleans. Every value
 // is a count, an enumeration or a boolean derived from the request, so the string
 // is a description of the request's shape rather than a copy of it.
 //
@@ -88,7 +71,6 @@ func featuresMessage(features analyzer.Features, envelopes []modelEnvelope) stri
 	var builder strings.Builder
 	builder.WriteString("Automatic routing request. No conversation text is available by configuration; judge from these facts only.\n")
 	fmt.Fprintf(&builder, "protocol: %s\n", features.Protocol)
-	fmt.Fprintf(&builder, "preference: %s\n", features.Preference)
 	fmt.Fprintf(&builder, "length_class: %s\n", features.Length)
 	if smallest := smallestContextWindow(envelopes); smallest == 0 || features.InputTokensEstimate < smallest {
 		fmt.Fprintf(&builder, "input_tokens_estimate: %d\n", features.InputTokensEstimate)

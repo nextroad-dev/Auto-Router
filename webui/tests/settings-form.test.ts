@@ -5,16 +5,14 @@ import {
   buildSettingsPatch,
   normalizeRetryStatusCodes,
   retryStatusCodeOptions,
-  routingPreferenceOptions,
   splitSettingList,
-  validateTierRows,
   validateUniqueList,
 } from '../src/lib/settings-form'
 
 type SettingField = components['schemas']['SettingField']
 const fields: SettingField[] = [
-  { path: 'routing.default_preference', value: 'balanced', source: 'default', mutable: true, restart_required: false },
-  { path: 'routing.policy.default_model', value: '', source: 'default', mutable: true, restart_required: false },
+  { path: 'routing.auto.default_group', value: 'medium', source: 'default', mutable: true, restart_required: false },
+  { path: 'routing.policy.low_confidence', value: 0.45, source: 'default', mutable: true, restart_required: false },
   { path: 'jev.enabled', value: false, source: 'default', mutable: true, restart_required: false },
   { path: 'jev.input_mode', value: 'redacted', source: 'default', mutable: true, restart_required: false },
   { path: 'jev.base_url', value: '', source: 'default', mutable: true, restart_required: false },
@@ -24,10 +22,6 @@ const fields: SettingField[] = [
 ]
 
 describe('settings form helpers', () => {
-  it('exposes all four supported global preference defaults', () => {
-    expect(routingPreferenceOptions.map(option => option.value)).toEqual(['balanced', 'quality', 'cost', 'latency'])
-  })
-
   it('normalizes the retry-status multi-select to unique ascending integers', () => {
     expect(retryStatusCodeOptions).toEqual([408, 425, 429, 500, 502, 503, 504])
     expect(normalizeRetryStatusCodes([503, 408, 503, 429])).toEqual([408, 429, 503])
@@ -39,13 +33,13 @@ describe('settings form helpers', () => {
   })
 
   it('creates nested partial patches for selected mutable fields only', () => {
-    expect(buildSettingsPatch(fields, ['routing.default_preference', 'routing.policy.default_model'], {
-      'routing.default_preference': 'cost',
-      'routing.policy.default_model': 'small-model',
+    expect(buildSettingsPatch(fields, ['routing.auto.default_group', 'routing.policy.low_confidence'], {
+      'routing.auto.default_group': 'simple',
+      'routing.policy.low_confidence': 0.6,
       'admin.session_ttl': '24h',
-    })).toEqual({ routing: { default_preference: 'cost', policy: { default_model: 'small-model' } } })
-    expect(buildSettingsPatch(fields, ['routing.default_preference'], { 'routing.default_preference': 'latency' }))
-      .toEqual({ routing: { default_preference: 'latency' } })
+    })).toEqual({ routing: { auto: { default_group: 'simple' }, policy: { low_confidence: 0.6 } } })
+    expect(buildSettingsPatch(fields, ['routing.auto.default_group'], { 'routing.auto.default_group': 'complex' }))
+      .toEqual({ routing: { auto: { default_group: 'complex' } } })
   })
 
   it('omits a blank Jev credential so it is never replaced by an empty value', () => {
@@ -62,12 +56,5 @@ describe('settings form helpers', () => {
     expect(splitSettingList(' alpha\n\nbeta \r\n')).toEqual(['alpha', 'beta'])
     expect(validateUniqueList('alpha\nbeta', 'allow-models')).toBe('')
     expect(validateUniqueList('alpha\n alpha ', 'allow-models')).toContain('重复')
-  })
-
-  it('validates tier target exclusivity, non-negative integer ranks, and duplicates', () => {
-    expect(validateTierRows([{ model: 'gpt-a', tier: 0 }, { provider: 'provider-b', tier: 2 }], '成本等级')).toBe('')
-    expect(validateTierRows([{ model: 'gpt-a', provider: 'provider-b', tier: 0 }], '成本等级')).toContain('只填写')
-    expect(validateTierRows([{ model: 'gpt-a', tier: -1 }], '成本等级')).toContain('非负整数')
-    expect(validateTierRows([{ model: 'gpt-a', tier: 0 }, { model: 'gpt-a', tier: 2 }], '成本等级')).toContain('重复')
   })
 })

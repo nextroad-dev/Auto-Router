@@ -2,8 +2,8 @@ import { i18n } from '../i18n'
 import { errorCodeTitle } from './errors'
 
 /** A closed enum vocabulary rendered for display. Unknown members fall back to the raw value. */
-export type LabelNamespace = 'protocol' | 'routingMode' | 'selectionMode' | 'routingPreference'
-  | 'preferenceSource' | 'confidenceBand' | 'usageStatus' | 'statusClass' | 'inputMode'
+export type LabelNamespace = 'protocol' | 'routingMode' | 'selectionMode'
+  | 'confidenceBand' | 'usageStatus' | 'statusClass' | 'inputMode'
   | 'jevStatus' | 'fallbackReason'
 
 function t(key: string, named?: Record<string, string | number>): string {

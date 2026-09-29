@@ -19,7 +19,6 @@ import (
 	"github.com/nextroad-dev/Auto-Router/internal/logging"
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 	"github.com/nextroad-dev/Auto-Router/internal/providers"
-	"github.com/nextroad-dev/Auto-Router/internal/router/analyzer"
 	"github.com/nextroad-dev/Auto-Router/internal/router/auto"
 )
 
@@ -45,11 +44,10 @@ const maxAutoUpstreamAttempts = 8
 // to the selected Provider.
 const RequestIDHeader = "X-Request-Id"
 
-// PreferenceHeader is the router-owned request header that selects a routing
-// preference for one request. It is consumed and stripped at this boundary: the
-// header is Auto Router's own control input, so it is never forwarded to the
-// Provider, and whether it was accepted or rejected it never leaves the process.
-// Unknown client headers are untouched.
+// PreferenceHeader is a retired router-owned request header that used to select
+// a routing preference. It is ignored, but still stripped at this boundary so a
+// client that keeps sending it never leaks Auto Router's own control input to the
+// Provider. Unknown client headers are untouched.
 const PreferenceHeader = "X-Routing-Preference"
 
 // LiveValues is the runtime configuration the forwarding boundary reads per
@@ -63,7 +61,6 @@ const PreferenceHeader = "X-Routing-Preference"
 // static fields on Options.
 type LiveSnapshot struct {
 	AllowProviderOverride bool
-	DefaultPreference     analyzer.Preference
 	RoutingLogEnabled     bool
 	StoreClientIP         bool
 	JevTraceEnabled       bool
@@ -96,11 +93,6 @@ type Options struct {
 	// GatewayConfigured is retained as a deprecated source-compatible alias for
 	// older embedders. It has no gateway semantics in the direct-provider path.
 	GatewayConfigured bool
-	// DefaultPreference is routing.default_preference, applied when a request
-	// carries no preference header. An invalid value is a configuration bug and
-	// fails every request with 500 rather than routing on a default nobody
-	// chose.
-	DefaultPreference analyzer.Preference
 	// AutoRouter resolves model="auto" requests. Nil means the automatic routing
 	// stack is not assembled in this process, which answers model="auto" with
 	// 503 routing_unavailable instead of pretending to route. A specified model
@@ -152,7 +144,6 @@ type Handler struct {
 	logger                *slog.Logger
 	allowProviderOverride bool
 	providerConfigured    bool
-	defaultPreference     analyzer.Preference
 	autoRouter            AutoRouter
 	recorder              logging.Recorder
 	live                  LiveValues
@@ -190,12 +181,6 @@ func New(options Options) *Handler {
 		catalog = models.NewStore()
 	}
 	configured := options.ProviderConfigured || options.GatewayConfigured || options.Executor != nil
-	preference := options.DefaultPreference
-	if preference == "" {
-		// A handler built without configuration still behaves like the process
-		// default rather than inventing a fifth preference value.
-		preference = analyzer.PreferenceBalanced
-	}
 	return &Handler{
 		catalog:               catalog,
 		executor:              options.Executor,
@@ -203,7 +188,6 @@ func New(options Options) *Handler {
 		logger:                options.Logger,
 		allowProviderOverride: options.AllowProviderOverride,
 		providerConfigured:    configured,
-		defaultPreference:     preference,
 		autoRouter:            options.AutoRouter,
 		recorder:              options.Recorder,
 		live:                  options.Live,
@@ -220,22 +204,11 @@ func (h *Handler) requestSettings(r *http.Request) LiveSnapshot {
 			return snapshot
 		}
 	}
-	return LiveSnapshot{AllowProviderOverride: h.allowProviderOverride, DefaultPreference: h.defaultPreference, RoutingLogEnabled: h.recorder != nil, StoreClientIP: false, JevTraceEnabled: false}
+	return LiveSnapshot{AllowProviderOverride: h.allowProviderOverride, RoutingLogEnabled: h.recorder != nil, StoreClientIP: false, JevTraceEnabled: false}
 }
 
 func (h *Handler) allowOverride(r *http.Request) bool {
 	return h.requestSettings(r).AllowProviderOverride
-}
-
-// currentPreference reports the routing.default_preference in effect right now.
-func (h *Handler) currentPreference(r *http.Request) analyzer.Preference {
-	preference := h.requestSettings(r).DefaultPreference
-	if !preference.Valid() {
-		// A live source that produced an unusable value would turn every request
-		// into a 500; the static default is the documented fallback.
-		return h.defaultPreference
-	}
-	return preference
 }
 
 // routingLogEnabled reports whether a routing event is recorded right now. It is
@@ -263,7 +236,7 @@ func (h *Handler) overrideRefusal(r *http.Request) *ProviderOverrideDecision {
 //
 // Error precedence within a request is fixed and tested: an unconfigured
 // provider executor (503) is reported before the body is read, then media-type and size
-// limits (415/413), then the router-owned preference header (400), then model
+// limits (415/413), then model
 // parsing (400/403/404), then routing (422/500/503 for an automatic request),
 // then upstream failures (502/504). Every check before the upstream call is a
 // client-visible rejection with no side effect, and every one of them happens
@@ -325,19 +298,9 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 		writeError(w, http.StatusUnsupportedMediaType, "invalid_request_error", "unsupported_media_type", contentType)
 		return
 	}
-	// The preference header is read, validated and stripped here: before the
-	// body is buffered, so a request that is going to be rejected never costs
-	// up to http.max_request_bytes, and always, so a client-forged value can
-	// never reach the selected provider regardless of what happens next.
-	preference, preferenceSource, preferenceErr := parsePreferenceHeader(r.Header.Values(PreferenceHeader), h.currentPreference(r))
+	// The retired preference header is ignored but always stripped, so a client
+	// value can never reach the selected provider.
 	r.Header.Del(PreferenceHeader)
-	if preferenceErr != nil {
-		record.fail(http.StatusBadRequest, "invalid_routing_preference")
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_routing_preference", preferenceErr.Error())
-		return
-	}
-	record.RoutingPreference = string(preference)
-	record.PreferenceSource = string(preferenceSource)
 	// The routing mode is recorded before anything else can fail so a rejected
 	// request still says whether it asked for automatic routing. A specified
 	// model never changes it again.
@@ -374,7 +337,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 	// now a programming-error guard rather than the client contract. A specified
 	// model takes the unchanged direct path below.
 	if model == models.AutoModelID {
-		h.forwardAuto(w, r, protocol, requestID, record, body, payload, preference, preferenceSource)
+		h.forwardAuto(w, r, protocol, requestID, record, body, payload)
 		return
 	}
 
@@ -407,11 +370,6 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 	// the one the client's identifier resolved to: the requested model itself, or
 	// the pair's logical model for a "provider:<provider>/<model>" override.
 	record.EffectiveModel = target.Pair.ModelID
-	// The explicit path makes no Jev call, so it can carry no top-1
-	// recommendation. Leaving both fields empty is what makes the adoption metric
-	// an automatic-path measurement rather than a comparison against a value the
-	// explicit path never produced.
-	record.JevTopModel = ""
 	// The explicit path reports the same routing fields with their explicit
 	// values, so a routing log can query one schema instead of special-casing two.
 	record.SelectionMode = "explicit"
@@ -456,7 +414,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 // The rewrite is identical to the explicit path: only the top-level model field
 // changes, and everything else — nested objects, tools, reasoning and unknown
 // vendor fields — is re-encoded from raw messages exactly as it arrived.
-func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol providers.Protocol, requestID string, record *requestLog, body []byte, payload map[string]json.RawMessage, preference analyzer.Preference, preferenceSource analyzer.PreferenceSource) {
+func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol providers.Protocol, requestID string, record *requestLog, body []byte, payload map[string]json.RawMessage) {
 	record.RoutingMode = routingModeAuto
 	if h.autoRouter == nil {
 		// An unassembled stack is a configuration state, not a routing outcome: it
@@ -473,8 +431,7 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 		autoSettings = &snapshot
 	}
 	target, err := h.autoRouter.Route(r.Context(), auto.Request{
-		Protocol: protocol, Body: body, Preference: preference,
-		PreferenceSource: preferenceSource, RequestID: requestID, Runtime: autoSettings,
+		Protocol: protocol, Body: body, RequestID: requestID, Runtime: autoSettings,
 	})
 	if err != nil {
 		h.writeAutoError(w, record, err)
@@ -778,56 +735,6 @@ func headerTokens(header http.Header) map[string]struct{} {
 	return tokens
 }
 
-// parsePreferenceHeader resolves the router-owned preference header and the
-// configured default into the preference that applies to this request.
-//
-// The rule is deliberately small: each field value is normalized the same way
-// (trimmed, lowercased), values that normalize to the same preference are
-// accepted, and a conflict or an unknown value is a client error. The error
-// message lists the accepted values and never repeats the client's own text,
-// so arbitrary input cannot be pushed into an error body or the request log.
-//
-// defaultPreference is the resolved routing.default_preference. A configuration
-// that never passed validation is rejected as a server error instead of being
-// silently replaced with "balanced".
-func parsePreferenceHeader(values []string, defaultPreference analyzer.Preference) (analyzer.Preference, analyzer.PreferenceSource, error) {
-	var headerValue string
-	if len(values) > 0 {
-		headerValue = strings.Join(values, ",")
-	}
-	if strings.TrimSpace(headerValue) == "" {
-		if !defaultPreference.Valid() {
-			return "", "", fmt.Errorf("the configured default routing preference is not one of %s", strings.Join(analyzer.PreferenceValues(), ", "))
-		}
-		return defaultPreference, analyzer.SourceDefault, nil
-	}
-	resolved := analyzer.Preference("")
-	for _, raw := range values {
-		for _, candidate := range strings.Split(raw, ",") {
-			if strings.TrimSpace(candidate) == "" {
-				continue
-			}
-			preference, err := analyzer.ParsePreference(candidate)
-			if err != nil {
-				return "", "", err
-			}
-			if resolved != "" && resolved != preference {
-				return "", "", fmt.Errorf("%s must not carry conflicting values: it must be one of %s", PreferenceHeader, strings.Join(analyzer.PreferenceValues(), ", "))
-			}
-			resolved = preference
-		}
-	}
-	if resolved == "" {
-		// Every field value was blank after trimming, which is the same as not
-		// sending the header at all.
-		if !defaultPreference.Valid() {
-			return "", "", fmt.Errorf("the configured default routing preference is not one of %s", strings.Join(analyzer.PreferenceValues(), ", "))
-		}
-		return defaultPreference, analyzer.SourceDefault, nil
-	}
-	return resolved, analyzer.SourceHeader, nil
-}
-
 // requestMediaType enforces JSON input and rejects compressed bodies. Both
 // checks exist so the model rewrite cannot silently operate on a body that is
 // not what it appears to be.
@@ -1068,11 +975,6 @@ type requestLog struct {
 	UpstreamModel  string
 	Status         int
 	ErrorCode      string
-	// RoutingPreference and PreferenceSource are the resolved routing
-	// preference and where it came from. They are not body content, which is why
-	// they are safe to log; stage 8 reuses both field names in the routing log.
-	RoutingPreference string
-	PreferenceSource  string
 	// The automatic routing fields. They stay zero or empty on the
 	// specified-model path, which is how a routing log distinguishes a direct
 	// forward from a routed one without a second event type.
@@ -1084,11 +986,7 @@ type requestLog struct {
 	// path. It is empty until a destination resolved, which is how the routing log
 	// distinguishes "the request had no destination" from "the destination was this
 	// model".
-	EffectiveModel string
-	// JevTopModel is the top-1 entry of the Jev distribution of this request's
-	// single recommendation. It is empty unless the call succeeded, and it is set
-	// from the recommendation itself rather than from the response or the prompt.
-	JevTopModel     string
+	EffectiveModel  string
 	JevStatus       string
 	Confidence      *float64
 	ConfidenceBand  string
@@ -1127,34 +1025,31 @@ type requestLog struct {
 // distinguished by RoutingMode.
 func (l *requestLog) recordEvent(started time.Time, duration time.Duration) logging.Event {
 	event := logging.Event{
-		RequestID:         l.RequestID,
-		StartedAt:         started,
-		Protocol:          l.Protocol,
-		RoutingMode:       l.RoutingMode,
-		SelectionMode:     l.SelectionMode,
-		RequestedModel:    l.RequestedModel,
-		EffectiveModel:    l.EffectiveModel,
-		JevTopModel:       l.JevTopModel,
-		ProviderKey:       l.Provider,
-		UpstreamModel:     l.UpstreamModel,
-		ErrorCode:         l.ErrorCode,
-		Status:            l.finalStatus(),
-		UpstreamStatus:    l.upstreamStatus,
-		Stream:            l.stream,
-		ClientIP:          l.ClientIP,
-		RoutingPreference: l.RoutingPreference,
-		PreferenceSource:  l.PreferenceSource,
-		JevStatus:         l.JevStatus,
-		ConfidenceBand:    l.ConfidenceBand,
-		FallbackReason:    l.FallbackReason,
-		EvidenceHash:      l.EvidenceHash,
-		Confidence:        l.Confidence,
-		GatewayAttempts:   l.GatewayAttempts,
-		FailoverUsed:      l.FailoverUsed,
-		DurationMS:        duration.Milliseconds(),
-		BytesWritten:      l.BytesWritten,
-		Usage:             l.usage,
-		Jev:               l.jevTrace,
+		RequestID:       l.RequestID,
+		StartedAt:       started,
+		Protocol:        l.Protocol,
+		RoutingMode:     l.RoutingMode,
+		SelectionMode:   l.SelectionMode,
+		RequestedModel:  l.RequestedModel,
+		EffectiveModel:  l.EffectiveModel,
+		ProviderKey:     l.Provider,
+		UpstreamModel:   l.UpstreamModel,
+		ErrorCode:       l.ErrorCode,
+		Status:          l.finalStatus(),
+		UpstreamStatus:  l.upstreamStatus,
+		Stream:          l.stream,
+		ClientIP:        l.ClientIP,
+		JevStatus:       l.JevStatus,
+		ConfidenceBand:  l.ConfidenceBand,
+		FallbackReason:  l.FallbackReason,
+		EvidenceHash:    l.EvidenceHash,
+		Confidence:      l.Confidence,
+		GatewayAttempts: l.GatewayAttempts,
+		FailoverUsed:    l.FailoverUsed,
+		DurationMS:      duration.Milliseconds(),
+		BytesWritten:    l.BytesWritten,
+		Usage:           l.usage,
+		Jev:             l.jevTrace,
 	}
 	if event.Usage.Status == "" {
 		// A request that never reached a relay has no observation at all. The
@@ -1215,7 +1110,6 @@ func (l *requestLog) applyRoutingDecision(target auto.Target) {
 	// requested value: on the automatic path the client asked for "auto", and the
 	// fact worth recording is which model that resolved to.
 	l.EffectiveModel = target.Model
-	l.JevTopModel = jevTopModel(target)
 	l.SelectionMode = target.SelectionMode
 	l.Confidence = floatPointer(target.Decision.Confidence)
 	l.ConfidenceBand = string(target.Decision.ConfidenceBand)
@@ -1245,13 +1139,10 @@ func jevTrace(target auto.Target) *logging.JevTrace {
 		Status:           source.Status,
 		FailureReason:    source.FailureReason,
 		InputMode:        source.InputMode,
-		Selected:         source.Selected,
 		ConfidenceBand:   source.ConfidenceBand,
 		FallbackReason:   source.FallbackReason,
 		EvidenceHash:     source.EvidenceHash,
 		LatencyMS:        source.LatencyMS,
-		CandidateModels:  source.CandidateModels,
-		ModelCount:       source.ModelCount,
 		CandidateCount:   source.CandidateCount,
 		CandidateGroups:  make([]string, 0, len(source.CandidateGroups)),
 		GroupCount:       source.GroupCount,
@@ -1261,15 +1152,6 @@ func jevTrace(target auto.Target) *logging.JevTrace {
 	}
 	for _, group := range source.CandidateGroups {
 		trace.CandidateGroups = append(trace.CandidateGroups, string(group))
-	}
-	if len(source.Probabilities) > 0 {
-		trace.Probabilities = make([]logging.ModelProbability, 0, len(source.Probabilities))
-		for _, probability := range source.Probabilities {
-			trace.Probabilities = append(trace.Probabilities, logging.ModelProbability{
-				Model:       probability.Model,
-				Probability: probability.Probability,
-			})
-		}
 	}
 	if len(source.GroupProbabilities) > 0 {
 		trace.GroupProbabilities = make([]logging.GroupProbability, 0, len(source.GroupProbabilities))
@@ -1281,24 +1163,6 @@ func jevTrace(target auto.Target) *logging.JevTrace {
 		}
 	}
 	return trace
-}
-
-// jevTopModel reports the top-1 logical model of one recommendation, or the
-// empty string when the call produced no distribution. The distribution is
-// already ordered by descending probability with the model identifier ascending
-// as the tie-break, so the first entry is the top entry by definition.
-//
-// This is deliberately independent of routing.log.jev_trace.enabled: that switch
-// decides whether the diagnostic distribution row is persisted, not what the call
-// returned, and the top-1 fact belongs to the event rather than to the trace.
-func jevTopModel(target auto.Target) string {
-	if target.JevTrace == nil || target.JevTrace.Status != auto.JevStatusOK {
-		return ""
-	}
-	if len(target.JevTrace.Probabilities) == 0 {
-		return ""
-	}
-	return target.JevTrace.Probabilities[0].Model
 }
 
 // floatPointer copies a float for the log record so a zero confidence is reported
@@ -1336,9 +1200,6 @@ func (l *requestLog) emit(logger *slog.Logger, started time.Time) {
 		"stream", l.stream,
 		"bytes_written", l.BytesWritten,
 		"latency_ms", time.Since(started).Milliseconds(),
-	}
-	if l.RoutingPreference != "" {
-		attributes = append(attributes, "routing_preference", l.RoutingPreference, "preference_source", l.PreferenceSource)
 	}
 	if l.RoutingMode != "" {
 		// The routing trace is one block: it is only meaningful together, and a

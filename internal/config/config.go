@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/nextroad-dev/Auto-Router/internal/models"
-	"github.com/nextroad-dev/Auto-Router/internal/router/analyzer"
 )
 
 // Duration represents a Go duration encoded as a JSON string, e.g. "5s".
@@ -67,21 +66,16 @@ type RoutingConfig struct {
 	// request syntax. It is off by default: the syntax is a privileged escape
 	// hatch until stage 9 adds inbound authentication.
 	AllowProviderOverride bool `json:"allow_provider_override"`
-	// DefaultPreference is the routing preference that applies when a request
-	// does not carry the X-Routing-Preference header. The type comes from the
-	// analyzer so the accepted values and their normalization have exactly one
-	// definition; an unknown value is rejected before any listener is bound.
-	DefaultPreference analyzer.Preference `json:"default_preference"`
 	// AnalyzerDebugEndpoint mounts POST /debug/analyze, an offline development
 	// tool that reports the extracted features of a request body. It is off by
 	// default and is never mounted on a non-loopback listener.
 	AnalyzerDebugEndpoint bool `json:"analyzer_debug_endpoint"`
-	// Policy is the policy engine configuration, including confidence thresholds,
-	// fallback behavior and relative cost/latency tier tables.
+	// Policy is the policy configuration: the Jev confidence threshold and the
+	// truncated-evidence rule.
 	Policy RoutingPolicyConfig `json:"policy"`
-	// PolicyDebugEndpoint mounts POST /debug/route, an offline development tool
-	// that evaluates the policy over a request body and a caller-supplied
-	// candidate list. It is off by default and, like the analyzer endpoint, is
+	// PolicyDebugEndpoint mounts POST /debug/route, a dry run of the production
+	// automatic router over a request body (including the real Jev call, but no
+	// provider call). It is off by default and, like the analyzer endpoint, is
 	// never mounted on a non-loopback listener.
 	PolicyDebugEndpoint bool `json:"policy_debug_endpoint"`
 	// Auto is the automatic routing (`model=auto`) section.
@@ -119,7 +113,6 @@ func Defaults() Config {
 		Registry: defaultRegistryConfig(),
 		Routing: RoutingConfig{
 			AllowProviderOverride: false,
-			DefaultPreference:     analyzer.PreferenceBalanced,
 			AnalyzerDebugEndpoint: false,
 			Policy:                defaultRoutingPolicyConfig(),
 			PolicyDebugEndpoint:   false,
@@ -205,12 +198,6 @@ func (c Config) Validate() error {
 	}
 	if err := c.Registry.Validate(); err != nil {
 		return err
-	}
-	// The configured value must be one of the four literals exactly. Unlike the
-	// request header it is not normalized: a configured "Quality" is a typo to
-	// fix, not an input to interpret, and the error never repeats the value.
-	if !c.Routing.DefaultPreference.Valid() {
-		return fmt.Errorf("routing.default_preference must be one of %s", strings.Join(analyzer.PreferenceValues(), ", "))
 	}
 	if err := c.Routing.Policy.Validate(); err != nil {
 		return err

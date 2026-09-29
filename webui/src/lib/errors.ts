@@ -65,7 +65,6 @@ export const INFERENCE_ERROR_CODES = [
   'invalid_request_error',
   'unsupported_media_type',
   'unsupported_conversion',
-  'invalid_routing_preference',
   'request_too_large',
   'provider_not_configured',
   'provider_override_disabled',

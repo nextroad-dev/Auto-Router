@@ -12,8 +12,8 @@
 //     proven rather than asserted.
 //   - Content never fails: malformed, empty, JSON-`null` or oversized bodies
 //     produce zero-value features (plus Truncated when the body was not fully
-//     seen) and no error. Only the protocol identity and the routing preference
-//     can be rejected, because those are router-owned inputs, not client text.
+//     seen) and no error. Only the protocol identity can be rejected, because it
+//     is a router-owned input, not client text.
 //     The HTTP boundary rejects a malformed body with 400 long before this
 //     package sees it, so this branch is only reachable by direct callers and
 //     the -analyze-check CLI.
@@ -22,9 +22,8 @@
 //     by named constants. Truncated reports that the analyzer did not see the
 //     whole request. That is not the same as "the request does not contain it":
 //     stage 6 and stage 7 must never treat an unobserved feature as absent.
-//   - No weights: this package reports normalized facts. Scoring, thresholds
-//     and weighted preferences belong to stage 6 and are deliberately absent
-//     here.
+//   - No weights: this package reports normalized facts. Filtering and
+//     selection belong to the policy engine and are deliberately absent here.
 package analyzer
 
 import (
@@ -93,31 +92,6 @@ const (
 	veryLongThreshold = 128_000
 )
 
-// FastResponseMaxOutputTokens is the output-token ceiling below which a
-// streaming request looks like a latency-sensitive one. The analyzer only
-// reports StreamRequested and MaxOutputTokensRequested; stage 6 reads this
-// constant to turn the two facts into a signal, which keeps the constant and
-// its use in one documented place.
-const FastResponseMaxOutputTokens = 512
-
-// Preference is the routing preference in effect for one request. Stage 5 only
-// extracts and forwards it: how a preference influences a score is stage 6.
-type Preference string
-
-// The accepted preferences. PreferenceQuality favors the strongest model,
-// PreferenceCost the cheapest, PreferenceLatency the fastest, and
-// PreferenceBalanced leaves the trade-off to the policy weights.
-const (
-	PreferenceBalanced Preference = "balanced"
-	PreferenceQuality  Preference = "quality"
-	PreferenceCost     Preference = "cost"
-	PreferenceLatency  Preference = "latency"
-)
-
-// preferenceOrder fixes the order preferences are listed in, so an error
-// message and a CLI report never depend on map iteration.
-var preferenceOrder = []Preference{PreferenceBalanced, PreferenceQuality, PreferenceCost, PreferenceLatency}
-
 // LengthClass is the coarse input-size bucket stage 6 filters on.
 type LengthClass string
 
@@ -139,16 +113,6 @@ const (
 	KindAudio InputKind = "audio"
 )
 
-// PreferenceSource reports where the effective preference came from.
-type PreferenceSource string
-
-const (
-	// SourceDefault means routing.default_preference applied.
-	SourceDefault PreferenceSource = "default"
-	// SourceHeader means X-Routing-Preference applied.
-	SourceHeader PreferenceSource = "header"
-)
-
 // ImageRef is one media reference found in the request. Kind is one of "url"
 // (an http(s) reference), "base64" (an inline payload) or "file" (an opaque
 // file reference). An inline payload never reaches Location or a log line: it
@@ -160,13 +124,10 @@ type ImageRef struct {
 }
 
 // Features are the normalized, protocol-independent facts about one request.
-// Every field is derived only from the request body (plus the resolved
-// preference) and is stable for the same bytes.
+// Every field is derived only from the request body and is stable for the same
+// bytes.
 type Features struct {
 	Protocol providers.Protocol
-
-	Preference       Preference
-	PreferenceSource PreferenceSource
 
 	SystemPromptPresent bool
 	SystemPromptBytes   int
@@ -242,79 +203,15 @@ type Result struct {
 	View     View
 }
 
-// Input is one analysis request. HeaderPreference is the raw
-// X-Routing-Preference value the HTTP boundary already validated (empty when the
-// client sent none); DefaultPreference is routing.default_preference.
+// Input is one analysis request.
 type Input struct {
-	Protocol          providers.Protocol
-	Body              []byte
-	HeaderPreference  string
-	DefaultPreference Preference
+	Protocol providers.Protocol
+	Body     []byte
 }
 
-// The only two failures Analyze reports. Both describe router-owned input, not
-// client content.
-var (
-	// ErrUnsupportedProtocol means the caller asked for a protocol that does not
-	// exist; there is nothing sensible to extract.
-	ErrUnsupportedProtocol = errors.New("unsupported protocol")
-	// ErrInvalidPreference means a preference value is not one of the four
-	// accepted values. Errors never repeat the offending value, so arbitrary
-	// client text cannot be pushed into an error line.
-	ErrInvalidPreference = errors.New("invalid routing preference")
-)
-
-// PreferenceValues lists the accepted preferences in a fixed order. It exists
-// so the configuration validator, the HTTP boundary and the CLI all describe
-// the same closed set.
-func PreferenceValues() []string {
-	values := make([]string, 0, len(preferenceOrder))
-	for _, preference := range preferenceOrder {
-		values = append(values, string(preference))
-	}
-	return values
-}
-
-// Valid reports whether the preference is one of the four accepted values.
-func (p Preference) Valid() bool {
-	for _, candidate := range preferenceOrder {
-		if p == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-// String returns the wire spelling of the preference.
-func (p Preference) String() string { return string(p) }
-
-// ParsePreference normalizes one preference value: surrounding whitespace is
-// insignificant and the comparison is case-insensitive. An unknown value is
-// rejected without echoing it.
-func ParsePreference(value string) (Preference, error) {
-	normalized := Preference(strings.ToLower(strings.TrimSpace(value)))
-	if !normalized.Valid() {
-		return "", fmt.Errorf("%w: must be one of %s", ErrInvalidPreference, strings.Join(PreferenceValues(), ", "))
-	}
-	return normalized, nil
-}
-
-// ResolvePreference applies the fixed precedence: a request-level header
-// overrides the configured default, and the source of the effective value is
-// reported alongside it. An empty header means "the client did not ask".
-func ResolvePreference(header string, fallback Preference) (Preference, PreferenceSource, error) {
-	if strings.TrimSpace(header) == "" {
-		if !fallback.Valid() {
-			return "", "", fmt.Errorf("%w: configured default must be one of %s", ErrInvalidPreference, strings.Join(PreferenceValues(), ", "))
-		}
-		return fallback, SourceDefault, nil
-	}
-	preference, err := ParsePreference(header)
-	if err != nil {
-		return "", "", err
-	}
-	return preference, SourceHeader, nil
-}
+// ErrUnsupportedProtocol is the only failure Analyze reports: the caller asked
+// for a protocol that does not exist, so there is nothing sensible to extract.
+var ErrUnsupportedProtocol = errors.New("unsupported protocol")
 
 // Analyzer is the concrete, stateless implementation of an Extractor. It
 // exists so the composition root can name the production extractor without
@@ -337,15 +234,11 @@ func Analyze(input Input) (Result, error) {
 	if !input.Protocol.Valid() {
 		return Result{}, fmt.Errorf("%w: %q", ErrUnsupportedProtocol, string(input.Protocol))
 	}
-	preference, source, err := ResolvePreference(input.HeaderPreference, input.DefaultPreference)
-	if err != nil {
-		return Result{}, err
-	}
 	window := input.Body
 	if len(window) > maxAnalyzedBytes {
 		window = window[:maxAnalyzedBytes]
 	}
-	walk := newWalk(input.Protocol, preference, source, window, len(input.Body) > len(window))
+	walk := newWalk(input.Protocol, window, len(input.Body) > len(window))
 	parser := newParser(window, len(input.Body) > len(window))
 	if root, ok := parser.document(); ok {
 		switch input.Protocol {
@@ -376,7 +269,7 @@ type walk struct {
 	textScanned int
 }
 
-func newWalk(protocol providers.Protocol, preference Preference, source PreferenceSource, window []byte, windowTruncated bool) *walk {
+func newWalk(protocol providers.Protocol, window []byte, windowTruncated bool) *walk {
 	roles := make(map[string]int, len(roleNames))
 	for _, role := range roleNames {
 		roles[role] = 0
@@ -384,8 +277,6 @@ func newWalk(protocol providers.Protocol, preference Preference, source Preferen
 	return &walk{
 		features: Features{
 			Protocol:            protocol,
-			Preference:          preference,
-			PreferenceSource:    source,
 			RoleCounts:          roles,
 			InputBytes:          len(window),
 			InputTokensEstimate: (len(window) + tokenEstimateDivisor - 1) / tokenEstimateDivisor,

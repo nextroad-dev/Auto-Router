@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, ApiError, getAllPages, type Model, type SettingsDocument } from '@/lib/api'
+import { api, ApiError, type SettingsDocument } from '@/lib/api'
 import { createDebouncedSave, createSerialAutosaveQueue, retryOnceOnConflict } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
 import ErrorAlert from '@/components/ErrorAlert.vue'
@@ -19,9 +19,6 @@ import {
   buildSettingsPatch,
   normalizeRetryStatusCodes,
   retryStatusCodeOptions,
-  routingPreferenceOptions,
-  validateTierRows,
-  type TierRow,
 } from '@/lib/settings-form'
 import { clearSession } from '@/lib/session'
 import { showSavedToast } from '@/lib/save-toast'
@@ -40,29 +37,11 @@ const values = reactive<Record<string, unknown>>({})
 const retryStatusCodes = ref<number[]>([])
 const jevKey = ref('')
 const keyConfigured = ref(false)
-const costTiers = ref<TierRow[]>([])
-const latencyTiers = ref<TierRow[]>([])
 const dirtySettings = new Set<string>()
 const pendingTextPaths = new Set<string>()
 const settingVersions = new Map<string, number>()
 const textSaves = new Map<string, ReturnType<typeof createDebouncedSave>>()
 const resetConfirm = ref(false)
-const availableModels = ref<Model[]>([])
-
-const defaultModelOptions = computed(() => {
-  const options = [
-    { label: '不指定兜底模型（留空）', value: '' },
-    ...availableModels.value.map(m => ({
-      label: m.display_name && m.display_name !== m.id ? `${m.display_name} (${m.id})` : m.id,
-      value: m.id,
-    })),
-  ]
-  const current = String(values['routing.policy.default_model'] || '')
-  if (current && !options.some(item => item.value === current)) {
-    options.push({ label: `${current}（当前配置）`, value: current })
-  }
-  return options
-})
 
 const inputModes = [
   { label: '脱敏内容', value: 'redacted' },
@@ -71,16 +50,11 @@ const inputModes = [
 ]
 
 const policyPaths = [
-  'routing.policy.high_confidence',
   'routing.policy.low_confidence',
   'routing.policy.refuse_truncated_evidence',
-  'routing.policy.default_model',
-  'routing.policy.cost_tiers',
-  'routing.policy.latency_tiers',
 ]
 
 const routePaths = [
-  'routing.default_preference',
   'routing.allow_provider_override',
   'routing.auto.default_group',
   'routing.auto.failover.enabled',
@@ -115,16 +89,6 @@ function settingsResponse(data: SettingsDocument | SettingsChange, overlay?: boo
     if (!dirtySettings.has(field.path)) values[field.path] = field.value
     if (field.secret) keyConfigured.value = Boolean(field.set)
   }
-  if (!dirtySettings.has('routing.policy.cost_tiers')) {
-    costTiers.value = Array.isArray(values['routing.policy.cost_tiers'])
-      ? ((values['routing.policy.cost_tiers'] as TierRow[]) ?? []).map(row => ({ ...row }))
-      : []
-  }
-  if (!dirtySettings.has('routing.policy.latency_tiers')) {
-    latencyTiers.value = Array.isArray(values['routing.policy.latency_tiers'])
-      ? ((values['routing.policy.latency_tiers'] as TierRow[]) ?? []).map(row => ({ ...row }))
-      : []
-  }
   if (!dirtySettings.has('routing.auto.failover.retry_on.status_codes')) {
     retryStatusCodes.value = normalizeRetryStatusCodes(values['routing.auto.failover.retry_on.status_codes']) ?? []
   }
@@ -134,12 +98,7 @@ async function loadSettings() {
   loading.value = true
   error.value = undefined
   try {
-    const [doc, modelList] = await Promise.all([
-      api.get<SettingsDocument>('/admin/v1/settings'),
-      getAllPages<Model>('/admin/v1/models').catch(() => []),
-    ])
-    availableModels.value = modelList
-    settingsResponse(doc)
+    settingsResponse(await api.get<SettingsDocument>('/admin/v1/settings'))
   } catch (cause) {
     error.value = errorNotice(cause)
   } finally {
@@ -260,20 +219,9 @@ function validateSettingsDraft(paths: string[]): string {
   if (paths.includes('routing.auto.failover.retry_on.status_codes') && normalizeRetryStatusCodes(retryStatusCodes.value) === null) {
     return 'HTTP 重试状态码仅支持 408、425、429、500、502、503、504。'
   }
-  if (paths.includes('routing.policy.cost_tiers')) {
-    const message = validateTierRows(costTiers.value, '成本等级')
-    if (message) return message
-  }
-  if (paths.includes('routing.policy.latency_tiers')) {
-    const message = validateTierRows(latencyTiers.value, '延迟等级')
-    if (message) return message
-  }
-  if (paths.includes('routing.policy.high_confidence') || paths.includes('routing.policy.low_confidence')) {
-    const high = Number(value('routing.policy.high_confidence', 0.7))
-    const low = Number(value('routing.policy.low_confidence', 0.3))
-    if (!Number.isFinite(high) || !Number.isFinite(low) || low < 0 || low > 1 || high < 0 || high > 1 || low >= high) {
-      return '置信度阈值必须在 0 到 1 之间，且低置信度阈值必须小于高置信度阈值。'
-    }
+  if (paths.includes('routing.policy.low_confidence')) {
+    const low = Number(value('routing.policy.low_confidence', 0.45))
+    if (!Number.isFinite(low) || low < 0 || low > 1) return '置信度阈值必须在 0 到 1 之间。'
   }
   for (const path of ['routing.log.retention_days', 'routing.log.jev_trace.retention_days']) {
     if (!paths.includes(path)) continue
@@ -288,20 +236,6 @@ function makePatch(paths: string[]): Record<string, unknown> {
   for (const path of paths) {
     if (path === 'routing.auto.failover.retry_on.status_codes') overrides[path] = normalizeRetryStatusCodes(retryStatusCodes.value) ?? []
     if (path === 'jev.api_key') overrides[path] = jevKey.value.trim()
-    if (path === 'routing.policy.cost_tiers') {
-      overrides[path] = costTiers.value.map(row => ({
-        ...(row.model?.trim() ? { model: row.model.trim() } : {}),
-        ...(row.provider?.trim() ? { provider: row.provider.trim() } : {}),
-        tier: Number(row.tier),
-      }))
-    }
-    if (path === 'routing.policy.latency_tiers') {
-      overrides[path] = latencyTiers.value.map(row => ({
-        ...(row.model?.trim() ? { model: row.model.trim() } : {}),
-        ...(row.provider?.trim() ? { provider: row.provider.trim() } : {}),
-        tier: Number(row.tier),
-      }))
-    }
   }
   return buildSettingsPatch(report.value?.settings ?? [], paths, values, overrides)
 }
@@ -428,15 +362,6 @@ onMounted(() => { void loadSettings() })
     <JfCard title="全局路由行为">
       <div class="grid gap-6">
         <div class="grid gap-5 sm:grid-cols-2">
-          <JfField label="全局默认路由偏好" name="routing-default-preference">
-            <JfSelect
-              :model-value="value('routing.default_preference', 'balanced')"
-              :items="routingPreferenceOptions"
-              :disabled="loading || !mutable('routing.default_preference')"
-              class="w-full"
-              @update:model-value="setValue('routing.default_preference', $event)"
-            />
-          </JfField>
           <JfField inline label="允许显式提供商覆盖" name="routing-allow-provider-override">
             <JfSwitch
               :model-value="value('routing.allow_provider_override', false)"
@@ -516,22 +441,9 @@ onMounted(() => { void loadSettings() })
     <JfCard title="路由策略与置信度">
       <div class="grid gap-6">
         <div class="grid gap-5 sm:grid-cols-2">
-          <JfField label="高置信度阈值" name="policy-high-confidence">
+          <JfField label="Jev 选组最低置信度（低于此值使用默认组）" name="policy-low-confidence">
             <JfSlider
-              :model-value="Number(value('routing.policy.high_confidence', 0.7))"
-              :min="0"
-              :max="1"
-              :step="0.01"
-              :format-value="v => `${v.toFixed(2)} (${Math.round(v * 100)}%)`"
-              :disabled="loading || !mutable('routing.policy.high_confidence')"
-              @update:model-value="setDraftValue('routing.policy.high_confidence', Number($event))"
-              @change="commitSetting('routing.policy.high_confidence')"
-            />
-          </JfField>
-
-          <JfField label="低置信度阈值" name="policy-low-confidence">
-            <JfSlider
-              :model-value="Number(value('routing.policy.low_confidence', 0.3))"
+              :model-value="Number(value('routing.policy.low_confidence', 0.45))"
               :min="0"
               :max="1"
               :step="0.01"
@@ -547,16 +459,6 @@ onMounted(() => { void loadSettings() })
               :model-value="value('routing.policy.refuse_truncated_evidence', true)"
               :disabled="loading || !mutable('routing.policy.refuse_truncated_evidence')"
               @update:model-value="setValue('routing.policy.refuse_truncated_evidence', $event)"
-            />
-          </JfField>
-
-          <JfField label="低置信度默认兜底模型" name="policy-default-model">
-            <JfSelect
-              :model-value="value('routing.policy.default_model', '')"
-              :items="defaultModelOptions"
-              :disabled="loading || !mutable('routing.policy.default_model')"
-              class="w-full"
-              @update:model-value="setValue('routing.policy.default_model', $event)"
             />
           </JfField>
         </div>

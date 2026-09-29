@@ -359,7 +359,7 @@ func (s *Store) requireWritable() error {
 func (s *Store) lock()   { s.mutex <- struct{}{} }
 func (s *Store) unlock() { <-s.mutex }
 
-// decodeOverlay parses a stored overlay document. Removed policy allow/deny lists
+// decodeOverlay parses a stored overlay document. Settings that no longer exist
 // are discarded for compatibility with older database overlays. An empty document
 // means "no overlay" rather than an empty map, so HasOverlay reports the truth.
 func decodeOverlay(document string) (map[string]any, error) {
@@ -375,31 +375,35 @@ func decodeOverlay(document string) (map[string]any, error) {
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return nil, errors.New("the stored overlay must contain exactly one JSON object")
 	}
-	stripRemovedPolicyLists(merged)
+	stripRemovedSettings(merged)
 	if len(merged) == 0 {
 		return nil, nil
 	}
 	return merged, nil
 }
 
-func stripRemovedPolicyLists(overlay map[string]any) {
+// stripRemovedSettings drops retired settings from a stored overlay: the policy
+// allow/deny lists, the routing preference, and the model-level policy settings
+// (high_confidence, default_model, cost_tiers, latency_tiers) that stopped
+// affecting group routing.
+func stripRemovedSettings(overlay map[string]any) {
 	routing, ok := overlay["routing"].(map[string]any)
 	if !ok {
 		return
 	}
-	policy, ok := routing["policy"].(map[string]any)
-	if !ok {
-		return
-	}
-	for _, key := range []string{
-		"allow_models", "deny_models",
-		"allow_providers", "deny_providers",
-		"allow_pairs", "deny_pairs",
-	} {
-		delete(policy, key)
-	}
-	if len(policy) == 0 {
-		delete(routing, "policy")
+	delete(routing, "default_preference")
+	if policy, ok := routing["policy"].(map[string]any); ok {
+		for _, key := range []string{
+			"allow_models", "deny_models",
+			"allow_providers", "deny_providers",
+			"allow_pairs", "deny_pairs",
+			"high_confidence", "default_model", "cost_tiers", "latency_tiers",
+		} {
+			delete(policy, key)
+		}
+		if len(policy) == 0 {
+			delete(routing, "policy")
+		}
 	}
 	if len(routing) == 0 {
 		delete(overlay, "routing")
@@ -443,7 +447,7 @@ func build(base config.Config, overlay map[string]any, version int64, hasOverlay
 }
 
 // mergeOverlay applies a nested patch onto an existing overlay. The result is a
-// deep merge: patching routing.policy.default_model does not drop other policy
+// deep merge: patching routing.policy.low_confidence does not drop other policy
 // settings, and a nested object is kept only where it carries at least one value.
 //
 // The reported change list names the dotted paths the request actually set, in the

@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nextroad-dev/Auto-Router/internal/config"
 	"github.com/nextroad-dev/Auto-Router/internal/providers"
 	"github.com/nextroad-dev/Auto-Router/internal/router/analyzer"
 )
@@ -26,16 +25,14 @@ import (
 // analyzeCheckFlags collects the flags that belong to the check, so the
 // argument parser stays readable and each flag can be validated individually.
 type analyzeCheckFlags struct {
-	enabled    bool
-	protocol   string
-	preference string
-	file       string
+	enabled  bool
+	protocol string
+	file     string
 }
 
 func registerAnalyzeCheckFlags(flags *flag.FlagSet, check *analyzeCheckFlags) {
 	flags.BoolVar(&check.enabled, "analyze-check", false, "extract routing features from one request body offline, then exit")
 	flags.StringVar(&check.protocol, "analyze-protocol", string(providers.ProtocolChatCompletions), "protocol of the analyzed body: chat_completions or responses")
-	flags.StringVar(&check.preference, "analyze-preference", "", "routing preference to resolve: balanced, quality, cost or latency (defaults to routing.default_preference)")
 	flags.StringVar(&check.file, "analyze-file", "", "optional path to a JSON request body; omitting it uses the built-in sample")
 }
 
@@ -45,7 +42,7 @@ func registerAnalyzeCheckFlags(flags *flag.FlagSet, check *analyzeCheckFlags) {
 func (c analyzeCheckFlags) validate(explicitlySet map[string]bool) error {
 	// The subordinate flags are meaningless on their own; accepting them would
 	// silently do nothing, which is worse than refusing them.
-	for _, name := range []string{"analyze-protocol", "analyze-preference", "analyze-file"} {
+	for _, name := range []string{"analyze-protocol", "analyze-file"} {
 		if explicitlySet[name] && !c.enabled {
 			return fmt.Errorf("-%s requires -analyze-check", name)
 		}
@@ -74,7 +71,7 @@ func analyzeProtocol(value string) (providers.Protocol, bool) {
 // runAnalyzeCheck loads a body, analyzes it and prints the deterministic report.
 // It never opens the database, never builds an executor or a Jev client, and
 // never starts the HTTP server.
-func runAnalyzeCheck(cfg config.Config, check analyzeCheckFlags, output io.Writer) error {
+func runAnalyzeCheck(check analyzeCheckFlags, output io.Writer) error {
 	protocol, ok := analyzeProtocol(check.protocol)
 	if !ok {
 		return errors.New("-analyze-protocol must be chat_completions or responses")
@@ -83,16 +80,7 @@ func runAnalyzeCheck(cfg config.Config, check analyzeCheckFlags, output io.Write
 	if err != nil {
 		return err
 	}
-	headerPreference := ""
-	if check.preference != "" {
-		headerPreference = check.preference
-	}
-	result, err := analyzer.Analyze(analyzer.Input{
-		Protocol:          protocol,
-		Body:              body,
-		HeaderPreference:  headerPreference,
-		DefaultPreference: cfg.Routing.DefaultPreference,
-	})
+	result, err := analyzer.Analyze(analyzer.Input{Protocol: protocol, Body: body})
 	if err != nil {
 		return fmt.Errorf("analyze %s: %w", source, err)
 	}
@@ -141,7 +129,6 @@ func writeAnalyzeReport(output io.Writer, protocol providers.Protocol, source st
 	fmt.Fprintf(output, "analyze check: %s from %s\n", protocol, source)
 	fmt.Fprintf(output, "no upstream call, no agent, the request was not modified\n\n")
 	fmt.Fprintf(output, "protocol:                 %s\n", features.Protocol)
-	fmt.Fprintf(output, "preference:               %s (%s)\n", features.Preference, features.PreferenceSource)
 	fmt.Fprintf(output, "input_bytes:              %d\n", features.InputBytes)
 	fmt.Fprintf(output, "input_tokens_estimate:    %d\n", features.InputTokensEstimate)
 	fmt.Fprintf(output, "length:                   %s\n", features.Length)

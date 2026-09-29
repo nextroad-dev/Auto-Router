@@ -60,10 +60,7 @@ func main() {
 	if err := run(ctx, os.Args[1:], os.Stderr); err != nil {
 		logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 		logger.Error("service stopped with an error", "error", err)
-		// A policy check reports a routing refusal through a distinct exit code so a
-		// maintenance run can gate a deployment. Every other failure is a usage,
-		// configuration or I/O error.
-		os.Exit(exitCode(err))
+		os.Exit(1)
 	}
 }
 
@@ -97,8 +94,6 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	jevCheckPrompt := flags.String("jev-check-prompt", "", "optional text to send to TypeSafe instead of the built-in check sentence")
 	var analyzeCheck analyzeCheckFlags
 	registerAnalyzeCheckFlags(flags, &analyzeCheck)
-	var policyCheck policyCheckFlags
-	registerPolicyCheckFlags(flags, &policyCheck)
 	var logsCheck logsCheckFlags
 	registerLogsCheckFlags(flags, &logsCheck)
 	if err := flags.Parse(args); err != nil {
@@ -133,7 +128,6 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		{"-recover-admin", *recoverAdmin},
 		{"-jev-check", *jevCheck},
 		{"-analyze-check", analyzeCheck.enabled},
-		{"-policy-check", policyCheck.enabled},
 		{"-logs-check", logsCheck.enabled},
 	}
 	for i := 0; i < len(modes); i++ {
@@ -144,9 +138,6 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		}
 	}
 	if err := analyzeCheck.validate(flagsSet(flags)); err != nil {
-		return err
-	}
-	if err := policyCheck.validate(flagsSet(flags)); err != nil {
 		return err
 	}
 	if err := logsCheck.validate(flagsSet(flags)); err != nil {
@@ -160,17 +151,14 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if *recoverAdmin {
 		return runAdminRecovery(ctx, cfg, output)
 	}
-	if analyzeCheck.enabled || policyCheck.enabled || logsCheck.enabled {
+	if analyzeCheck.enabled {
+		return runAnalyzeCheck(analyzeCheck, output)
+	}
+	if logsCheck.enabled {
 		var loadErr error
 		cfg, loadErr = loadStoredSettingsIfPresent(ctx, cfg)
 		if loadErr != nil {
 			return loadErr
-		}
-		if analyzeCheck.enabled {
-			return runAnalyzeCheck(cfg, analyzeCheck, output)
-		}
-		if policyCheck.enabled {
-			return runPolicyCheck(cfg, policyCheck, output)
 		}
 		return runLogsCheck(ctx, cfg, logsCheck, loggerFor(cfg, output), output)
 	}
@@ -443,17 +431,15 @@ func newAutoRouter(cfg config.Config, store *models.Store, engine *policy.Engine
 		caller = jevClient
 	}
 	options := auto.Options{
-		Catalog:           store,
-		Analyzer:          analyzer.New(),
-		Jev:               caller,
-		Engine:            engine,
-		DefaultPreference: cfg.Routing.DefaultPreference,
-		InputMode:         cfg.Jev.DomainInputMode(),
-		Failover:          autoFailoverPolicy(cfg.Routing.Auto.Failover),
-		DefaultGroup:      auto.GroupName(cfg.Routing.Auto.DefaultGroup),
-		LowConfidence:     cfg.Routing.Policy.LowConfidence,
-		HighConfidence:    cfg.Routing.Policy.HighConfidence,
-		GroupConfig:       groupConfigFromStorage(groups),
+		Catalog:       store,
+		Analyzer:      analyzer.New(),
+		Jev:           caller,
+		Engine:        engine,
+		InputMode:     cfg.Jev.DomainInputMode(),
+		Failover:      autoFailoverPolicy(cfg.Routing.Auto.Failover),
+		DefaultGroup:  auto.GroupName(cfg.Routing.Auto.DefaultGroup),
+		LowConfidence: cfg.Routing.Policy.LowConfidence,
+		GroupConfig:   groupConfigFromStorage(groups),
 	}
 	if settingsStore != nil {
 		// The live source replaces every automatic-routing value that can change,
@@ -513,8 +499,7 @@ func autoRuntimeSnapshot(snapshot *settings.Snapshot, groups *atomic.Pointer[sto
 		Engine: snapshot.Engine, JevEnabled: cfg.Jev.Enabled, Jev: client,
 		InputMode: cfg.Jev.DomainInputMode(), Failover: autoFailoverPolicy(cfg.Routing.Auto.Failover),
 		DefaultGroup:  auto.GroupName(cfg.Routing.Auto.DefaultGroup),
-		LowConfidence: cfg.Routing.Policy.LowConfidence, HighConfidence: cfg.Routing.Policy.HighConfidence,
-		DefaultPreference: cfg.Routing.DefaultPreference, GroupConfig: groupConfigFromStorage(groups),
+		LowConfidence: cfg.Routing.Policy.LowConfidence, GroupConfig: groupConfigFromStorage(groups),
 	}
 }
 func (v settingsValues) RuntimeSnapshot() auto.RuntimeSettings {
@@ -530,30 +515,16 @@ type liveProxyValues struct {
 
 func (v liveProxyValues) Snapshot() proxy.LiveSnapshot {
 	if v.store == nil {
-		return proxy.LiveSnapshot{DefaultPreference: analyzer.PreferenceBalanced, RoutingLogEnabled: true}
+		return proxy.LiveSnapshot{RoutingLogEnabled: true}
 	}
 	snapshot := v.store.Current()
 	cfg := snapshot.Config
-	return proxy.LiveSnapshot{AllowProviderOverride: cfg.Routing.AllowProviderOverride, DefaultPreference: cfg.Routing.DefaultPreference, RoutingLogEnabled: cfg.Routing.Log.Enabled, StoreClientIP: cfg.Routing.Log.StoreClientIP, JevTraceEnabled: cfg.Routing.Log.JevTrace.Enabled, AutoSettings: autoRuntimeSnapshot(snapshot, v.groups), HasAutoSettings: true}
+	return proxy.LiveSnapshot{AllowProviderOverride: cfg.Routing.AllowProviderOverride, RoutingLogEnabled: cfg.Routing.Log.Enabled, StoreClientIP: cfg.Routing.Log.StoreClientIP, JevTraceEnabled: cfg.Routing.Log.JevTrace.Enabled, AutoSettings: autoRuntimeSnapshot(snapshot, v.groups), HasAutoSettings: true}
 }
 
 // liveDebugValues adapts the settings store to the two debug endpoints' live
-// contract: they read the default preference and the compiled policy engine.
+// enable switches.
 type liveDebugValues struct{ store *settings.Store }
-
-func (v liveDebugValues) DefaultPreference() analyzer.Preference {
-	if v.store == nil {
-		return analyzer.PreferenceBalanced
-	}
-	return v.store.Config().Routing.DefaultPreference
-}
-
-func (v liveDebugValues) Engine() *policy.Engine {
-	if v.store == nil {
-		return nil
-	}
-	return v.store.Current().Engine
-}
 
 func (v liveDebugValues) AnalyzerEnabled() bool {
 	return v.store != nil && v.store.Config().Routing.AnalyzerDebugEndpoint
@@ -598,8 +569,7 @@ func newHTTPServer(assembly serverAssembly, logger *slog.Logger) *http.Server {
 	recorder := assembly.Recorder
 	settingsStore := assembly.Settings
 	debugHandler := gateDebugHandler(api.NewDebugAnalyzer(api.DebugOptions{
-		Analyzer: analyzer.New(), DefaultPreference: cfg.Routing.DefaultPreference,
-		MaxRequestBytes: cfg.HTTP.MaxRequestBytes, Live: liveDebugValues{store: settingsStore},
+		Analyzer: analyzer.New(), MaxRequestBytes: cfg.HTTP.MaxRequestBytes,
 	}), settingsStore, true)
 	engine, err := cfg.PolicyEngine()
 	if err != nil {
@@ -611,9 +581,11 @@ func newHTTPServer(assembly serverAssembly, logger *slog.Logger) *http.Server {
 		logger.Error("the routing policy could not be compiled", "error", err)
 		engine = nil
 	}
+	autoRouter := newAutoRouter(cfg, store, engine, jevClient, settingsStore, assembly.Groups, logger)
+	// The debug route is a dry run of the same router instance the forwarding
+	// handler uses, so it cannot drift from production routing.
 	routeDebugHandler := gateDebugHandler(api.NewDebugRoute(api.RouteDebugOptions{
-		Analyzer: analyzer.New(), DefaultPreference: cfg.Routing.DefaultPreference,
-		MaxRequestBytes: cfg.HTTP.MaxRequestBytes, Live: liveDebugValues{store: settingsStore},
+		Router: autoRouter, MaxRequestBytes: cfg.HTTP.MaxRequestBytes,
 	}), settingsStore, false)
 	authenticator := assembly.Authenticator
 	if authenticator == nil {
@@ -628,8 +600,7 @@ func newHTTPServer(assembly serverAssembly, logger *slog.Logger) *http.Server {
 		// Provider readiness is decided by providerRouter and classified as
 		// provider_not_configured per request.
 		ProviderConfigured: true,
-		DefaultPreference:  cfg.Routing.DefaultPreference,
-		AutoRouter:         newAutoRouter(cfg, store, engine, jevClient, settingsStore, assembly.Groups, logger),
+		AutoRouter:         autoRouter,
 		Recorder:           recorder,
 		Live:               liveProxyValues{store: settingsStore, groups: assembly.Groups},
 		OverrideAuthorizer: api.OverrideAuthorizer(authenticator),

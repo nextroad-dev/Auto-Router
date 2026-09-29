@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/nextroad-dev/Auto-Router/internal/config"
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 	"github.com/nextroad-dev/Auto-Router/internal/providers"
 	"github.com/nextroad-dev/Auto-Router/internal/router/analyzer"
+	"github.com/nextroad-dev/Auto-Router/internal/router/decision"
 	"github.com/nextroad-dev/Auto-Router/internal/router/jev"
 )
 
@@ -37,11 +39,9 @@ func TestRouteUsesOnlyAvailableGroupsAndFallsBackOnLowConfidence(t *testing.T) {
 	caller := &groupJevStub{selected: string(GroupSimple), confidence: 0.2}
 	router := New(Options{
 		Catalog: catalog, Analyzer: analyzer.New(), Engine: engine, Jev: caller,
-		InputMode:         jev.InputModeContent,
-		DefaultPreference: analyzer.PreferenceBalanced,
-		DefaultGroup:      GroupMedium,
-		LowConfidence:     0.3,
-		HighConfidence:    0.7,
+		InputMode:     jev.InputModeContent,
+		DefaultGroup:  GroupMedium,
+		LowConfidence: 0.3,
 		GroupConfig: GroupConfig{
 			Simple:  []GroupMember{{ProviderKey: "provider-a", ModelID: "model-a"}},
 			Medium:  []GroupMember{{ProviderKey: "provider-a", ModelID: "model-b"}, {ProviderKey: "provider-a", ModelID: "model-c"}},
@@ -71,6 +71,41 @@ func TestRouteUsesOnlyAvailableGroupsAndFallsBackOnLowConfidence(t *testing.T) {
 	if len(caller.candidates) != 2 || caller.candidates[0].Model != "simple" || caller.candidates[1].Model != "medium" {
 		t.Fatalf("Jev candidates = %+v, want only the non-empty simple and medium groups", caller.candidates)
 	}
+	if got := target.Decision; got.ConfidenceBand != decision.BandLow || !got.Fallback.Used || got.Fallback.Reason != decision.ReasonConfidenceLow || got.Confidence != 0.2 {
+		t.Fatalf("decision = band %q fallback %+v confidence %v, want low/confidence_low/0.2", got.ConfidenceBand, got.Fallback, got.Confidence)
+	}
+}
+
+func TestRouteRecordsAdoptedGroupInDecision(t *testing.T) {
+	catalog := testAutoCatalog(t)
+	engine, err := config.Defaults().PolicyEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(Options{
+		Catalog: catalog, Analyzer: analyzer.New(), Engine: engine,
+		Jev:       &groupJevStub{selected: string(GroupSimple), confidence: 0.9},
+		InputMode: jev.InputModeContent, DefaultGroup: GroupMedium, LowConfidence: 0.3,
+		GroupConfig: GroupConfig{
+			Simple: []GroupMember{{ProviderKey: "provider-a", ModelID: "model-a"}},
+			Medium: []GroupMember{{ProviderKey: "provider-a", ModelID: "model-b"}},
+		},
+	})
+	body, _ := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "Hi."}}})
+	target, err := router.Route(context.Background(), Request{Protocol: providers.ProtocolChatCompletions, Body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := target.Decision
+	if target.SelectedGroup != GroupSimple || target.Model != "model-a" {
+		t.Fatalf("selected target = %s/%s, want simple/model-a", target.SelectedGroup, target.Model)
+	}
+	if got.ConfidenceBand != decision.BandHigh || got.Fallback.Used || got.Fallback.Reason != decision.ReasonNone || got.Confidence != 0.9 {
+		t.Fatalf("decision = band %q fallback %+v confidence %v, want high/none/0.9", got.ConfidenceBand, got.Fallback, got.Confidence)
+	}
+	if !strings.Contains(got.Reason, "band=high;origin=first_eligible;fallback=none") {
+		t.Fatalf("reason = %q", got.Reason)
+	}
 }
 
 func TestRouteFailsWhenConfiguredDefaultGroupHasNoEligibleMembers(t *testing.T) {
@@ -81,7 +116,7 @@ func TestRouteFailsWhenConfiguredDefaultGroupHasNoEligibleMembers(t *testing.T) 
 	}
 	router := New(Options{
 		Catalog: catalog, Analyzer: analyzer.New(), Engine: engine,
-		InputMode: jev.InputModeContent, DefaultPreference: analyzer.PreferenceBalanced,
+		InputMode:    jev.InputModeContent,
 		DefaultGroup: GroupComplex,
 		GroupConfig: GroupConfig{
 			Simple: []GroupMember{{ProviderKey: "provider-a", ModelID: "model-a"}},
@@ -104,7 +139,7 @@ func TestRouteUsesConfiguredDefaultGroupWhenJevIsDisabled(t *testing.T) {
 	}
 	router := New(Options{
 		Catalog: catalog, Analyzer: analyzer.New(), Engine: engine,
-		InputMode: jev.InputModeContent, DefaultPreference: analyzer.PreferenceBalanced,
+		InputMode:    jev.InputModeContent,
 		DefaultGroup: GroupSimple,
 		GroupConfig: GroupConfig{
 			Simple: []GroupMember{{ProviderKey: "provider-a", ModelID: "model-a"}},
@@ -132,7 +167,7 @@ func TestFailoverHonorsAttemptBudgetAndStaysInSelectedGroup(t *testing.T) {
 	}
 	router := New(Options{
 		Catalog: catalog, Analyzer: analyzer.New(), Engine: engine,
-		InputMode: jev.InputModeContent, DefaultPreference: analyzer.PreferenceBalanced,
+		InputMode:    jev.InputModeContent,
 		DefaultGroup: GroupSimple,
 		Failover:     FailoverPolicy{Enabled: true, MaxAttempts: 2, RetryPreRequestFailure: true, RetryStatusCodes: []int{503}},
 		GroupConfig: GroupConfig{

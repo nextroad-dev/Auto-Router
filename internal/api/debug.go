@@ -30,18 +30,9 @@ type DebugOptions struct {
 	Analyzer interface {
 		Analyze(input analyzer.Input) (analyzer.Result, error)
 	}
-	// DefaultPreference is routing.default_preference, used when the debug
-	// request does not carry a preference. It is the static fallback used when Live is
-	// nil.
-	DefaultPreference analyzer.Preference
 	// MaxRequestBytes bounds the debug request body. It is the same setting the
 	// forwarding path uses, so the tool cannot buffer more than the service.
 	MaxRequestBytes int64
-	// Live supplies the default preference in effect right now. Nil means the static
-	// field is used unchanged.
-	Live interface {
-		DefaultPreference() analyzer.Preference
-	}
 }
 
 // NewDebugAnalyzer builds the POST /debug/analyze handler. The composition root
@@ -49,10 +40,8 @@ type DebugOptions struct {
 // listener is loopback-only.
 func NewDebugAnalyzer(options DebugOptions) http.Handler {
 	handler := &debugAnalyzer{
-		analyzer:          options.Analyzer,
-		defaultPreference: options.DefaultPreference,
-		maxBytes:          options.MaxRequestBytes,
-		live:              options.Live,
+		analyzer: options.Analyzer,
+		maxBytes: options.MaxRequestBytes,
 	}
 	if handler.maxBytes <= 0 {
 		handler.maxBytes = 16 << 20
@@ -64,24 +53,7 @@ type debugAnalyzer struct {
 	analyzer interface {
 		Analyze(input analyzer.Input) (analyzer.Result, error)
 	}
-	defaultPreference analyzer.Preference
-	maxBytes          int64
-	live              interface {
-		DefaultPreference() analyzer.Preference
-	}
-}
-
-// currentPreference reports routing.default_preference right now, preferring the
-// live source and falling back to the static value.
-func (d *debugAnalyzer) currentPreference() analyzer.Preference {
-	if d.live == nil {
-		return d.defaultPreference
-	}
-	preference := d.live.DefaultPreference()
-	if !preference.Valid() {
-		return d.defaultPreference
-	}
-	return preference
+	maxBytes int64
 }
 
 // ServeHTTP answers one analysis. Every response carries the correlation
@@ -125,19 +97,9 @@ func (d *debugAnalyzer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := d.analyzer.Analyze(analyzer.Input{
-		Protocol:          protocol,
-		Body:              request.Body,
-		HeaderPreference:  request.Preference,
-		DefaultPreference: d.currentPreference(),
-	})
+	result, err := d.analyzer.Analyze(analyzer.Input{Protocol: protocol, Body: request.Body})
 	if err != nil {
-		// The only failures are an unknown protocol (already rejected above) and
-		// an unusable preference, which is a client error here.
-		if errors.Is(err, analyzer.ErrInvalidPreference) {
-			writeDebugError(w, http.StatusBadRequest, "invalid_routing_preference", err.Error())
-			return
-		}
+		// The only failure is an unknown protocol, already rejected above.
 		writeDebugError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -155,9 +117,8 @@ func (d *debugAnalyzer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // malformed object is a client error rather than a silently empty analysis, and
 // so the analyzer receives exactly the bytes the client sent.
 type debugAnalyzeRequest struct {
-	Protocol   string          `json:"protocol"`
-	Body       json.RawMessage `json:"body"`
-	Preference string          `json:"preference"`
+	Protocol string          `json:"protocol"`
+	Body     json.RawMessage `json:"body"`
 }
 
 // debugAnalyzeResponse is the response. Field names mirror analyzer.Features
@@ -174,9 +135,6 @@ type debugAnalyzeResponse struct {
 }
 
 type debugAnalyzeFeatures struct {
-	Preference       string `json:"preference"`
-	PreferenceSource string `json:"preference_source"`
-
 	SystemPromptPresent bool           `json:"system_prompt_present"`
 	SystemPromptBytes   int            `json:"system_prompt_bytes"`
 	MessageCount        int            `json:"message_count"`
@@ -236,8 +194,6 @@ func presentFeatures(features analyzer.Features) debugAnalyzeFeatures {
 		roles[role] = count
 	}
 	return debugAnalyzeFeatures{
-		Preference:               string(features.Preference),
-		PreferenceSource:         string(features.PreferenceSource),
 		SystemPromptPresent:      features.SystemPromptPresent,
 		SystemPromptBytes:        features.SystemPromptBytes,
 		MessageCount:             features.MessageCount,

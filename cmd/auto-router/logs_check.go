@@ -144,12 +144,10 @@ func writeLogsReport(output io.Writer, events []storage.StoredEvent) {
 			event.Protocol, event.Stream, event.Status, formatOptionalStatus(event.UpstreamStatus), orNone(event.ErrorCode))
 		fmt.Fprintf(output, "  routing_mode=%s selection_mode=%s requested_model=%s\n",
 			orNone(event.RoutingMode), orNone(event.SelectionMode), orNone(event.RequestedModel))
-		fmt.Fprintf(output, "  effective_model=%s jev_top_model=%s\n",
-			orNone(event.EffectiveModel), orNone(event.JevTopModel))
+		fmt.Fprintf(output, "  effective_model=%s\n", orNone(event.EffectiveModel))
 		fmt.Fprintf(output, "  provider=%s upstream_model=%s attempts=%d failover=%t\n",
 			orNone(event.ProviderKey), orNone(event.UpstreamModel), event.GatewayAttempts, event.FailoverUsed)
-		fmt.Fprintf(output, "  preference=%s source=%s client_ip=%s\n",
-			orNone(event.RoutingPreference), orNone(event.PreferenceSource), orNone(event.ClientIP))
+		fmt.Fprintf(output, "  client_ip=%s\n", orNone(event.ClientIP))
 		fmt.Fprintf(output, "  jev_status=%s confidence=%s band=%s fallback=%s evidence_hash=%s\n",
 			orNone(event.JevStatus), formatStoredOptionalFloat(event.Confidence), orNone(event.ConfidenceBand),
 			orNone(event.FallbackReason), orNone(event.EvidenceHash))
@@ -201,35 +199,32 @@ type logsCheckJSONEntry struct {
 }
 
 type logsCheckJSONEvent struct {
-	RequestID         string   `json:"request_id"`
-	StartedAt         string   `json:"started_at"`
-	DurationMS        int64    `json:"duration_ms"`
-	Protocol          string   `json:"protocol"`
-	RoutingMode       string   `json:"routing_mode,omitempty"`
-	SelectionMode     string   `json:"selection_mode,omitempty"`
-	RequestedModel    string   `json:"requested_model,omitempty"`
-	EffectiveModel    string   `json:"effective_model,omitempty"`
-	JevTopModel       string   `json:"jev_top_model,omitempty"`
-	ProviderKey       string   `json:"provider_key,omitempty"`
-	UpstreamModel     string   `json:"upstream_model,omitempty"`
-	Status            int      `json:"status"`
-	UpstreamStatus    *int     `json:"upstream_status,omitempty"`
-	ErrorCode         string   `json:"error_code,omitempty"`
-	Stream            bool     `json:"stream"`
-	BytesWritten      int64    `json:"bytes_written"`
-	ClientIP          string   `json:"client_ip,omitempty"`
-	RoutingPreference string   `json:"routing_preference,omitempty"`
-	PreferenceSource  string   `json:"preference_source,omitempty"`
-	JevStatus         string   `json:"jev_status,omitempty"`
-	Confidence        *float64 `json:"confidence,omitempty"`
-	ConfidenceBand    string   `json:"confidence_band,omitempty"`
-	FallbackReason    string   `json:"fallback_reason,omitempty"`
-	EvidenceHash      string   `json:"evidence_hash,omitempty"`
-	GatewayAttempts   int      `json:"gateway_attempts"`
-	FailoverUsed      bool     `json:"failover_used"`
-	RoutingLatencyMS  *int64   `json:"routing_latency_ms,omitempty"`
-	JevLatencyMS      *int64   `json:"jev_latency_ms,omitempty"`
-	Usage             struct {
+	RequestID        string   `json:"request_id"`
+	StartedAt        string   `json:"started_at"`
+	DurationMS       int64    `json:"duration_ms"`
+	Protocol         string   `json:"protocol"`
+	RoutingMode      string   `json:"routing_mode,omitempty"`
+	SelectionMode    string   `json:"selection_mode,omitempty"`
+	RequestedModel   string   `json:"requested_model,omitempty"`
+	EffectiveModel   string   `json:"effective_model,omitempty"`
+	ProviderKey      string   `json:"provider_key,omitempty"`
+	UpstreamModel    string   `json:"upstream_model,omitempty"`
+	Status           int      `json:"status"`
+	UpstreamStatus   *int     `json:"upstream_status,omitempty"`
+	ErrorCode        string   `json:"error_code,omitempty"`
+	Stream           bool     `json:"stream"`
+	BytesWritten     int64    `json:"bytes_written"`
+	ClientIP         string   `json:"client_ip,omitempty"`
+	JevStatus        string   `json:"jev_status,omitempty"`
+	Confidence       *float64 `json:"confidence,omitempty"`
+	ConfidenceBand   string   `json:"confidence_band,omitempty"`
+	FallbackReason   string   `json:"fallback_reason,omitempty"`
+	EvidenceHash     string   `json:"evidence_hash,omitempty"`
+	GatewayAttempts  int      `json:"gateway_attempts"`
+	FailoverUsed     bool     `json:"failover_used"`
+	RoutingLatencyMS *int64   `json:"routing_latency_ms,omitempty"`
+	JevLatencyMS     *int64   `json:"jev_latency_ms,omitempty"`
+	Usage            struct {
 		Status       string `json:"status"`
 		Source       string `json:"source,omitempty"`
 		InputTokens  *int64 `json:"input_tokens,omitempty"`
@@ -269,34 +264,31 @@ func writeLogsJSON(output io.Writer, events []storage.StoredEvent) error {
 		line := logsCheckJSONEntry{
 			ID: entry.ID,
 			Event: logsCheckJSONEvent{
-				RequestID:         event.RequestID,
-				StartedAt:         event.StartedAt.UTC().Format(time.RFC3339Nano),
-				DurationMS:        event.DurationMS,
-				Protocol:          event.Protocol,
-				RoutingMode:       event.RoutingMode,
-				SelectionMode:     event.SelectionMode,
-				RequestedModel:    event.RequestedModel,
-				EffectiveModel:    event.EffectiveModel,
-				JevTopModel:       event.JevTopModel,
-				ProviderKey:       event.ProviderKey,
-				UpstreamModel:     event.UpstreamModel,
-				Status:            event.Status,
-				UpstreamStatus:    optionalIntPointer(event.UpstreamStatus),
-				ErrorCode:         event.ErrorCode,
-				Stream:            event.Stream,
-				BytesWritten:      event.BytesWritten,
-				ClientIP:          event.ClientIP,
-				RoutingPreference: event.RoutingPreference,
-				PreferenceSource:  event.PreferenceSource,
-				JevStatus:         event.JevStatus,
-				Confidence:        event.Confidence,
-				ConfidenceBand:    event.ConfidenceBand,
-				FallbackReason:    event.FallbackReason,
-				EvidenceHash:      event.EvidenceHash,
-				GatewayAttempts:   event.GatewayAttempts,
-				FailoverUsed:      event.FailoverUsed,
-				RoutingLatencyMS:  event.RoutingLatencyMS,
-				JevLatencyMS:      event.JevLatencyMS,
+				RequestID:        event.RequestID,
+				StartedAt:        event.StartedAt.UTC().Format(time.RFC3339Nano),
+				DurationMS:       event.DurationMS,
+				Protocol:         event.Protocol,
+				RoutingMode:      event.RoutingMode,
+				SelectionMode:    event.SelectionMode,
+				RequestedModel:   event.RequestedModel,
+				EffectiveModel:   event.EffectiveModel,
+				ProviderKey:      event.ProviderKey,
+				UpstreamModel:    event.UpstreamModel,
+				Status:           event.Status,
+				UpstreamStatus:   optionalIntPointer(event.UpstreamStatus),
+				ErrorCode:        event.ErrorCode,
+				Stream:           event.Stream,
+				BytesWritten:     event.BytesWritten,
+				ClientIP:         event.ClientIP,
+				JevStatus:        event.JevStatus,
+				Confidence:       event.Confidence,
+				ConfidenceBand:   event.ConfidenceBand,
+				FallbackReason:   event.FallbackReason,
+				EvidenceHash:     event.EvidenceHash,
+				GatewayAttempts:  event.GatewayAttempts,
+				FailoverUsed:     event.FailoverUsed,
+				RoutingLatencyMS: event.RoutingLatencyMS,
+				JevLatencyMS:     event.JevLatencyMS,
 			},
 			JevCallID: entry.JevCallID,
 		}
@@ -378,4 +370,11 @@ func formatStringsOrNone(values []string) string {
 		return "none"
 	}
 	return strings.Join(values, ", ")
+}
+
+func orNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return value
 }

@@ -588,14 +588,14 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
                   fill="none"
                   stroke="var(--jf-warning-text)"
                   stroke-width="7"
-                  :stroke-dasharray="ringDash(summaryRate('jev_top1_adoption_rate')?.value)"
+                  :stroke-dasharray="ringDash(summaryRate('jev_group_adoption_rate')?.value)"
                   stroke-linecap="round"
                   class="transition-all duration-500"
                 />
               </svg>
-              <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('jev_top1_adoption_rate')?.value) }}</span>
+              <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('jev_group_adoption_rate')?.value) }}</span>
             </div>
-            <span class="jf-caption mt-2 text-center text-ink-secondary">Jev 采纳率</span>
+            <span class="jf-caption mt-2 text-center text-ink-secondary">Jev 选组采纳率</span>
           </div>
         </div>
       </JfCard>

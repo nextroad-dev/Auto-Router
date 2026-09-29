@@ -103,3 +103,45 @@ func TestRoutingLogRoundTripsGroupAndLegacyModelTraces(t *testing.T) {
 		t.Fatalf("legacy model trace did not round-trip: %+v", legacy)
 	}
 }
+
+func TestJevGroupAdoptionCountsOnlySuccessfulCallsWithoutFallback(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, Options{Path: ":memory:", BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	event := func(id, jevStatus, fallback string) logging.Event {
+		return logging.Event{
+			RequestID: id, StartedAt: now, Protocol: "chat_completions",
+			RoutingMode: logging.RoutingModeAuto, SelectionMode: logging.SelectionModeFirstEligible,
+			RequestedModel: "auto", EffectiveModel: "model-a", Status: 200, GatewayAttempts: 1,
+			JevStatus: jevStatus, FallbackReason: fallback, Usage: logging.Usage{Status: logging.UsageStatusAbsent},
+		}
+	}
+	store := NewRoutingLog(db)
+	if err := store.Insert(ctx, []logging.Event{
+		event("adopted-1", logging.JevStatusOK, logging.FallbackReasonNone),
+		event("adopted-2", logging.JevStatusOK, logging.FallbackReasonNone),
+		event("low-confidence", logging.JevStatusOK, logging.FallbackReasonConfidenceLow),
+		event("disabled", logging.JevStatusDisabled, logging.FallbackReasonNotRequested),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	from, to := now.Add(-time.Minute), now.Add(time.Minute)
+	ok, err := store.CountJevOK(ctx, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := store.CountJevAdopted(ctx, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok != 3 || adopted != 2 {
+		t.Fatalf("jev ok/adopted = %d/%d, want 3/2", ok, adopted)
+	}
+}

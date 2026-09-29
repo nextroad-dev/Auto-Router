@@ -483,19 +483,13 @@ func (l *RoutingLog) CountJevOK(ctx context.Context, from, to time.Time) (int64,
 	return l.countAutomatic(ctx, from, to, "jev_status = ?", logging.JevStatusOK)
 }
 
-// CountRecordedTop1 returns how many automatic requests in the window carry a
-// recorded Jev top-1. It is the adoption rate's denominator: a request whose call
-// failed, or whose call returned no distribution, is not comparable.
-func (l *RoutingLog) CountRecordedTop1(ctx context.Context, from, to time.Time) (int64, error) {
-	return l.countAutomatic(ctx, from, to, "jev_top_model IS NOT NULL")
-}
-
-// CountAdoptedTop1 returns how many automatic requests in the window ended on the
-// model that was also the top-1 of their own Jev distribution. The comparison is a
-// strict equality over the stored identifiers, computed in SQL, so it cannot be
-// widened by a fuzzy match or a provider-level equivalence.
-func (l *RoutingLog) CountAdoptedTop1(ctx context.Context, from, to time.Time) (int64, error) {
-	return l.countAutomatic(ctx, from, to, "jev_top_model IS NOT NULL AND effective_model = jev_top_model")
+// CountJevAdopted returns how many automatic requests in the window were routed
+// to the group their successful Jev call recommended: jev_status is ok and no
+// fallback reason was recorded. It is the jev_group_adoption_rate numerator; the
+// denominator is CountJevOK over the same window, so the numerator is a subset
+// of the denominator by construction.
+func (l *RoutingLog) CountJevAdopted(ctx context.Context, from, to time.Time) (int64, error) {
+	return l.countAutomatic(ctx, from, to, "jev_status = ? AND fallback_reason = ?", logging.JevStatusOK, logging.FallbackReasonNone)
 }
 
 // countAutomatic counts automatic requests in one window that satisfy one extra
@@ -525,53 +519,15 @@ func (l *RoutingLog) SelectTraceFor(ctx context.Context, requestID string) (*log
 	return trace, err
 }
 
-// ModelScore is one logical model as the scoreboard reports it.
-//
-// The three counts answer three different questions and are deliberately not
-// derived from one another:
-//
-//   - Decisions is how many automatic requests actually took effect on this model;
-//   - AdoptedTop1 is how many of those ended with this model equal to the top-1 of
-//     its own Jev distribution. It is not "how often Jev was right", because
-//     there is no ground truth for "right": it measures how often the policy
-//     agreed with the recommendation it was given.
-//   - RecommendedTop1 is how many of the recorded distributions had this model on
-//     top, whether or not it was chosen. It is the denominator-side view that
-//     makes an adoption rate interpretable: a model that is always recommended but
-//     never selected is a policy disagreement, not a missing recommendation.
-//
-// blend decisions are not excluded from AdoptedTop1 by a second rule: whether the
-// final model equals the top-1 is a strict comparison over stored values, and a
-// blend that happens to pick the top-1 did adopt it. What the plan forbids is
-// crediting a blend that picked a lower-ranked model, and the equality test already
-// refuses that.
+// ModelScore is one logical model as the scoreboard reports it: how many
+// automatic requests actually took effect on it.
 type ModelScore struct {
-	Model           string
-	Decisions       int64
-	AdoptedTop1     int64
-	RecommendedTop1 int64
+	Model     string
+	Decisions int64
 }
 
 // ModelScoreboard reports, per logical model, how many automatic decisions took
-// effect on it and how those decisions compared to the recommendation's top-1.
-//
-// The implementation is two closed queries over one window, merged in Go:
-//
-//   - one groups the automatic events by effective_model, which counts decisions;
-//   - one groups the same window by jev_top_model, restricted to rows that carry a
-//     top-1, which counts recommendations.
-//
-// Two queries rather than one join, because a single statement over both columns
-// would have to be a self-join that SQLite would resolve by scanning the window
-// twice anyway; two bounded aggregates with the same predicates are simpler to read
-// and to reason about. Merging in Go also means the two halves cannot disagree
-// about which window they cover: both receive the same bounds.
-//
-// Adoption is a strict equality on the stored identifiers, computed in SQL
-// (`effective_model = jev_top_model`), so it cannot be widened by a fuzzy match, a
-// provider-level equivalence or a case fold. A row with a NULL on either side is
-// excluded by SQL's own three-valued logic, which is exactly the "no data"
-// semantics the metric reports as a null rate rather than as zero.
+// effect on it in the window.
 func (l *RoutingLog) ModelScoreboard(ctx context.Context, from, to time.Time, limit int) ([]ModelScore, error) {
 	if l.db == nil {
 		return nil, errors.New("the routing log has no database")
@@ -580,24 +536,12 @@ func (l *RoutingLog) ModelScoreboard(ctx context.Context, from, to time.Time, li
 		return nil, fmt.Errorf("the scoreboard limit must be between 1 and %d", maxStatsGroups)
 	}
 	window, arguments := windowPredicates(from, to)
-	// The automatic-path restriction is added to both halves: an explicit request
-	// has no recommendation and therefore has nothing to score. It is written as a
-	// bound comparison rather than a concatenated literal so the two statements
-	// cannot drift apart.
+	// An explicit request made no automatic decision, so it is not scored.
 	predicates := append(append([]string{}, window...), "routing_mode = ?")
 	scored := append(append([]any{}, arguments...), logging.RoutingModeAuto)
 
 	scores := make(map[string]*ModelScore)
-	entryFor := func(model string) *ModelScore {
-		if existing, ok := scores[model]; ok {
-			return existing
-		}
-		created := &ModelScore{Model: model}
-		scores[model] = created
-		return created
-	}
-
-	decisions, err := l.db.QueryContext(ctx, `SELECT effective_model, count(*), coalesce(sum(CASE WHEN effective_model = jev_top_model THEN 1 ELSE 0 END), 0)
+	decisions, err := l.db.QueryContext(ctx, `SELECT effective_model, count(*)
 		FROM routing_events WHERE `+strings.Join(predicates, " AND ")+`
 		GROUP BY effective_model`, scored...)
 	if err != nil {
@@ -606,45 +550,20 @@ func (l *RoutingLog) ModelScoreboard(ctx context.Context, from, to time.Time, li
 	defer decisions.Close()
 	for decisions.Next() {
 		var model sql.NullString
-		var count, adopted int64
-		if err := decisions.Scan(&model, &count, &adopted); err != nil {
+		var count int64
+		if err := decisions.Scan(&model, &count); err != nil {
 			return nil, fmt.Errorf("scan model decision count: %w", err)
 		}
 		// A NULL effective_model is not a model, so it is not a scoreboard row: the
 		// requests it covers failed before a destination resolved, which the rate
-		// endpoint reports as "no decision" rather than as a model named NULL. The
-		// count is still available there as the auto_decision_success_rate
-		// denominator, which is the honest place for it.
+		// endpoint reports through the auto_decision_success_rate denominator.
 		if !model.Valid {
 			continue
 		}
-		entry := entryFor(model.String)
-		entry.Decisions = count
-		entry.AdoptedTop1 = adopted
+		scores[model.String] = &ModelScore{Model: model.String, Decisions: count}
 	}
 	if err := decisions.Err(); err != nil {
 		return nil, fmt.Errorf("read model decisions: %w", err)
-	}
-
-	recommendations := append(append([]any{}, arguments...),
-		logging.RoutingModeAuto, logging.JevStatusOK)
-	recommended, err := l.db.QueryContext(ctx, `SELECT jev_top_model, count(*)
-		FROM routing_events WHERE `+strings.Join(append(append([]string{}, window...), "routing_mode = ?", "jev_status = ?", "jev_top_model IS NOT NULL"), " AND ")+`
-		GROUP BY jev_top_model`, recommendations...)
-	if err != nil {
-		return nil, fmt.Errorf("aggregate recommendations by model: %w", err)
-	}
-	defer recommended.Close()
-	for recommended.Next() {
-		var model string
-		var count int64
-		if err := recommended.Scan(&model, &count); err != nil {
-			return nil, fmt.Errorf("scan model recommendation count: %w", err)
-		}
-		entryFor(model).RecommendedTop1 = count
-	}
-	if err := recommended.Err(); err != nil {
-		return nil, fmt.Errorf("read model recommendations: %w", err)
 	}
 
 	ordered := make([]ModelScore, 0, len(scores))

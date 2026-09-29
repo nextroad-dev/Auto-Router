@@ -380,11 +380,6 @@ type Event struct {
 	// was resolved: no model took effect, and reporting one would turn a failure
 	// into a fabricated destination choice.
 	EffectiveModel string
-	// JevTopModel is the top-1 entry of the normalized Jev distribution, set only
-	// when the call succeeded. It records what Jev recommended, independently of
-	// what the policy selected and independently of whether the diagnostic trace
-	// row was stored at all.
-	JevTopModel    string
 	ProviderKey    string
 	UpstreamModel  string
 	ErrorCode      string
@@ -394,9 +389,7 @@ type Event struct {
 
 	// ClientIP is stored only when the operator opted in; the writer clears it
 	// otherwise.
-	ClientIP          string
-	RoutingPreference string
-	PreferenceSource  string
+	ClientIP string
 
 	JevStatus      string
 	ConfidenceBand string
@@ -449,9 +442,6 @@ func (e Event) Valid() error {
 	}
 	if e.EffectiveModel != "" && !validIdentifier(e.EffectiveModel) {
 		return errors.New("effective model is not a safe logical model identifier")
-	}
-	if e.JevTopModel != "" && !validIdentifier(e.JevTopModel) {
-		return errors.New("jev top model is not a safe logical model identifier")
 	}
 	if e.ConfidenceBand != "" && !ValidConfidenceBand(e.ConfidenceBand) {
 		return errors.New("confidence band is not one of the defined literals")
