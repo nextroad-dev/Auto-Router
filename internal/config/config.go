@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nextroad-dev/Auto-Router/internal/models"
+	"github.com/nextroad-dev/Auto-Router/internal/netx"
 )
 
 // Duration represents a Go duration encoded as a JSON string, e.g. "5s".
@@ -57,6 +58,21 @@ type HTTPConfig struct {
 	// MaxRequestBytes bounds how much of a model request is buffered before it
 	// is forwarded. Zero is invalid; the default is 16 MiB.
 	MaxRequestBytes int64 `json:"max_request_bytes"`
+	// TrustedProxies lists the reverse proxies (CIDR ranges or single addresses)
+	// whose X-Forwarded-For and X-Forwarded-Proto headers are believed. Empty, the
+	// default, trusts no forwarding header: RemoteAddr is the client address.
+	TrustedProxies []string `json:"trusted_proxies"`
+	// MaxBufferedResponseBytes bounds a successful upstream response body that
+	// must be buffered in full to convert it to another protocol. Streamed and
+	// passed-through responses are not buffered and are not affected.
+	MaxBufferedResponseBytes int64 `json:"max_buffered_response_bytes"`
+	// UpstreamBodyTimeout bounds the time between two reads of a non-stream
+	// upstream response body once its headers have arrived. Zero disables it.
+	UpstreamBodyTimeout Duration `json:"upstream_body_timeout"`
+	// StreamIdleTimeout bounds the time between two reads of a streaming upstream
+	// response body. Zero, the default, disables it so long reasoning streams are
+	// never truncated.
+	StreamIdleTimeout Duration `json:"stream_idle_timeout"`
 }
 
 // RoutingConfig holds routing behavior switches and the process-level routing
@@ -104,6 +120,11 @@ func Defaults() Config {
 			ReadinessTimeout:  Duration(2 * time.Second),
 			ShutdownTimeout:   Duration(10 * time.Second),
 			MaxRequestBytes:   maxRequestBytesDefault,
+			// Explicit empty list so the effective document renders [] not null.
+			TrustedProxies:           []string{},
+			MaxBufferedResponseBytes: maxBufferedResponseBytesDefault,
+			UpstreamBodyTimeout:      Duration(upstreamBodyTimeoutDefault),
+			StreamIdleTimeout:        0,
 		},
 		Database: DatabaseConfig{
 			Path:        "data/auto-router.db",
@@ -186,6 +207,18 @@ func (c Config) Validate() error {
 	}
 	if c.HTTP.MaxRequestBytes <= 0 || c.HTTP.MaxRequestBytes > maxRequestBytesLimit {
 		return fmt.Errorf("http.max_request_bytes must be between 1 and %d", maxRequestBytesLimit)
+	}
+	if c.HTTP.MaxBufferedResponseBytes <= 0 || c.HTTP.MaxBufferedResponseBytes > maxRequestBytesLimit {
+		return fmt.Errorf("http.max_buffered_response_bytes must be between 1 and %d", maxRequestBytesLimit)
+	}
+	if c.HTTP.UpstreamBodyTimeout < 0 {
+		return errors.New("http.upstream_body_timeout must not be negative")
+	}
+	if c.HTTP.StreamIdleTimeout < 0 {
+		return errors.New("http.stream_idle_timeout must not be negative")
+	}
+	if err := netx.ValidateTrustedProxies(c.HTTP.TrustedProxies); err != nil {
+		return fmt.Errorf("http.trusted_proxies: %w", err)
 	}
 	busy := time.Duration(c.Database.BusyTimeout)
 	if busy < time.Millisecond || busy%time.Millisecond != 0 || busy > (1<<31-1)*time.Millisecond {

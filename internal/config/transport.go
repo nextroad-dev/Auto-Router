@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // maxRequestBytesLimit caps one buffered model request. The limit is shared by
 // the HTTP configuration validator and the forwarding handler.
@@ -8,6 +11,15 @@ const maxRequestBytesLimit = 1 << 30
 
 // maxRequestBytesDefault is the shipped 16 MiB request limit.
 const maxRequestBytesDefault = 16 << 20
+
+// maxBufferedResponseBytesDefault bounds a converted (buffered) upstream
+// response. 32 MiB is far above any real completion body.
+const maxBufferedResponseBytesDefault = 32 << 20
+
+// upstreamBodyTimeoutDefault bounds how long a non-stream upstream body may stall
+// between reads after its headers arrived. It is generous because a non-stream
+// reasoning request may legitimately hold the body until generation finishes.
+const upstreamBodyTimeoutDefault = 10 * time.Minute
 
 // forbiddenAuthHeaders are headers managed by net/http or negotiated per
 // connection. They cannot safely be configured as an authentication header.

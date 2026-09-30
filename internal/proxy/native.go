@@ -72,9 +72,11 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		r = r.WithContext(context.WithValue(r.Context(), liveSnapshotContextKey{}, h.live.Snapshot()))
 	}
 	started := time.Now()
+	// One catalog snapshot serves the whole request, including failover.
+	catalog := h.catalog.Load()
 	record := &requestLog{
 		RequestID: requestID, Protocol: "native", protocol: protocol,
-		ClientIP: clientIP(r), RequestedModel: requestedModel,
+		ClientIP: h.clientIP(r), RequestedModel: requestedModel,
 		RoutingMode: routingModeExplicit,
 	}
 	defer func() {
@@ -141,6 +143,12 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_request_error", "a model is required")
 		return
 	}
+	bodyStream, streamErr := nativeStreamRequested(body)
+	if streamErr != nil {
+		record.fail(http.StatusBadRequest, "invalid_request_error")
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid_request_error", streamErr.Error())
+		return
+	}
 
 	expectedKind := models.ProviderAnthropic
 	if protocol == protocolGeminiGenerate || protocol == protocolGeminiStream {
@@ -161,7 +169,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		var runtime *auto.RuntimeSettings
 		if snapshot.HasAutoSettings {
 			copy := snapshot.AutoSettings
-			copy.GroupConfig = nativeCompatibleGroups(copy.GroupConfig, h.catalog.Load(), expectedKind)
+			copy.GroupConfig = nativeCompatibleGroups(copy.GroupConfig, catalog, expectedKind)
 			runtime = &copy
 		}
 		autoBody, viewErr := nativeAutoView(protocol, body)
@@ -172,17 +180,17 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		}
 		autoTarget, err = h.autoRouter.Route(r.Context(), auto.Request{
 			Protocol: providers.ProtocolChatCompletions, Body: autoBody,
-			RequestID: requestID, Runtime: runtime,
+			RequestID: requestID, Runtime: runtime, Catalog: catalog,
 		})
 		if err != nil {
 			h.writeAutoError(w, record, err)
 			return
 		}
 		group = string(autoTarget.SelectedGroup)
-		target = targetFromAuto(h.catalog.Load(), autoTarget)
+		target = targetFromAuto(catalog, autoTarget)
 		record.applyRoutingDecision(autoTarget)
 	} else {
-		resolved, resolveErr := resolveNativeTarget(h.catalog.Load(), requestedModel, expectedKind, h.allowOverride(r))
+		resolved, resolveErr := resolveNativeTarget(catalog, requestedModel, expectedKind, h.allowOverride(r))
 		if resolveErr != nil {
 			var targetErr *TargetError
 			if errors.As(resolveErr, &targetErr) {
@@ -199,7 +207,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		record.EffectiveModel, record.SelectionMode, record.GatewayAttempts = target.Pair.ModelID, "explicit", 1
 	}
 
-	stream := protocol == protocolGeminiStream || nativeStreamRequested(body) || r.URL.Query().Get("alt") == "sse"
+	stream := protocol == protocolGeminiStream || bodyStream || r.URL.Query().Get("alt") == "sse"
 	if stream && protocol == protocolGeminiGenerate {
 		protocol = protocolGeminiStream
 	}
@@ -230,7 +238,8 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 	}
 	record.stream = stream
 	upstream := &providers.Request{
-		Protocol: protocol, UpstreamPath: upstreamPath, ProviderKey: target.ProviderKey,
+		Protocol: protocol, CatalogGeneration: catalog.Generation,
+		UpstreamPath: upstreamPath, ProviderKey: target.ProviderKey,
 		Model: target.UpstreamModel, Body: body, Header: r.Header,
 		ClientIP: record.ClientIP, RequestID: requestID, Stream: stream,
 	}
@@ -272,7 +281,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 				next, retry := h.autoRouter.Failover(r.Context(), autoTarget, auto.AttemptFailure{Cause: callErr})
 				if retry {
 					autoTarget = next
-					target = targetFromAuto(h.catalog.Load(), autoTarget)
+					target = targetFromAuto(catalog, autoTarget)
 					if target.Provider.Kind != expectedKind {
 						record.fail(http.StatusUnprocessableEntity, "unsupported_conversion")
 						writeError(w, http.StatusUnprocessableEntity, "invalid_request_error", "unsupported_conversion", "the selected provider does not support this native API")
@@ -292,7 +301,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 				h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", logging.Usage{})
 				_ = response.Body.Close()
 				autoTarget = next
-				target = targetFromAuto(h.catalog.Load(), autoTarget)
+				target = targetFromAuto(catalog, autoTarget)
 				if target.Provider.Kind != expectedKind {
 					record.fail(http.StatusUnprocessableEntity, "unsupported_conversion")
 					writeError(w, http.StatusUnprocessableEntity, "invalid_request_error", "unsupported_conversion", "the selected provider does not support this native API")
@@ -529,12 +538,17 @@ func replaceNativeJSONModel(body []byte, model string) ([]byte, error) {
 	return json.Marshal(object)
 }
 
-func nativeStreamRequested(body []byte) bool {
-	var payload struct {
-		Stream bool `json:"stream"`
+// nativeStreamRequested reads the optional body stream flag with the same
+// contract as the OpenAI-shaped ingress: absent is false, and a present value
+// must be a JSON boolean.
+func nativeStreamRequested(body []byte) (bool, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		// Gemini bodies are not otherwise parsed here; an unparsable body is
+		// forwarded unchanged and left for the provider to reject.
+		return false, nil
 	}
-	_ = json.Unmarshal(body, &payload)
-	return payload.Stream
+	return parseStream(payload)
 }
 
 func nativeGeminiPath(protocol providers.Protocol, model string) (string, error) {

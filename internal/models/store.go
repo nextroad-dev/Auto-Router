@@ -33,6 +33,23 @@ func (s *Store) Swap(catalog *Catalog) *Catalog {
 	return catalog
 }
 
+// SwapWith publishes a catalog like Swap, but first calls prepare with the
+// catalog after its generation is assigned and before any reader can observe it.
+// It is how state derived from a catalog (the provider executor set) is made
+// available no later than the catalog itself, so a request can never see a
+// generation whose derived state does not exist yet.
+func (s *Store) SwapWith(catalog *Catalog, prepare func(*Catalog)) *Catalog {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.generation++
+	catalog.Generation = s.generation
+	if prepare != nil {
+		prepare(catalog)
+	}
+	s.current.Store(catalog)
+	return catalog
+}
+
 // Load returns the current snapshot. The result is never nil.
 func (s *Store) Load() *Catalog {
 	return s.current.Load()

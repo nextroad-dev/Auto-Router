@@ -19,11 +19,11 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/nextroad-dev/Auto-Router/internal/models"
+	"github.com/nextroad-dev/Auto-Router/internal/netx"
 	"github.com/nextroad-dev/Auto-Router/internal/providers"
 )
 
@@ -35,9 +35,6 @@ const (
 	dialKeepAlive         = 30 * time.Second
 	responseHeaderTimeout = 60 * time.Second
 	connectTimeout        = 10 * time.Second
-	// A zero stream idle timeout allows slow streaming/reasoning models to
-	// continue without being truncated.
-	streamIdleTimeout = 0
 )
 
 // hopByHopHeaders are removed from outbound requests and relayed responses.
@@ -64,6 +61,10 @@ var transportManagedHeaders = []string{
 	"Content-Encoding", "Content-Length", "Expect",
 }
 
+// proxyIdentityHeaders carry a client-claimed network identity or scheme. Auto
+// Router does not rebuild them, so they are never forwarded to a provider.
+var proxyIdentityHeaders = netx.ProxyIdentityHeaders
+
 // Config is one provider's direct connection configuration.
 type Config struct {
 	// BaseURL is the provider API root, for example "https://api.openai.com/v1".
@@ -73,6 +74,12 @@ type Config struct {
 	// ProviderKey is used only for diagnostics and classification.
 	ProviderKey string
 	Kind        models.ProviderKind
+	// StreamIdleTimeout bounds the gap between two reads of a streaming response
+	// body. Zero disables it, so long reasoning streams are never truncated.
+	StreamIdleTimeout time.Duration
+	// BodyTimeout bounds the gap between two reads of a non-stream response body
+	// after its headers arrived. Zero disables it.
+	BodyTimeout time.Duration
 }
 
 // Executor is a ready-to-use direct executor for one provider.
@@ -83,6 +90,7 @@ type Executor struct {
 	providerKey string
 	kind        models.ProviderKind
 	streamIdle  time.Duration
+	bodyIdle    time.Duration
 }
 
 var _ providers.Executor = (*Executor)(nil)
@@ -125,7 +133,8 @@ func New(cfg Config) (*Executor, error) {
 		apiKey:      cfg.APIKey,
 		providerKey: cfg.ProviderKey,
 		kind:        cfg.Kind,
-		streamIdle:  streamIdleTimeout,
+		streamIdle:  cfg.StreamIdleTimeout,
+		bodyIdle:    cfg.BodyTimeout,
 	}, nil
 }
 
@@ -138,24 +147,10 @@ func (e *Executor) Do(ctx context.Context, request *providers.Request) (*provide
 		return nil, fmt.Errorf("%w: missing upstream model", providers.ErrUpstreamUnavailable)
 	}
 
-	upstream := *e.endpoint
-	protocolPath := request.Protocol.Path()
-	if request.UpstreamPath != "" {
-		if !strings.HasPrefix(request.UpstreamPath, "/") || strings.Contains(request.UpstreamPath, "?") || strings.Contains(request.UpstreamPath, "#") || path.Clean(request.UpstreamPath) != request.UpstreamPath {
-			return nil, fmt.Errorf("%w: invalid upstream path override", providers.ErrUnsupportedConversion)
-		}
-		protocolPath = request.UpstreamPath
+	upstream, err := e.upstreamURL(request)
+	if err != nil {
+		return nil, err
 	}
-	protocolPath = joinProtocolPath(e.endpoint.Path, protocolPath)
-	upstream.Path = protocolPath
-	if request.UpstreamQuery != "" && request.UpstreamQuery != "alt=sse" {
-		return nil, fmt.Errorf("%w: unsupported upstream query override", providers.ErrUnsupportedConversion)
-	}
-	upstream.RawQuery = request.UpstreamQuery
-	if e.endpoint.RawPath != "" {
-		upstream.RawPath = joinProtocolPath(e.endpoint.RawPath, request.Protocol.Path())
-	}
-	upstream.ForceQuery = false
 
 	outbound, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.String(), bytes.NewReader(request.Body))
 	if err != nil {
@@ -186,14 +181,45 @@ func (e *Executor) Do(ctx context.Context, request *providers.Request) (*provide
 		return nil, classify(ctx, trace, err)
 	}
 	var body io.ReadCloser = response.Body
-	if e.streamIdle > 0 {
-		body = newIdleTimeoutBody(response.Body, e.streamIdle)
+	idle := e.bodyIdle
+	if request.Stream {
+		idle = e.streamIdle
+	}
+	if idle > 0 {
+		body = newIdleTimeoutBody(response.Body, idle)
 	}
 	return &providers.Response{
 		StatusCode: response.StatusCode,
 		Header:     response.Header,
 		Body:       body,
 	}, nil
+}
+
+// upstreamURL builds the outbound URL. UpstreamPath is an already-escaped path,
+// so the join is done on escaped forms and the decoded Path is derived from it:
+// setting both keeps URL.String from escaping a percent sign a second time.
+func (e *Executor) upstreamURL(request *providers.Request) (*url.URL, error) {
+	upstream := *e.endpoint
+	escapedPath := request.Protocol.Path()
+	if request.UpstreamPath != "" {
+		if !strings.HasPrefix(request.UpstreamPath, "/") || strings.Contains(request.UpstreamPath, "?") || strings.Contains(request.UpstreamPath, "#") || path.Clean(request.UpstreamPath) != request.UpstreamPath {
+			return nil, fmt.Errorf("%w: invalid upstream path override", providers.ErrUnsupportedConversion)
+		}
+		escapedPath = request.UpstreamPath
+	}
+	escapedPath = joinProtocolPath(e.endpoint.EscapedPath(), escapedPath)
+	decodedPath, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid upstream path override", providers.ErrUnsupportedConversion)
+	}
+	upstream.Path = decodedPath
+	upstream.RawPath = escapedPath
+	if request.UpstreamQuery != "" && request.UpstreamQuery != "alt=sse" {
+		return nil, fmt.Errorf("%w: unsupported upstream query override", providers.ErrUnsupportedConversion)
+	}
+	upstream.RawQuery = request.UpstreamQuery
+	upstream.ForceQuery = false
+	return &upstream, nil
 }
 
 // CloseIdleConnections releases this provider's pooled connections.
@@ -214,7 +240,7 @@ func relayableRequestHeaders(header http.Header) http.Header {
 	relayed := make(http.Header, len(header))
 	for name, values := range header {
 		canonical := http.CanonicalHeaderKey(name)
-		if hopByHop(canonical, connectionTokens) || isClientCredential(canonical) {
+		if hopByHop(canonical, connectionTokens) || isClientCredential(canonical) || isProxyIdentity(canonical) {
 			continue
 		}
 		relayed[name] = append([]string(nil), values...)
@@ -229,6 +255,15 @@ func isClientCredential(canonicalName string) bool {
 		}
 	}
 	for _, header := range transportManagedHeaders {
+		if canonicalName == header {
+			return true
+		}
+	}
+	return false
+}
+
+func isProxyIdentity(canonicalName string) bool {
+	for _, header := range proxyIdentityHeaders {
 		if canonicalName == header {
 			return true
 		}
@@ -286,53 +321,51 @@ func joinPath(prefix, suffix string) string {
 	}
 }
 
-// idleTimeoutBody is kept for parity with the old adapter. The fixed timeout is
-// currently zero, but retaining the implementation keeps the transport policy
-// explicit if a future provider-specific mode needs it.
+// idleTimeoutBody fails a read that waits longer than timeout for upstream
+// bytes. Only time spent inside Read counts, so a slow downstream client that
+// applies backpressure is never mistaken for a stalled provider. The failure
+// wraps providers.ErrUpstreamTimeout so it keeps the upstream-timeout
+// classification.
 type idleTimeoutBody struct {
-	body      io.ReadCloser
-	timeout   time.Duration
-	closeOnce sync.Once
-	closed    chan struct{}
+	body     io.ReadCloser
+	timeout  time.Duration
+	timer    *time.Timer
+	timedOut atomic.Bool
 }
 
 func newIdleTimeoutBody(body io.ReadCloser, timeout time.Duration) *idleTimeoutBody {
-	return &idleTimeoutBody{body: body, timeout: timeout, closed: make(chan struct{})}
+	b := &idleTimeoutBody{body: body, timeout: timeout}
+	// Closing the body is what unblocks a Read that is stuck on the network.
+	b.timer = time.AfterFunc(timeout, func() {
+		b.timedOut.Store(true)
+		_ = b.body.Close()
+	})
+	b.timer.Stop()
+	return b
 }
 
-var errStreamIdle = errors.New("upstream stream idle timeout")
-
-type readOutcome struct {
-	read int
-	err  error
-}
+var errStreamIdle = errors.New("upstream response body idle timeout")
 
 func (b *idleTimeoutBody) Read(p []byte) (int, error) {
-	result := make(chan readOutcome, 1)
-	go func() {
-		n, err := b.body.Read(p)
-		result <- readOutcome{read: n, err: err}
-	}()
-	timer := time.NewTimer(b.timeout)
-	defer timer.Stop()
-	select {
-	case received := <-result:
-		return received.read, received.err
-	case <-timer.C:
-		_ = b.Close()
-		return 0, fmt.Errorf("%w after %s", errStreamIdle, b.timeout)
-	case <-b.closed:
-		return 0, net.ErrClosed
+	if b.timedOut.Load() {
+		return 0, b.timeoutError()
 	}
+	b.timer.Reset(b.timeout)
+	n, err := b.body.Read(p)
+	b.timer.Stop()
+	if b.timedOut.Load() {
+		return n, b.timeoutError()
+	}
+	return n, err
+}
+
+func (b *idleTimeoutBody) timeoutError() error {
+	return fmt.Errorf("%w: %w after %s", providers.ErrUpstreamTimeout, errStreamIdle, b.timeout)
 }
 
 func (b *idleTimeoutBody) Close() error {
-	var err error
-	b.closeOnce.Do(func() {
-		err = b.body.Close()
-		close(b.closed)
-	})
-	return err
+	b.timer.Stop()
+	return b.body.Close()
 }
 
 type requestTrace struct {

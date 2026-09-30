@@ -19,6 +19,7 @@ import (
 	"github.com/nextroad-dev/Auto-Router/internal/logging"
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 	"github.com/nextroad-dev/Auto-Router/internal/modelsdev"
+	"github.com/nextroad-dev/Auto-Router/internal/netx"
 	"github.com/nextroad-dev/Auto-Router/internal/proxy"
 	"github.com/nextroad-dev/Auto-Router/internal/settings"
 	"github.com/nextroad-dev/Auto-Router/internal/storage"
@@ -103,6 +104,15 @@ type AdminOptions struct {
 	StartedAt time.Time
 	// Logger receives one INFO line per accepted write. Nil disables it.
 	Logger *slog.Logger
+	// TrustedProxies decides whose forwarding headers are believed for the login
+	// throttle's source address, the local-client check of first-run setup and the
+	// browser-facing scheme. Nil trusts nobody.
+	TrustedProxies *netx.TrustedProxies
+	// SecureCookies is admin.secure_cookies: auto, always or never. Empty is auto.
+	SecureCookies string
+	// Bootstrap authorizes first-run setup from a non-local client. Nil means no
+	// token was issued, so only a local client can set the initial password.
+	Bootstrap *BootstrapToken
 }
 
 // adminHandler serves /admin/v1.
@@ -121,6 +131,9 @@ type adminHandler struct {
 	maxPageSize          int
 	startedAt            time.Time
 	logger               *slog.Logger
+	trustedProxies       *netx.TrustedProxies
+	secureCookies        string
+	bootstrap            *BootstrapToken
 	// authenticator validates a login submission through the same constant-time
 	// loop the header path uses. It is nil when the surface was built without one.
 	authenticator *Authenticator
@@ -150,6 +163,9 @@ func NewAdmin(options AdminOptions) http.Handler {
 		logger:               options.Logger,
 		authenticator:        options.Authenticator,
 		sessions:             options.Sessions,
+		trustedProxies:       options.TrustedProxies,
+		secureCookies:        options.SecureCookies,
+		bootstrap:            options.Bootstrap,
 	}
 	if handler.authenticator != nil && handler.authenticator.Enabled() && handler.sessions == nil {
 		// The management surface accepts a session only when it can validate one. A

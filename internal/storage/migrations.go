@@ -322,6 +322,17 @@ var businessMigrations = []migration{
 			ALTER TABLE provider_models DROP COLUMN priority;
 		`,
 	},
+	{
+		Version: 12,
+		Name:    "drop_jev_top_model",
+		// jev_top_model recorded the top-1 of a model-level Jev distribution. Group
+		// routing never produces one, so the column is always NULL for new rows and
+		// no metric reads it any more. It carries no index or constraint, so it can
+		// be dropped in place.
+		SQL: `
+			ALTER TABLE routing_events DROP COLUMN jev_top_model;
+		`,
+	},
 }
 
 // Migrate initializes the migration journal and applies this binary's schema.

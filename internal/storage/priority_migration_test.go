@@ -15,7 +15,8 @@ func TestRemoveModelAndBindingPrioritiesPreservesRegistryData(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := applyMigrations(ctx, db, businessMigrations[:len(businessMigrations)-1]); err != nil {
+	// Stop just before version 11, the migration under test.
+	if err := applyMigrations(ctx, db, businessMigrations[:10]); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO providers

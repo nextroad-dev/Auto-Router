@@ -12,6 +12,7 @@ package providers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -60,9 +61,16 @@ type Request struct {
 	Protocol Protocol
 	// UpstreamPath overrides the protocol's default path for provider adapters.
 	// It must be a path, never a URL, and is joined beneath the configured base URL.
+	// It is in escaped form (for example a model segment built with
+	// url.PathEscape) and is sent exactly as given; it is never escaped again.
 	UpstreamPath string
 	// UpstreamQuery is an adapter-generated query string appended to UpstreamPath.
 	UpstreamQuery string
+	// CatalogGeneration is the catalog generation the request was routed against.
+	// The provider router resolves the executor from exactly this generation so
+	// routing, execution and failover all see one configuration. Zero means no
+	// generation is pinned.
+	CatalogGeneration uint64
 	// ProviderKey is the registry provider that was selected. It is used for
 	// logging and diagnostics, not for endpoint construction.
 	ProviderKey string
@@ -121,6 +129,11 @@ var (
 	// proof of delivery, but adapters must only attach this marker when delivery
 	// is known not to have occurred.
 	ErrPreRequestFailure = errors.New("upstream request was never delivered")
+	// ErrResponseTooLarge means a successful upstream body that had to be
+	// buffered for conversion exceeded the configured bound. It also matches
+	// ErrUpstreamUnavailable; the boundary reports it as 502
+	// upstream_response_too_large and never includes the body.
+	ErrResponseTooLarge = fmt.Errorf("%w: upstream response exceeds the conversion buffer limit", ErrUpstreamUnavailable)
 )
 
 // Executor performs one upstream call. Implementations must honor ctx

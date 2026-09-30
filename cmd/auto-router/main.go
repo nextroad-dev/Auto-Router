@@ -22,6 +22,7 @@ import (
 	"github.com/nextroad-dev/Auto-Router/internal/logging"
 	"github.com/nextroad-dev/Auto-Router/internal/models"
 	"github.com/nextroad-dev/Auto-Router/internal/modelsdev"
+	"github.com/nextroad-dev/Auto-Router/internal/netx"
 	"github.com/nextroad-dev/Auto-Router/internal/providers"
 	"github.com/nextroad-dev/Auto-Router/internal/providers/direct"
 	"github.com/nextroad-dev/Auto-Router/internal/proxy"
@@ -87,6 +88,11 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("auto-router", flag.ContinueOnError)
 	flags.SetOutput(output)
 	listenAddress := flags.String("listen", "", "override the default HTTP listen address")
+	trustedProxies := flags.String("trusted-proxies", "", "comma-separated reverse proxy CIDRs or IPs whose X-Forwarded-For/X-Forwarded-Proto are trusted (default: none)")
+	secureCookies := flags.String("secure-cookies", "", "session cookie Secure attribute: auto (HTTPS or trusted proxy https), always or never (default auto)")
+	upstreamBodyTimeout := flags.Duration("upstream-body-timeout", -1, "maximum stall between reads of a non-stream upstream body; 0 disables (default 10m)")
+	streamIdleTimeout := flags.Duration("stream-idle-timeout", -1, "maximum stall between reads of a streaming upstream body; 0 disables (default 0)")
+	maxBufferedResponseBytes := flags.Int64("max-buffered-response-bytes", 0, "maximum converted (buffered) upstream response size in bytes (default 32 MiB)")
 	configPath := flags.String("config", "", "deprecated; ignored")
 	syncModels := flags.Bool("sync-models", false, "deprecated; use the WebUI to synchronize models.dev")
 	recoverAdmin := flags.Bool("recover-admin", false, "offline recovery: rotate administrator credentials while holding the fixed listener port")
@@ -146,6 +152,24 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	cfg := config.Defaults()
 	if *listenAddress != "" {
 		cfg.HTTP.Address = *listenAddress
+	}
+	if *trustedProxies != "" {
+		cfg.HTTP.TrustedProxies = strings.Split(*trustedProxies, ",")
+	}
+	if *secureCookies != "" {
+		cfg.Admin.SecureCookies = *secureCookies
+	}
+	if *upstreamBodyTimeout >= 0 {
+		cfg.HTTP.UpstreamBodyTimeout = config.Duration(*upstreamBodyTimeout)
+	}
+	if *streamIdleTimeout >= 0 {
+		cfg.HTTP.StreamIdleTimeout = config.Duration(*streamIdleTimeout)
+	}
+	if *maxBufferedResponseBytes != 0 {
+		cfg.HTTP.MaxBufferedResponseBytes = *maxBufferedResponseBytes
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
 	}
 	sources := config.Sources{}
 	if *recoverAdmin {
@@ -236,6 +260,11 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	// Build the direct provider executor set from the catalog already loaded from
 	// SQLite. Providers without a base_url remain routable in the catalog but
 	// return provider_not_configured when selected.
+	globalExecutorRegistry.Configure(direct.Options{
+		StreamIdleTimeout:        time.Duration(cfg.HTTP.StreamIdleTimeout),
+		BodyTimeout:              time.Duration(cfg.HTTP.UpstreamBodyTimeout),
+		MaxBufferedResponseBytes: cfg.HTTP.MaxBufferedResponseBytes,
+	})
 	globalExecutorRegistry.Build(store.Load())
 	executor := &providerRouter{registry: globalExecutorRegistry}
 	defer func() {
@@ -277,11 +306,15 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	bootstrap, err := newBootstrapToken(ctx, db, logger)
+	if err != nil {
+		return err
+	}
 	syncGate := newRegistrySyncGate()
 	server := newHTTPServer(serverAssembly{
 		Config: cfg, Store: store, DB: db, Checker: db, Executor: executor, Jev: jevClient,
 		Recorder: recorder, Settings: settingsStore, Authenticator: authenticator, Sessions: sessions,
-		Groups: &groupStore, ResolveModelMetadata: modelMetadataResolver.Resolve,
+		Groups: &groupStore, ResolveModelMetadata: modelMetadataResolver.Resolve, Bootstrap: bootstrap,
 		SyncRegistry: func(syncCtx context.Context) (any, error) {
 			return syncGate.Do(syncCtx, func(syncCtx context.Context) (any, error) {
 				current := settingsStore.Config()
@@ -309,6 +342,27 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	return serve(ctx, server, listener, time.Duration(cfg.HTTP.ShutdownTimeout), logger)
 }
 
+// newBootstrapToken issues the one-time first-run setup token when no owner
+// password exists yet, and prints it to the process log: reading the log is the
+// proof a remote operator gives that they control this deployment. A local
+// browser does not need it.
+func newBootstrapToken(ctx context.Context, db *sql.DB, logger *slog.Logger) (*api.BootstrapToken, error) {
+	set, err := storage.PasswordSet(ctx, db)
+	if err != nil {
+		return nil, fmt.Errorf("read password setup state: %w", err)
+	}
+	if set {
+		return nil, nil
+	}
+	token, value, err := api.NewBootstrapToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate bootstrap token: %w", err)
+	}
+	logger.Warn("the management password is not set; remote first-run setup requires this one-time bootstrap token",
+		"bootstrap_token", value, "setup", "/admin/")
+	return token, nil
+}
+
 // providerRouter selects the direct executor for the provider chosen by the
 // catalog/router. It does not execute requests itself; the registry lookup and
 // the executor call are deliberately one small boundary.
@@ -325,7 +379,9 @@ func (r *providerRouter) Do(ctx context.Context, request *providers.Request) (*p
 	if r == nil || r.registry == nil {
 		return nil, fmt.Errorf("%w: no direct provider registry", providers.ErrProviderNotConfigured)
 	}
-	executor, ok := r.registry.Get(request.ProviderKey)
+	// The executor comes from the catalog generation the request was routed
+	// against, never from whatever is newest when the call is made.
+	executor, ok := r.registry.GetGeneration(request.CatalogGeneration, request.ProviderKey)
 	if !ok {
 		return nil, fmt.Errorf("%w: provider %q has no configured executor", providers.ErrProviderNotConfigured, request.ProviderKey)
 	}
@@ -403,8 +459,9 @@ func reloadCatalog(ctx context.Context, db *sql.DB, logger *slog.Logger, store *
 		// to publish an empty one.
 		return err
 	}
-	published := store.Swap(catalog)
-	globalExecutorRegistry.Build(published)
+	// The executor set is built inside the publication, before the catalog is
+	// visible, so catalog and executors form one request-consistent generation.
+	published := store.SwapWith(catalog, globalExecutorRegistry.Build)
 	logCatalogSnapshot(logger, published, true)
 	return nil
 }
@@ -551,6 +608,9 @@ type serverAssembly struct {
 	SyncRegistry         func(context.Context) (any, error)
 	ResolveModelMetadata func(context.Context, string, string) (modelsdev.MetadataMatch, bool, error)
 	Groups               *atomic.Pointer[storage.ModelGroups]
+	// Bootstrap authorizes first-run setup from a non-local client. Nil when the
+	// owner password already exists.
+	Bootstrap *api.BootstrapToken
 }
 
 // newHTTPServer builds the HTTP handler. The debug endpoints are mounted only when
@@ -587,6 +647,12 @@ func newHTTPServer(assembly serverAssembly, logger *slog.Logger) *http.Server {
 	routeDebugHandler := gateDebugHandler(api.NewDebugRoute(api.RouteDebugOptions{
 		Router: autoRouter, MaxRequestBytes: cfg.HTTP.MaxRequestBytes,
 	}), settingsStore, false)
+	// The configuration was validated at startup, so the list parses.
+	trustedProxies, err := netx.ParseTrustedProxies(cfg.HTTP.TrustedProxies)
+	if err != nil {
+		logger.Error("http.trusted_proxies could not be parsed; no proxy is trusted", "error", err)
+		trustedProxies = nil
+	}
 	authenticator := assembly.Authenticator
 	if authenticator == nil {
 		authenticator, _ = api.NewDatabaseAuthenticator(nil, logger)
@@ -604,6 +670,7 @@ func newHTTPServer(assembly serverAssembly, logger *slog.Logger) *http.Server {
 		Recorder:           recorder,
 		Live:               liveProxyValues{store: settingsStore, groups: assembly.Groups},
 		OverrideAuthorizer: api.OverrideAuthorizer(authenticator),
+		TrustedProxies:     trustedProxies,
 	})
 	var adminHandler http.Handler
 	// sessionStore is created only when the management surface is mounted, and it is
@@ -648,6 +715,9 @@ func newHTTPServer(assembly serverAssembly, logger *slog.Logger) *http.Server {
 			},
 			SyncRegistry:         assembly.SyncRegistry,
 			ResolveModelMetadata: assembly.ResolveModelMetadata,
+			TrustedProxies:       trustedProxies,
+			SecureCookies:        cfg.Admin.SecureCookies,
+			Bootstrap:            assembly.Bootstrap,
 		})
 		sessionStore = sessions
 		logger.Info("the Admin API is mounted",

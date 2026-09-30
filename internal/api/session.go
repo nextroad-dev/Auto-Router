@@ -68,10 +68,11 @@ const maxSessions = 64
 // as hard as finding a SHA-256 preimage.
 const sessionTokenBytes = 32
 
-// maxLoginAttemptsPerMinute bounds failed key submissions from one process. It is
-// a constant rather than a setting: the login endpoint is reachable without a
-// credential, and a deployment that needed a different bound would be expressing a
-// different threat model than "one operator, one browser".
+// maxLoginAttemptsPerMinute bounds failed password submissions from one source
+// address. It is a constant rather than a setting: the login endpoint is reachable
+// without a credential, and a deployment that needed a different bound would be
+// expressing a different threat model than "one operator, one browser". See
+// login_limiter.go for the process-wide emergency cap.
 const maxLoginAttemptsPerMinute = 10
 
 // loginAttemptWindow is the sliding window the failure counter is measured over.
@@ -104,11 +105,10 @@ type SessionStore struct {
 	byHash map[string]session
 	// nextSeq is the creation counter handed to the next session.
 	nextSeq int64
-	// failures and windowStart implement the login rate guard. Only failures are
-	// counted; a successful login clears the counter, because a successful login is
-	// evidence the caller is not guessing.
-	failures    int
-	windowStart time.Time
+	// limiter implements the login rate guard. Only failures are counted; a
+	// successful login clears its source's counter, because a successful login is
+	// evidence that source is not guessing.
+	limiter loginLimiter
 }
 
 func NewSessionStore(ttl time.Duration, now func() time.Time) *SessionStore {
@@ -119,9 +119,10 @@ func NewSessionStore(ttl time.Duration, now func() time.Time) *SessionStore {
 		now = time.Now
 	}
 	store := &SessionStore{
-		mutex:  make(chan struct{}, 1),
-		now:    now,
-		byHash: make(map[string]session, maxSessions),
+		mutex:   make(chan struct{}, 1),
+		now:     now,
+		byHash:  make(map[string]session, maxSessions),
+		limiter: newLoginLimiter(),
 	}
 	store.ttl.Store(int64(ttl))
 	return store
@@ -251,46 +252,39 @@ func (s *SessionStore) evictLocked(now time.Time) {
 	}
 }
 
-// AllowLogin reports whether a login attempt may be processed. Only failures are
-// counted, and the window is rolling: once a minute passes without a failure the
-// counter resets, so a legitimate operator who mistypes a key several times is not
-// locked out for the rest of the day.
-func (s *SessionStore) AllowLogin() bool {
+// AllowLogin reports whether a login attempt from source may be processed. Only
+// failures are counted, and the windows are rolling: once a minute passes without
+// a failure the counter resets, so a legitimate operator who mistypes a password
+// several times is not locked out for the rest of the day, and one source's
+// failures never consume another source's budget.
+func (s *SessionStore) AllowLogin(source string) bool {
 	if s == nil {
 		return true
 	}
 	s.lock()
 	defer s.unlock()
-	now := s.now()
-	if now.Sub(s.windowStart) >= loginAttemptWindow {
-		s.failures, s.windowStart = 0, now
-	}
-	return s.failures < maxLoginAttemptsPerMinute
+	return s.limiter.allow(source, s.now())
 }
 
-// RecordFailure counts one refused login. The submitted value is not an argument:
-// nothing about the attempt is recorded beyond the fact that it failed.
-func (s *SessionStore) RecordFailure() {
+// RecordFailure counts one refused login from source. The submitted value is not
+// an argument: nothing about the attempt is recorded beyond the fact that it failed.
+func (s *SessionStore) RecordFailure(source string) {
 	if s == nil {
 		return
 	}
 	s.lock()
 	defer s.unlock()
-	now := s.now()
-	if now.Sub(s.windowStart) >= loginAttemptWindow {
-		s.failures, s.windowStart = 0, now
-	}
-	s.failures++
+	s.limiter.recordFailure(source, s.now())
 }
 
-// RecordSuccess clears the failure counter.
-func (s *SessionStore) RecordSuccess() {
+// RecordSuccess clears the failure counter of source.
+func (s *SessionStore) RecordSuccess(source string) {
 	if s == nil {
 		return
 	}
 	s.lock()
 	defer s.unlock()
-	s.failures, s.windowStart = 0, s.now()
+	s.limiter.recordSuccess(source)
 }
 
 // hashToken renders one token as the map key. The token is hashed rather than
@@ -332,7 +326,8 @@ func (h *adminHandler) handleSessionLogin(w http.ResponseWriter, r *http.Request
 		writeAdminError(w, http.StatusNotFound, "not_found", "the requested endpoint does not exist", "")
 		return
 	}
-	if !h.sessions.AllowLogin() {
+	source := h.trustedProxies.ClientIP(r)
+	if !h.sessions.AllowLogin(source) {
 		h.logger.Warn("login refused", "path", r.URL.Path, "reason", "too_many_attempts")
 		writeAdminError(w, http.StatusTooManyRequests, "too_many_attempts", "too many login attempts; try again later", "")
 		return
@@ -344,12 +339,12 @@ func (h *adminHandler) handleSessionLogin(w http.ResponseWriter, r *http.Request
 	}
 	var body loginRequest
 	if _, err := readAdminBody(r, &body); err != nil {
-		h.sessions.RecordFailure()
+		h.sessions.RecordFailure(source)
 		writeBodyError(w, err)
 		return
 	}
 	if body.Password == nil {
-		h.sessions.RecordFailure()
+		h.sessions.RecordFailure(source)
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", "the request body must carry a string password field", "password")
 		return
 	}
@@ -359,7 +354,7 @@ func (h *adminHandler) handleSessionLogin(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !valid {
-		h.sessions.RecordFailure()
+		h.sessions.RecordFailure(source)
 		if h.logger != nil {
 			h.logger.Warn("login refused", "path", r.URL.Path, "reason", "invalid_password")
 		}
@@ -371,21 +366,8 @@ func (h *adminHandler) handleSessionLogin(w http.ResponseWriter, r *http.Request
 		storageFailure(w, h, "create a management session", err)
 		return
 	}
-	h.sessions.RecordSuccess()
-	http.SetCookie(w, &http.Cookie{
-		Name:  sessionCookieName,
-		Value: token,
-		Path:  "/admin",
-		// HttpOnly keeps the token out of reach of any script the page might load.
-		// There is no Secure attribute on purpose: this process serves plaintext
-		// HTTP, and a Secure cookie would simply never be sent in the documented
-		// local deployment. TLS is the reverse proxy's responsibility and is
-		// documented as such.
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(h.sessions.TTL() / time.Second),
-		Expires:  expiresAt,
-	})
+	h.sessions.RecordSuccess(source)
+	http.SetCookie(w, h.newSessionCookie(r, token, int(h.sessions.TTL()/time.Second), expiresAt))
 	if h.logger != nil {
 		h.logger.Info("management session created", "path", r.URL.Path)
 	}
@@ -430,16 +412,9 @@ func (h *adminHandler) handleSessionLogout(w http.ResponseWriter, r *http.Reques
 	if token, present := sessionCookie(r); present && h.sessions != nil {
 		h.sessions.Delete(token)
 	}
-	// The cookie is cleared with the same Path it was issued with; a cleared cookie
-	// with a different path would leave the original in place.
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Path:     "/admin",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
+	// The cookie is cleared with the same attributes it was issued with; a cleared
+	// cookie with a different path or Secure flag would leave the original in place.
+	h.clearSessionCookie(w, r)
 	if _, ok := IdentityFrom(r); ok && h.logger != nil {
 		h.logger.Info("management session ended", "path", r.URL.Path)
 	}
@@ -449,14 +424,17 @@ func (h *adminHandler) handleSessionLogout(w http.ResponseWriter, r *http.Reques
 }
 
 // sameOriginRequest reports whether a state-changing request came from the
-// management surface itself rather than from another site.
+// management surface itself rather than from another site. It is a CSRF guard,
+// not authentication.
 //
 // Two independent signals are accepted, because two independent browsers disagree
-// about which they send: the Origin header must match the request's host, or
-// Sec-Fetch-Site must say same-origin. A request that carries neither is refused
-// for a write, and only for a write: a curl request has no Origin either and is
-// handled by the API client path, which carries its own credential and is not
-// covered by this rule.
+// about which they send: Sec-Fetch-Site must say same-origin (or none), or the
+// Origin header must match the request's host. A request that carries neither is
+// accepted: it is not a browser performing a cross-site request (a browser always
+// sends at least one of them on a cross-site write), so there is no ambient
+// credential to abuse. Endpoints reachable without a credential must therefore
+// authenticate such callers by other means; first-run setup, for example,
+// requires a bootstrap token from any non-local caller.
 func sameOriginRequest(r *http.Request) bool {
 	if site := strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")); site != "" {
 		switch site {

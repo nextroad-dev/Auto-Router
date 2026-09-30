@@ -17,6 +17,8 @@ const route = useRoute()
 const initialized = ref<boolean>()
 const password = ref('')
 const confirmation = ref('')
+const bootstrapToken = ref('')
+const bootstrapRequired = ref(false)
 const busy = ref(false)
 const setupStatusLoading = ref(false)
 const setupStatusFailed = ref(false)
@@ -39,6 +41,7 @@ async function loadSetupStatus() {
   try {
     const status = await api.get<SetupStatus>('/admin/v1/setup/status')
     initialized.value = status.password_set
+    bootstrapRequired.value = !status.password_set && status.bootstrap_token_required === true
   } catch (cause) {
     setupStatusFailed.value = true
     errorMsg.value = errorNotice(cause)
@@ -69,13 +72,21 @@ async function submit() {
     errorMsg.value = '管理员密码至少需要 12 字节。'
     return
   }
+  if (initialized.value === false && bootstrapRequired.value && !bootstrapToken.value.trim()) {
+    errorMsg.value = '请输入服务启动日志中的初始化令牌。'
+    return
+  }
 
   busy.value = true
   const submitted = password.value
   try {
     if (initialized.value === false) {
-      await api.post('/admin/v1/setup/password', { password: submitted })
+      const setup: { password: string, bootstrap_token?: string } = { password: submitted }
+      if (bootstrapRequired.value) setup.bootstrap_token = bootstrapToken.value.trim()
+      await api.post('/admin/v1/setup/password', setup)
       initialized.value = true
+      bootstrapRequired.value = false
+      bootstrapToken.value = ''
     }
     await establishSession(submitted)
   } catch (cause) {
@@ -128,6 +139,16 @@ onMounted(() => { void loadSetupStatus() })
           size="lg"
           :disabled="busy"
           autocomplete="new-password"
+        />
+      </JfField>
+      <JfField v-if="!initialized && bootstrapRequired" label="初始化令牌" name="bootstrap-token" required>
+        <JfInput
+          v-model="bootstrapToken"
+          type="password"
+          placeholder="服务启动日志中的 bootstrap_token"
+          size="lg"
+          :disabled="busy"
+          autocomplete="off"
         />
       </JfField>
       <JfButton type="submit" block size="lg" :loading="busy">

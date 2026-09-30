@@ -497,9 +497,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [password_set]
+                required: [password_set, bootstrap_token_required]
                 properties:
                   password_set: {type: boolean}
+                  bootstrap_token_required:
+                    type: boolean
+                    description: True when the password is not set and this client is not local, so setup must present the one-time bootstrap token printed in the service log.
         '503':
           $ref: '#/components/responses/AdminError'
 
@@ -508,7 +511,7 @@ paths:
       tags: [Setup]
       summary: Set the initial owner password
       operationId: setInitialPassword
-      description: Available only until the initial password is set. Browser requests must be same-origin; requests identified as cross-site are rejected. Password length is 12–1024 bytes.
+      description: Available only until the initial password is set. Browser requests must be same-origin; requests identified as cross-site are rejected. A client that is not on the local machine (a loopback peer without forwarding headers, or a loopback client reported by a trusted proxy) must also present the one-time bootstrap token printed in the service log at startup; it is invalidated by a successful setup. Password length is 12–1024 bytes.
       security: []
       requestBody:
         required: true
@@ -519,6 +522,7 @@ paths:
               required: [password]
               properties:
                 password: {type: string, minLength: 12, maxLength: 1024, writeOnly: true}
+                bootstrap_token: {type: string, writeOnly: true, description: Required from a non-local client.}
       responses:
         '201':
           description: Initial password set.
@@ -2423,6 +2427,7 @@ components:
         - truncated_evidence
         - upstream_unavailable
         - upstream_timeout
+        - upstream_response_too_large
         - client_closed_request
         - internal_error
         - invalid_api_key
@@ -2447,6 +2452,7 @@ components:
         - invalid_api_key
         - insufficient_scope
         - cross_site_request
+        - bootstrap_token_required
         - too_many_attempts
         - request_too_large
         - unknown_model

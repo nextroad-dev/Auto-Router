@@ -19,14 +19,18 @@ const (
 	// accumulated for usage extraction. A body larger than this is reported as
 	// oversized and observation stops; the client still receives every byte.
 	maxObservedResponseBytes = 1 << 20
-	// maxObservedSSEEventBytes bounds one SSE event. A larger event is not a
-	// usage carrier in any protocol this router speaks, so the observer stops
-	// instead of accumulating it.
+	// maxObservedSSEEventBytes bounds how much of one SSE event is buffered. A
+	// larger event can still carry usage — a Responses "response.completed" event
+	// repeats the whole output next to its usage — so the rest of it is scanned
+	// incrementally instead of buffered.
 	maxObservedSSEEventBytes = 16 << 10
-	// maxObservedSSEEvents bounds how many SSE events one response may contain
-	// before observation stops. It is large enough for a long reasoning stream
-	// and small enough that a stuck upstream cannot make the observer grow.
-	maxObservedSSEEvents = 4096
+	// maxCapturedUsageBytes bounds the one usage value a scanner copies out of a
+	// payload too large to buffer. A usage object is a handful of counts; one
+	// larger than this is not read, and the observation reports oversized.
+	maxCapturedUsageBytes = 4 << 10
+	// maxUsageKeyBytes bounds the object key a scanner keeps for comparison. It
+	// only needs to recognize "usage" and "response".
+	maxUsageKeyBytes = 16
 	// eventSeparator is the blank line that ends one SSE event.
 	eventSeparator = "\n\n"
 )
@@ -66,8 +70,12 @@ type usageObserver struct {
 	state     usageState
 	usage     logging.Usage
 	buffer    []byte
-	events    int
 	malformed bool
+	// event scans the rest of an SSE event that outgrew the event buffer, and
+	// body scans a non-streaming body that outgrew the body buffer. Either one
+	// holds a bounded amount of state however long the payload is.
+	event *sseUsageScanner
+	body  *usageScanner
 }
 
 // usageState is the observer's progress. A terminal state never changes again.
@@ -115,38 +123,64 @@ func (o *usageObserver) observe(chunk []byte) {
 		o.observeStream(chunk)
 		return
 	}
-	if len(o.buffer)+len(chunk) > maxObservedResponseBytes {
-		// The body is larger than the observation window. The client still gets
-		// every byte; the record reports that usage could not be seen.
-		o.state = usageStopped
+	if o.body == nil && len(o.buffer)+len(chunk) > maxObservedResponseBytes {
+		// The body is larger than the buffer. The client still gets every byte;
+		// the rest of the body is scanned for its usage instead of held.
+		o.body = newUsageScanner(o.recordUsage)
+		o.body.feed(o.buffer)
 		o.buffer = nil
+	}
+	if o.body != nil {
+		o.body.feed(chunk)
+		if o.body.overflow {
+			o.stop()
+		}
 		return
 	}
 	o.buffer = append(o.buffer, chunk...)
 }
 
+// stop ends the observation at a bound: the result is oversized.
+func (o *usageObserver) stop() {
+	o.state = usageStopped
+	o.buffer = nil
+	o.event = nil
+	o.body = nil
+}
+
 // observeStream scans complete SSE events out of the incremental buffer. An event
 // is terminated by a blank line, so a chunk boundary inside an event is handled by
-// holding the partial event until its terminator arrives.
+// holding the partial event until its terminator arrives. An event that outgrows
+// the buffer is handed to an incremental scanner for the rest of its length.
 func (o *usageObserver) observeStream(chunk []byte) {
+	if o.event != nil {
+		consumed, ended := o.event.feed(chunk)
+		if o.event.json.overflow {
+			o.stop()
+			return
+		}
+		if !ended {
+			return
+		}
+		o.event = nil
+		chunk = chunk[consumed:]
+	}
 	o.buffer = append(o.buffer, chunk...)
 	for {
 		index := indexOfEventSeparator(o.buffer)
 		if index < 0 {
 			if len(o.buffer) > maxObservedSSEEventBytes {
-				o.state = usageStopped
+				// The buffer starts at the beginning of the event, which is where
+				// the scanner expects to start.
+				pending := o.buffer
 				o.buffer = nil
+				o.event = newSSEUsageScanner(o.recordUsage)
+				o.observeStream(pending)
 			}
 			return
 		}
 		event := o.buffer[:index]
 		o.buffer = o.buffer[index:]
-		o.events++
-		if o.events > maxObservedSSEEvents {
-			o.state = usageStopped
-			o.buffer = nil
-			return
-		}
 		o.recordEventPayloads(event)
 	}
 }
@@ -301,6 +335,11 @@ func (o *usageObserver) finish(interrupted bool) logging.Usage {
 		o.recordPayload(o.buffer, true)
 		o.buffer = nil
 	}
+	// A scanned body is held to the same strictness as a buffered one: a body
+	// that is not a JSON object cannot be read at all.
+	if o.body != nil && o.body.notObject {
+		o.malformed = true
+	}
 	usage := o.usage
 	if usage.InputTokens != nil || usage.OutputTokens != nil || usage.TotalTokens != nil {
 		usage.Status = logging.UsageStatusObserved
@@ -315,4 +354,205 @@ func (o *usageObserver) finish(interrupted bool) logging.Usage {
 		usage.Status = logging.UsageStatusAbsent
 	}
 	return usage
+}
+
+// usageScanner finds the usage object of one JSON payload without holding the
+// payload. It tracks only what that needs — nesting depth, string state and the
+// keys of the two outer object levels — to recognize "usage" in the same two
+// places recordPayload looks: at the top level, and under a top-level "response"
+// object. Only that value is copied, up to maxCapturedUsageBytes, and handed to
+// emit once it is complete.
+//
+// It is a recognizer, not a validator: a payload that is not JSON simply yields
+// nothing, except that notObject records a payload that does not open with an
+// object, for callers that treat that as malformed.
+type usageScanner struct {
+	emit func(raw json.RawMessage)
+
+	started   bool
+	notObject bool
+	depth     int
+	// objects[d] reports whether the container at depth d is an object. Only
+	// depths 1 and 2 are tracked; deeper keys are never usage carriers.
+	objects  [3]bool
+	inString bool
+	escaped  bool
+	// expectKey is true where the next string is an object key at a tracked
+	// depth; keyString is true while reading such a key into key.
+	expectKey bool
+	keyString bool
+	key       []byte
+	keyLong   bool
+	// inResponse is true while the top-level value being read is "response".
+	inResponse bool
+
+	capturing    bool
+	captureDepth int
+	captured     []byte
+	// overflow is set once a usage value exceeded maxCapturedUsageBytes.
+	overflow bool
+}
+
+func newUsageScanner(emit func(raw json.RawMessage)) *usageScanner {
+	return &usageScanner{emit: emit}
+}
+
+// reset prepares the scanner for a new payload. A capture still open belonged
+// to the previous payload and is dropped; overflow is sticky.
+func (s *usageScanner) reset() {
+	*s = usageScanner{emit: s.emit, key: s.key[:0], captured: s.captured[:0], overflow: s.overflow}
+}
+
+func (s *usageScanner) feed(data []byte) {
+	for _, c := range data {
+		s.step(c)
+	}
+}
+
+func (s *usageScanner) step(c byte) {
+	if s.capturing && !s.inString && s.depth == s.captureDepth && (c == ',' || c == '}' || c == ']') {
+		s.finishCapture()
+	}
+	if s.capturing {
+		if len(s.captured) < maxCapturedUsageBytes {
+			s.captured = append(s.captured, c)
+		} else {
+			s.overflow = true
+		}
+	}
+	if s.inString {
+		if !s.escaped && c == '"' {
+			s.inString = false
+			return
+		}
+		s.escaped = !s.escaped && c == '\\'
+		if s.keyString {
+			if len(s.key) < maxUsageKeyBytes {
+				s.key = append(s.key, c)
+			} else {
+				s.keyLong = true
+			}
+		}
+		return
+	}
+	switch c {
+	case ' ', '\t', '\n', '\r':
+		return
+	}
+	if !s.started {
+		s.started = true
+		s.notObject = c != '{'
+	}
+	switch c {
+	case '"':
+		s.inString = true
+		s.keyString = s.expectKey
+		s.expectKey = false
+		if s.keyString {
+			s.key = s.key[:0]
+			s.keyLong = false
+		}
+	case '{', '[':
+		s.depth++
+		tracked := s.depth < len(s.objects)
+		if tracked {
+			s.objects[s.depth] = c == '{'
+		}
+		s.expectKey = tracked && c == '{'
+	case '}', ']':
+		if s.depth > 0 {
+			s.depth--
+		}
+		s.expectKey = false
+	case ',':
+		s.expectKey = s.depth > 0 && s.depth < len(s.objects) && s.objects[s.depth]
+	case ':':
+		s.colon()
+	}
+}
+
+// colon handles the separator after an object key at a tracked depth, which is
+// where a usage value can begin.
+func (s *usageScanner) colon() {
+	if s.depth == 0 || s.depth >= len(s.objects) || !s.objects[s.depth] {
+		return
+	}
+	if s.depth == 1 {
+		s.inResponse = s.keyIs("response")
+	}
+	if !s.keyIs(usageKey) || (s.depth == 2 && !s.inResponse) {
+		return
+	}
+	s.capturing = true
+	s.captureDepth = s.depth
+	s.captured = s.captured[:0]
+}
+
+func (s *usageScanner) keyIs(name string) bool {
+	return !s.keyLong && string(s.key) == name
+}
+
+func (s *usageScanner) finishCapture() {
+	s.capturing = false
+	if s.overflow {
+		return
+	}
+	s.emit(s.captured)
+}
+
+// sseUsageScanner reads the rest of one SSE event that is too large to buffer.
+// It follows the line framing itself, feeds each data line to a usageScanner as
+// one payload (the same per-line rule recordEventPayloads applies) and reports
+// where the event's terminating blank line ends.
+type sseUsageScanner struct {
+	json      usageScanner
+	lineStart bool
+	// field collects the start of a line until it is known whether the line is a
+	// data line.
+	field     []byte
+	fieldDone bool
+	data      bool
+}
+
+func newSSEUsageScanner(emit func(raw json.RawMessage)) *sseUsageScanner {
+	return &sseUsageScanner{json: usageScanner{emit: emit}, lineStart: true}
+}
+
+const sseDataField = "data:"
+
+// feed consumes chunk up to the end of the event. It returns how many bytes
+// belonged to the event and whether the event ended within chunk.
+func (s *sseUsageScanner) feed(chunk []byte) (int, bool) {
+	for index, c := range chunk {
+		switch {
+		case c == '\r':
+			// A carriage return only ever precedes a line feed in the framing
+			// this router accepts, and is never significant inside a JSON line.
+		case c == '\n':
+			if s.lineStart {
+				return index + 1, true
+			}
+			s.lineStart = true
+			s.field = s.field[:0]
+			s.fieldDone = false
+			s.data = false
+		case s.data:
+			s.lineStart = false
+			s.json.step(c)
+		default:
+			s.lineStart = false
+			if s.fieldDone {
+				continue
+			}
+			s.field = append(s.field, c)
+			if !strings.HasPrefix(sseDataField, string(s.field)) {
+				s.fieldDone = true
+			} else if len(s.field) == len(sseDataField) {
+				s.fieldDone = true
+				s.data = true
+				s.json.reset()
+			}
+		}
+	}
+	return len(chunk), false
 }

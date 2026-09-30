@@ -47,6 +47,7 @@ export interface DiscoveredModelsDocument {
 
 export interface SetupStatus {
   password_set: boolean
+  bootstrap_token_required?: boolean
 }
 
 export interface PasswordSession {

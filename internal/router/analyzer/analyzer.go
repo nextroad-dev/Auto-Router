@@ -71,10 +71,13 @@ const (
 	// truncated to maxImageRefBytes.
 	maxImages        = 64
 	maxImageRefBytes = 512
-	// maxViewMessages bounds how many messages the returned view carries.
+	// maxViewMessages bounds how many messages the returned view carries. The
+	// view keeps the latest messages: the turn being routed is the last one, so
+	// a long conversation loses its oldest turns first.
 	maxViewMessages = 256
 	// maxViewBytes bounds the text the view carries in total (system prompt and
-	// messages together). Exceeding it sets View.Truncated.
+	// messages together). Exceeding it evicts the oldest messages and sets
+	// View.Truncated.
 	maxViewBytes = 1 << 20
 	// maxTextScanBytes bounds how much text is scanned for the code and
 	// reasoning marker phrases. The markers are heuristics, so the bound is a
@@ -265,8 +268,11 @@ type walk struct {
 
 	systemBytes int
 	systemParts []string
-	viewBytes   int
-	textScanned int
+	// viewBytes is the text retained in the view: the system parts plus
+	// viewMessageBytes, which is the part eviction can give back.
+	viewBytes        int
+	viewMessageBytes int
+	textScanned      int
 }
 
 func newWalk(protocol providers.Protocol, window []byte, windowTruncated bool) *walk {
@@ -453,29 +459,37 @@ func (w *walk) recordTurn(role, text string) {
 	w.addViewMessage(role, text)
 }
 
-// addViewMessage appends one conversation turn to the bounded view. The text
-// budget is shared by the system prompt and the messages; running out of it
-// only shortens the view and sets View.Truncated.
+// addViewMessage appends one conversation turn to the bounded view. The view
+// keeps the latest turns: when the message count or the text budget (shared
+// with the system prompt) runs out, the oldest messages are evicted to make
+// room, and View.Truncated is set. A single turn larger than the whole budget
+// is cut to it.
 func (w *walk) addViewMessage(role, text string) {
-	if len(w.view.Messages) >= maxViewMessages {
-		// A view that ran out of room is incomplete: the consumer must not read
-		// "no further turns" into it.
-		w.view.Truncated = true
-		return
-	}
 	if text == "" {
 		// An empty text turn carries no information for the routing question,
 		// so it is left out of the view. The message itself is still counted in
 		// MessageCount and RoleCounts.
 		return
 	}
-	if remaining := maxViewBytes - w.viewBytes; remaining <= 0 {
+	budget := maxViewBytes - (w.viewBytes - w.viewMessageBytes)
+	if budget <= 0 {
 		w.view.Truncated = true
 		return
-	} else if len(text) > remaining {
-		text = truncateBytes(text, remaining)
+	}
+	if len(text) > budget {
+		text = truncateBytes(text, budget)
+		w.view.Truncated = true
+	}
+	for len(w.view.Messages) > 0 && (len(w.view.Messages) >= maxViewMessages || w.viewMessageBytes+len(text) > budget) {
+		// A view that lost turns is incomplete: the consumer must not read
+		// "no earlier turns" into it.
+		evicted, _ := w.view.Messages[0].Content.(string)
+		w.viewMessageBytes -= len(evicted)
+		w.viewBytes -= len(evicted)
+		w.view.Messages = w.view.Messages[1:]
 		w.view.Truncated = true
 	}
 	w.viewBytes += len(text)
+	w.viewMessageBytes += len(text)
 	w.view.Messages = append(w.view.Messages, jev.Message{Role: role, Content: text})
 }

@@ -141,7 +141,18 @@ type AdminConfig struct {
 	// enforces; both come from this value, so a client cannot extend one without the
 	// other.
 	SessionTTL Duration `json:"session_ttl"`
+	// SecureCookies decides the Secure attribute of the session cookie: "auto"
+	// (the default) sets it when the browser-facing connection is HTTPS, either
+	// terminated here or reported by a trusted proxy; "always" and "never" force it.
+	SecureCookies string `json:"secure_cookies"`
 }
+
+// The accepted admin.secure_cookies values.
+const (
+	SecureCookiesAuto   = "auto"
+	SecureCookiesAlways = "always"
+	SecureCookiesNever  = "never"
+)
 
 func defaultAuthConfig() AuthConfig {
 	return AuthConfig{
@@ -154,10 +165,11 @@ func defaultAuthConfig() AuthConfig {
 
 func defaultAdminConfig() AdminConfig {
 	return AdminConfig{
-		Enabled:     true,
-		PageSize:    DefaultAdminPageSize,
-		MaxPageSize: DefaultAdminMaxPageSize,
-		SessionTTL:  Duration(DefaultAdminSessionTTL),
+		Enabled:       true,
+		PageSize:      DefaultAdminPageSize,
+		MaxPageSize:   DefaultAdminMaxPageSize,
+		SessionTTL:    Duration(DefaultAdminSessionTTL),
+		SecureCookies: SecureCookiesAuto,
 	}
 }
 
@@ -261,6 +273,11 @@ func (a AdminConfig) Validate() error {
 	// than a way to disable login.
 	if ttl := time.Duration(a.SessionTTL); ttl < MinAdminSessionTTL || ttl > MaxAdminSessionTTL {
 		return fmt.Errorf("admin.session_ttl must be between %s and %s", MinAdminSessionTTL, MaxAdminSessionTTL)
+	}
+	switch a.SecureCookies {
+	case SecureCookiesAuto, SecureCookiesAlways, SecureCookiesNever:
+	default:
+		return errors.New("admin.secure_cookies must be auto, always or never")
 	}
 	return nil
 }

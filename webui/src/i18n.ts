@@ -90,6 +90,10 @@ export const messages = {
           title: '请求来源未通过安全校验',
           description: '请重新登录管理台，或改用具备该权限的凭据。请从管理台页面内发起操作。',
         },
+        bootstrap_token_required: {
+          title: '需要初始化令牌',
+          description: '从非本机访问进行首次设置时，需要填写服务启动日志中打印的一次性初始化令牌（bootstrap_token）。',
+        },
         too_many_attempts: {
           title: '尝试次数过多',
           description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。请稍后重试。',
@@ -251,6 +255,10 @@ export const messages = {
         upstream_timeout: {
           title: '上游提供商响应超时',
           description: '请检查提供商地址与网络连通性后重试。可重试或更换提供商。',
+        },
+        upstream_response_too_large: {
+          title: '上游响应过大',
+          description: '提供商返回的内容超过了转换缓冲上限。可改用流式请求，或调整 -max-buffered-response-bytes 后重试。',
         },
         client_closed_request: {
           title: '客户端提前断开连接',

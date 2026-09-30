@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nextroad-dev/Auto-Router/internal/config"
 	"github.com/nextroad-dev/Auto-Router/internal/models"
@@ -258,4 +261,41 @@ func testAutoCatalog(t *testing.T) *models.Store {
 	store := models.NewStore()
 	store.Swap(catalog)
 	return store
+}
+
+func TestRouteCarriesJevRejectionStatusForTheServiceLog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":[{"msg":"invalid api key"}]}`))
+	}))
+	defer server.Close()
+	client, err := jev.New(jev.Config{BaseURL: server.URL, APIKey: "secret", Model: "system-one", AuthHeader: "Authorization", AuthScheme: "Bearer", Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := testAutoCatalog(t)
+	engine, err := config.Defaults().PolicyEngine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := New(Options{
+		Catalog: catalog, Analyzer: analyzer.New(), Engine: engine, Jev: client,
+		InputMode: jev.InputModeContent, DefaultGroup: GroupMedium, LowConfidence: 0.3,
+		GroupConfig: GroupConfig{
+			Simple: []GroupMember{{ProviderKey: "provider-a", ModelID: "model-a"}},
+			Medium: []GroupMember{{ProviderKey: "provider-a", ModelID: "model-b"}},
+		},
+	})
+	body := []byte(`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+	target, err := router.Route(context.Background(), Request{Protocol: providers.ProtocolChatCompletions, Body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.JevStatus != JevStatusFailurePrefix+string(decision.ReasonJevRejected) || target.SelectedGroup != GroupMedium {
+		t.Fatalf("Jev status/group = %q/%s, want rejected fallback to medium", target.JevStatus, target.SelectedGroup)
+	}
+	if target.JevFailureStatus != http.StatusUnauthorized || !strings.Contains(target.JevFailureDetail, "invalid api key") {
+		t.Fatalf("Jev failure = %d %q, want 401 with the endpoint's message", target.JevFailureStatus, target.JevFailureDetail)
+	}
 }

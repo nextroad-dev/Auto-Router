@@ -3,7 +3,6 @@
 package adapter
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,6 +21,35 @@ import (
 type Executor struct {
 	Kind models.ProviderKind
 	Next providers.Executor
+	// MaxBufferedBytes bounds a successful non-stream response that must be read
+	// in full to convert it. Zero uses DefaultMaxBufferedBytes.
+	MaxBufferedBytes int64
+}
+
+// DefaultMaxBufferedBytes is the conversion buffer bound when none is configured.
+const DefaultMaxBufferedBytes int64 = 32 << 20
+
+func (e *Executor) maxBufferedBytes() int64 {
+	if e.MaxBufferedBytes > 0 {
+		return e.MaxBufferedBytes
+	}
+	return DefaultMaxBufferedBytes
+}
+
+// readBounded reads at most limit bytes and fails, without buffering the rest,
+// when the body is longer. The body itself never appears in the error.
+func readBounded(body io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		if errors.Is(err, providers.ErrUpstreamTimeout) {
+			return nil, fmt.Errorf("%w: read converted response: %v", providers.ErrUpstreamTimeout, err)
+		}
+		return nil, fmt.Errorf("%w: read converted response: %v", providers.ErrUpstreamUnavailable, err)
+	}
+	if int64(len(raw)) > limit {
+		return nil, providers.ErrResponseTooLarge
+	}
+	return raw, nil
 }
 
 // CloseIdleConnections forwards pool cleanup when the wrapped executor supports it.
@@ -86,9 +114,9 @@ func (e *Executor) Do(ctx context.Context, request *providers.Request) (*provide
 		return response, nil
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(response.Body)
+	raw, err := readBounded(response.Body, e.maxBufferedBytes())
 	if err != nil {
-		return nil, fmt.Errorf("%w: read converted response: %v", providers.ErrUpstreamUnavailable, err)
+		return nil, err
 	}
 	converted, err := convertResponse(e.Kind, raw, request.RequestID, request.Model)
 	if err != nil {
@@ -374,13 +402,10 @@ func (b *streamBody) Close() error {
 func (b *streamBody) convert(kind models.ProviderKind, id, model string) {
 	defer b.source.Close()
 	defer b.writer.Close()
-	scanner := bufio.NewScanner(b.source)
-	scanner.Buffer(make([]byte, 4096), 2<<20)
-	var data strings.Builder
+	events := newSSEReader(b.source)
 	inputTokens := 0
-	flush := func() error {
-		raw := strings.TrimSpace(data.String())
-		data.Reset()
+	flush := func(data string) error {
+		raw := strings.TrimSpace(data)
 		if raw == "" || raw == "[DONE]" {
 			return nil
 		}
@@ -477,21 +502,19 @@ func (b *streamBody) convert(kind models.ProviderKind, id, model string) {
 		}
 		return nil
 	}
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			if err := flush(); err != nil {
-				b.writer.CloseWithError(err)
-				return
-			}
-			continue
+	for {
+		event, err := events.Next()
+		if errors.Is(err, io.EOF) {
+			return
 		}
-		if strings.HasPrefix(line, "data:") {
-			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		if err != nil {
+			b.writer.CloseWithError(err)
+			return
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		b.writer.CloseWithError(err)
+		if err := flush(event.Data); err != nil {
+			b.writer.CloseWithError(err)
+			return
+		}
 	}
 }
 func streamChunk(id, model string, delta map[string]any, finish any, input, output int) map[string]any {

@@ -17,6 +17,14 @@ docker run -d \
 
 打开 <http://127.0.0.1:8080/admin/>，按页面提示设置管理员密码。之后在管理页面添加提供商和模型、配置模型组，并创建推理密钥。上游 API 密钥与管理员密码在管理页面配置。
 
+首次设置需要证明你是部署者：尚未设置密码时，服务启动会在日志中打印一次性初始化令牌 `bootstrap_token`。从非本机连接（包括经 Docker 端口映射或反向代理访问）设置密码时，页面会要求填写该令牌；设置成功后令牌立即失效。获取方式：
+
+```sh
+docker logs auto-router 2>&1 | grep bootstrap_token
+```
+
+直接在本机运行二进制并通过 loopback 访问时无需令牌。
+
 数据保存在 Docker 命名卷 `auto-router-data` 中，容器重建或升级不会删除该卷。升级到最新镜像：
 
 ```sh
@@ -27,6 +35,22 @@ docker rm auto-router
 ```
 
 不要删除数据卷；删除 `auto-router-data` 会同时删除数据库及管理配置。默认端口只绑定本机。若需对外提供服务，请先配置 TLS 反向代理，不要直接将管理页面暴露到公网。
+
+### 反向代理与启动参数
+
+以下参数在启动时通过命令行设置（Docker 中直接追加在镜像名之后，镜像入口已包含 `-listen 0.0.0.0:8080`）：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `-trusted-proxies` | 空 | 逗号分隔的反向代理 CIDR 或 IP。只有来自这些地址的 `X-Forwarded-For` / `X-Forwarded-Proto` 才会被采信；为空时一律以 TCP 对端地址为客户端地址。多级代理时从右向左跳过可信跳，取第一个不可信地址。`Forwarded`、`X-Forwarded-*`、`X-Real-IP` 永远不会转发给上游提供商。 |
+| `-secure-cookies` | `auto` | 管理会话 Cookie 的 `Secure` 属性：`auto` 在 TLS 直连或可信代理声明 `https` 时设置；`always` / `never` 强制。 |
+| `-upstream-body-timeout` | `10m` | 非流式上游响应在收到响应头后，两次读取之间允许的最长停顿；`0` 关闭。 |
+| `-stream-idle-timeout` | `0` | 流式上游响应两次读取之间允许的最长停顿；默认关闭，避免截断长时间推理。 |
+| `-max-buffered-response-bytes` | 32 MiB | 需要整体缓冲以转换协议（Anthropic/Gemini 非流式）的上游响应上限；超出返回 502 `upstream_response_too_large`。 |
+
+例如 Nginx 与服务同机、对外提供 HTTPS：`-trusted-proxies 127.0.0.1`。Docker 网络内的代理请填写其所在网段，例如 `-trusted-proxies 172.16.0.0/12`。
+
+管理登录限流按客户端地址分别计数（每地址每分钟 10 次失败），另有全局每分钟 100 次失败的兜底上限。
 
 ## 自动路由
 

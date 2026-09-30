@@ -298,7 +298,7 @@ export interface paths {
         put?: never;
         /**
          * Set the initial owner password
-         * @description Available only until the initial password is set. Browser requests must be same-origin; requests identified as cross-site are rejected. Password length is 12–1024 bytes.
+         * @description Available only until the initial password is set. Browser requests must be same-origin; requests identified as cross-site are rejected. A client that is not on the local machine (a loopback peer without forwarding headers, or a loopback client reported by a trusted proxy) must also present the one-time bootstrap token printed in the service log at startup; it is invalidated by a successful setup. Password length is 12–1024 bytes.
          */
         post: operations["setInitialPassword"];
         delete?: never;
@@ -1142,14 +1142,14 @@ export interface components {
          *     on this envelope rather than the management one.
          * @enum {string}
          */
-        InferenceErrorCode: "invalid_request" | "invalid_request_error" | "unsupported_media_type" | "unsupported_conversion" | "request_too_large" | "provider_not_configured" | "provider_override_disabled" | "invalid_model_identifier" | "model_not_found" | "provider_not_found" | "auto_routing_unavailable" | "routing_unavailable" | "no_eligible_candidate" | "truncated_evidence" | "upstream_unavailable" | "upstream_timeout" | "client_closed_request" | "internal_error" | "invalid_api_key" | "insufficient_scope" | "debug_route_unavailable";
+        InferenceErrorCode: "invalid_request" | "invalid_request_error" | "unsupported_media_type" | "unsupported_conversion" | "request_too_large" | "provider_not_configured" | "provider_override_disabled" | "invalid_model_identifier" | "model_not_found" | "provider_not_found" | "auto_routing_unavailable" | "routing_unavailable" | "no_eligible_candidate" | "truncated_evidence" | "upstream_unavailable" | "upstream_timeout" | "upstream_response_too_large" | "client_closed_request" | "internal_error" | "invalid_api_key" | "insufficient_scope" | "debug_route_unavailable";
         /**
          * @description The closed set of codes the management surface can answer with. Every member is stable:
          *     the console maps each one to operator-facing copy, so widening the set is a documented
          *     contract change and not an ad-hoc string.
          * @enum {string}
          */
-        AdminErrorCode: "invalid_request" | "invalid_filter" | "invalid_cursor" | "invalid_group" | "invalid_scopes" | "invalid_model" | "invalid_password" | "invalid_session" | "invalid_api_key" | "insufficient_scope" | "cross_site_request" | "too_many_attempts" | "request_too_large" | "unknown_model" | "unknown_provider" | "unknown_pair" | "not_found" | "provider_exists" | "model_exists" | "pair_exists" | "provider_not_deletable" | "provider_not_configured" | "key_not_found" | "key_name_exists" | "credential_limit" | "password_already_set" | "password_not_set" | "settings_conflict" | "restart_required" | "unsupported_setting" | "read_only_state" | "storage_error" | "snapshot_publish_failed" | "sync_failed" | "sync_unavailable" | "discovery_failed" | "metadata_lookup_failed" | "dashboard_missing";
+        AdminErrorCode: "invalid_request" | "invalid_filter" | "invalid_cursor" | "invalid_group" | "invalid_scopes" | "invalid_model" | "invalid_password" | "invalid_session" | "invalid_api_key" | "insufficient_scope" | "cross_site_request" | "bootstrap_token_required" | "too_many_attempts" | "request_too_large" | "unknown_model" | "unknown_provider" | "unknown_pair" | "not_found" | "provider_exists" | "model_exists" | "pair_exists" | "provider_not_deletable" | "provider_not_configured" | "key_not_found" | "key_name_exists" | "credential_limit" | "password_already_set" | "password_not_set" | "settings_conflict" | "restart_required" | "unsupported_setting" | "read_only_state" | "storage_error" | "snapshot_publish_failed" | "sync_failed" | "sync_unavailable" | "discovery_failed" | "metadata_lookup_failed" | "dashboard_missing";
         OpenAIError: {
             error: {
                 /** @description Authored by this service and intentionally generic. */
@@ -2687,6 +2687,8 @@ export interface operations {
                 content: {
                     "application/json": {
                         password_set: boolean;
+                        /** @description True when the password is not set and this client is not local, so setup must present the one-time bootstrap token printed in the service log. */
+                        bootstrap_token_required: boolean;
                     };
                 };
             };
@@ -2704,6 +2706,8 @@ export interface operations {
             content: {
                 "application/json": {
                     password: string;
+                    /** @description Required from a non-local client. */
+                    bootstrap_token?: string;
                 };
             };
         };

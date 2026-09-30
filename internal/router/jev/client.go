@@ -84,11 +84,13 @@ const (
 type InputMode string
 
 const (
-	// InputModeContent sends the analyzer's conversation view verbatim. It is
-	// the default, and it is the mode that makes the recommendation as
-	// well-informed as possible at the cost of sending the prompt off-process.
+	// InputModeContent sends a bounded digest of the analyzer's conversation
+	// view: excerpts of the latest user turns and of the system prompt, with
+	// assistant turns and tool outputs summarized as counts. It is the mode
+	// that makes the recommendation as well-informed as possible at the cost of
+	// sending prompt excerpts off-process.
 	InputModeContent InputMode = "content"
-	// InputModeRedacted sends the same view after deterministic, best-effort
+	// InputModeRedacted sends the same digest after deterministic, best-effort
 	// redaction: URLs, email addresses, inline data URIs, token-shaped and
 	// long high-entropy strings are replaced, and each text block is cut to a
 	// bounded UTF-8-safe excerpt. This is a reduction of what leaves the

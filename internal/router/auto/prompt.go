@@ -20,16 +20,13 @@ type prompt struct {
 //
 // The modes are a privacy/quality trade-off the operator chooses, and none of
 // them changes the wire format: they only decide what goes into the same verified
-// fields.
+// fields. The two text modes send the same bounded digest (see buildDigest) and
+// differ only in how each retained block is shaped: content keeps an excerpt of
+// the text, redacted redacts it.
 func (r *Router) buildPrompt(features analyzer.Features, view analyzer.View, envelopes []modelEnvelope, inputMode jev.InputMode) (prompt, bool) {
 	switch inputMode {
 	case jev.InputModeRedacted:
-		system := redactedSystemPrompt(view.SystemPrompt)
-		messages := redactedMessages(view.Messages)
-		if system == "" && len(messages) == 0 {
-			return prompt{}, false
-		}
-		return prompt{system: system, messages: messages, tools: view.Tools}, true
+		return buildDigest(features, view, redactedShape)
 
 	case jev.InputModeFeaturesOnly:
 		// The message is written by this process from counts and enumerations
@@ -38,10 +35,7 @@ func (r *Router) buildPrompt(features analyzer.Features, view analyzer.View, env
 		return prompt{messages: []jev.Message{{Role: "user", Content: featuresMessage(features, envelopes)}}}, true
 
 	default:
-		if strings.TrimSpace(view.SystemPrompt) == "" && !hasTextMessages(view.Messages) {
-			return prompt{}, false
-		}
-		return prompt{system: view.SystemPrompt, messages: view.Messages, tools: view.Tools}, true
+		return buildDigest(features, view, contentShape)
 	}
 }
 

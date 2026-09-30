@@ -2,10 +2,7 @@ package auto
 
 import (
 	"regexp"
-	"strings"
 	"unicode/utf8"
-
-	"github.com/nextroad-dev/Auto-Router/internal/router/jev"
 )
 
 // Redaction bounds and replacements. They are named constants, not settings: the
@@ -108,34 +105,4 @@ func truncateUTF8(value string, limit int) string {
 		cut--
 	}
 	return value[:cut]
-}
-
-// redactedSystemPrompt and redactedMessages apply redactText to the analyzer's
-// view, preserving roles, order and tool names. Tool names are identifiers the
-// client already chose to advertise, so they are not redacted; tool schemas never
-// reach this process in the first place.
-func redactedSystemPrompt(viewSystem string) string {
-	return strings.TrimSpace(redactText(viewSystem))
-}
-
-func redactedMessages(messages []jev.Message) []jev.Message {
-	redacted := make([]jev.Message, 0, len(messages))
-	for _, message := range messages {
-		text, ok := message.Content.(string)
-		if !ok {
-			// The view only ever carries text turns; anything else is dropped
-			// rather than guessed at, which is the conservative direction.
-			continue
-		}
-		cleaned := redactText(text)
-		if strings.TrimSpace(cleaned) == "" {
-			// A block that was entirely a payload carries no routing signal once
-			// redacted. Dropping it keeps the request small without inventing a
-			// turn that says nothing; the role and order of what remains are
-			// unchanged.
-			continue
-		}
-		redacted = append(redacted, jev.Message{Role: message.Role, Content: cleaned})
-	}
-	return redacted
 }

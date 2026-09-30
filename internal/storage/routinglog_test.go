@@ -15,7 +15,8 @@ func TestGroupTraceMigrationKeepsExistingModelTraceReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := applyMigrations(ctx, db, businessMigrations[:len(businessMigrations)-1]); err != nil {
+	// Stop just before version 10, which added the group-level trace columns.
+	if err := applyMigrations(ctx, db, businessMigrations[:9]); err != nil {
 		t.Fatal(err)
 	}
 	_, err = db.ExecContext(ctx, `INSERT INTO routing_jev_calls
@@ -143,5 +144,42 @@ func TestJevGroupAdoptionCountsOnlySuccessfulCallsWithoutFallback(t *testing.T) 
 	}
 	if ok != 3 || adopted != 2 {
 		t.Fatalf("jev ok/adopted = %d/%d, want 3/2", ok, adopted)
+	}
+}
+
+func TestDropJevTopModelPreservesRoutingEvents(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, Options{Path: ":memory:", BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Stop just before version 12, the migration under test.
+	if err := applyMigrations(ctx, db, businessMigrations[:11]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO routing_events
+		(request_id, started_at, duration_ms, protocol, routing_mode, status, stream, bytes_written,
+		 gateway_attempts, failover_used, usage_status, effective_model, jev_top_model)
+		VALUES ('legacy-top1', '2026-01-01T00:00:00Z', 5, 'chat_completions', 'auto', 200, 0, 0,
+		 1, 0, 'absent', 'model-a', 'model-b')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var columns int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('routing_events') WHERE name = 'jev_top_model'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if columns != 0 {
+		t.Fatal("jev_top_model column survived the migration")
+	}
+	stored, err := NewRoutingLog(db).SelectRecentEvents(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 || stored[0].Event.RequestID != "legacy-top1" || stored[0].Event.EffectiveModel != "model-a" {
+		t.Fatalf("routing event was not preserved: %+v", stored)
 	}
 }

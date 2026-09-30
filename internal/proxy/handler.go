@@ -18,6 +18,7 @@ import (
 
 	"github.com/nextroad-dev/Auto-Router/internal/logging"
 	"github.com/nextroad-dev/Auto-Router/internal/models"
+	"github.com/nextroad-dev/Auto-Router/internal/netx"
 	"github.com/nextroad-dev/Auto-Router/internal/providers"
 	"github.com/nextroad-dev/Auto-Router/internal/router/auto"
 )
@@ -119,6 +120,9 @@ type Options struct {
 	// forwarding boundary knowing what a scope is: an empty ProviderOverrideDecision
 	// means "allowed", and anything else is written as the refusal.
 	OverrideAuthorizer func(r *http.Request) ProviderOverrideDecision
+	// TrustedProxies decides whose X-Forwarded-For is believed for the logged
+	// client address. Nil trusts nobody: RemoteAddr is the client.
+	TrustedProxies *netx.TrustedProxies
 }
 
 // AutoRouter is the automatic routing seam. It is one decision plus one bounded
@@ -148,6 +152,7 @@ type Handler struct {
 	recorder              logging.Recorder
 	live                  LiveValues
 	overrideAuthorizer    func(r *http.Request) ProviderOverrideDecision
+	trustedProxies        *netx.TrustedProxies
 }
 
 // ProviderOverrideDecision is the answer to "may this request use the provider
@@ -192,6 +197,7 @@ func New(options Options) *Handler {
 		recorder:              options.Recorder,
 		live:                  options.Live,
 		overrideAuthorizer:    options.OverrideAuthorizer,
+		trustedProxies:        options.TrustedProxies,
 	}
 }
 
@@ -272,11 +278,14 @@ func protocolFor(path string) providers.Protocol {
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol providers.Protocol, requestID string) {
 	started := time.Now()
+	// One catalog snapshot serves the whole request: routing, target resolution,
+	// the executor generation and every failover attempt.
+	catalog := h.catalog.Load()
 	record := &requestLog{
 		RequestID: requestID,
 		Protocol:  string(protocol),
 		protocol:  protocol,
-		ClientIP:  clientIP(r),
+		ClientIP:  h.clientIP(r),
 	}
 	// The terminal defer is the single write point for a request: it emits the
 	// process log line and hands the same facts to the routing log as one event.
@@ -337,7 +346,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 	// now a programming-error guard rather than the client contract. A specified
 	// model takes the unchanged direct path below.
 	if model == models.AutoModelID {
-		h.forwardAuto(w, r, protocol, requestID, record, body, payload)
+		h.forwardAuto(w, r, protocol, requestID, record, body, payload, catalog)
 		return
 	}
 
@@ -352,7 +361,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 			return
 		}
 	}
-	target, err := ResolveTarget(h.catalog.Load(), model, h.allowOverride(r))
+	target, err := ResolveTarget(catalog, model, h.allowOverride(r))
 	if err != nil {
 		var targetErr *TargetError
 		if errors.As(err, &targetErr) {
@@ -383,14 +392,15 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 	}
 
 	upstreamRequest := &providers.Request{
-		Protocol:    protocol,
-		ProviderKey: target.ProviderKey,
-		Model:       target.UpstreamModel,
-		Body:        finalBody,
-		Header:      r.Header,
-		ClientIP:    record.ClientIP,
-		RequestID:   requestID,
-		Stream:      wantsStream(payload),
+		Protocol:          protocol,
+		CatalogGeneration: catalog.Generation,
+		ProviderKey:       target.ProviderKey,
+		Model:             target.UpstreamModel,
+		Body:              finalBody,
+		Header:            r.Header,
+		ClientIP:          record.ClientIP,
+		RequestID:         requestID,
+		Stream:            wantsStream(payload),
 	}
 	attemptStarted := time.Now()
 	response, err := h.executor.Do(r.Context(), upstreamRequest)
@@ -414,7 +424,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 // The rewrite is identical to the explicit path: only the top-level model field
 // changes, and everything else — nested objects, tools, reasoning and unknown
 // vendor fields — is re-encoded from raw messages exactly as it arrived.
-func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol providers.Protocol, requestID string, record *requestLog, body []byte, payload map[string]json.RawMessage) {
+func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol providers.Protocol, requestID string, record *requestLog, body []byte, payload map[string]json.RawMessage, catalog *models.Catalog) {
 	record.RoutingMode = routingModeAuto
 	if h.autoRouter == nil {
 		// An unassembled stack is a configuration state, not a routing outcome: it
@@ -432,6 +442,7 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 	}
 	target, err := h.autoRouter.Route(r.Context(), auto.Request{
 		Protocol: protocol, Body: body, RequestID: requestID, Runtime: autoSettings,
+		Catalog: catalog,
 	})
 	if err != nil {
 		h.writeAutoError(w, record, err)
@@ -450,14 +461,15 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 			return
 		}
 		upstreamRequest := &providers.Request{
-			Protocol:    protocol,
-			ProviderKey: target.ProviderKey,
-			Model:       target.UpstreamModel,
-			Body:        finalBody,
-			Header:      r.Header,
-			ClientIP:    record.ClientIP,
-			RequestID:   requestID,
-			Stream:      stream,
+			Protocol:          protocol,
+			CatalogGeneration: catalog.Generation,
+			ProviderKey:       target.ProviderKey,
+			Model:             target.UpstreamModel,
+			Body:              finalBody,
+			Header:            r.Header,
+			ClientIP:          record.ClientIP,
+			RequestID:         requestID,
+			Stream:            stream,
 		}
 		attemptStarted := time.Now()
 		response, err := h.executor.Do(r.Context(), upstreamRequest)
@@ -525,6 +537,8 @@ func executorErrorCode(err error) string {
 		return "client_closed_request"
 	case errors.Is(err, providers.ErrUpstreamTimeout):
 		return "upstream_timeout"
+	case errors.Is(err, providers.ErrResponseTooLarge):
+		return "upstream_response_too_large"
 	default:
 		return "upstream_unavailable"
 	}
@@ -600,6 +614,9 @@ func (h *Handler) writeExecutorError(w http.ResponseWriter, record *requestLog, 
 	case errors.Is(err, providers.ErrUpstreamTimeout):
 		record.fail(http.StatusGatewayTimeout, "upstream_timeout")
 		writeError(w, http.StatusGatewayTimeout, "api_error", "upstream_timeout", "the provider did not respond in time")
+	case errors.Is(err, providers.ErrResponseTooLarge):
+		record.fail(http.StatusBadGateway, "upstream_response_too_large")
+		writeError(w, http.StatusBadGateway, "api_error", "upstream_response_too_large", "the provider response exceeded the conversion size limit")
 	default:
 		record.fail(http.StatusBadGateway, "upstream_unavailable")
 		writeError(w, http.StatusBadGateway, "api_error", "upstream_unavailable", "the provider could not be reached")
@@ -798,6 +815,12 @@ func rewriteModel(body []byte) (string, map[string]json.RawMessage, error) {
 	if payload == nil {
 		return "", nil, errors.New("the request body must be a JSON object")
 	}
+	// Exactly one JSON document is accepted. A second document or any other
+	// trailing content would otherwise be dropped silently when the payload is
+	// re-encoded, which is the same contract the management API enforces.
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return "", nil, errors.New("the request body must contain exactly one JSON object")
+	}
 	rawModel, ok := payload["model"]
 	if !ok {
 		return "", nil, errors.New("the request body must contain a model field")
@@ -808,6 +831,9 @@ func rewriteModel(body []byte) (string, map[string]json.RawMessage, error) {
 	}
 	if strings.TrimSpace(model) == "" {
 		return "", nil, errors.New("the model field must be a non-empty string")
+	}
+	if _, err := parseStream(payload); err != nil {
+		return "", nil, err
 	}
 	return model, payload, nil
 }
@@ -825,18 +851,36 @@ func setModel(payload map[string]json.RawMessage, model string) ([]byte, error) 
 	return json.Marshal(payload)
 }
 
-// wantsStream reports whether the client asked for SSE. It is used for logging
-// and for adapters that choose a streaming transport; the response relay itself
-// is identical either way.
-func wantsStream(payload map[string]json.RawMessage) bool {
+// errInvalidStream is the ingress refusal for a stream field that is present but
+// not a JSON boolean. It is rejected before routing so every provider kind sees
+// the same contract instead of pass-through upstreams rejecting the value while
+// converted ones silently treat it as false.
+var errInvalidStream = errors.New("the stream field must be a boolean")
+
+// parseStream validates the optional top-level stream field: absent means false,
+// true and false are accepted, and every other JSON value (including null) is an
+// error.
+func parseStream(payload map[string]json.RawMessage) (bool, error) {
 	raw, ok := payload["stream"]
 	if !ok {
-		return false
+		return false, nil
 	}
-	var stream bool
-	if err := json.Unmarshal(raw, &stream); err != nil {
-		return false
+	switch string(bytes.TrimSpace(raw)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, errInvalidStream
 	}
+}
+
+// wantsStream reports whether the client asked for SSE. It is used for logging
+// and for adapters that choose a streaming transport; the response relay itself
+// is identical either way. The payload has already been validated by
+// rewriteModel, so an invalid value cannot reach this point.
+func wantsStream(payload map[string]json.RawMessage) bool {
+	stream, _ := parseStream(payload)
 	return stream
 }
 
@@ -860,14 +904,11 @@ func isClosedConnection(err error) bool {
 	return strings.Contains(message, "broken pipe") || strings.Contains(message, "connection reset by peer")
 }
 
-func clientIP(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		if index := strings.IndexByte(forwarded, ','); index >= 0 {
-			return strings.TrimSpace(forwarded[:index])
-		}
-		return strings.TrimSpace(forwarded)
-	}
-	return r.RemoteAddr
+// clientIP returns the bare client IP for the request log. Forwarding headers
+// are believed only from a configured trusted proxy; a directly connected client
+// cannot choose the address that is recorded.
+func (h *Handler) clientIP(r *http.Request) string {
+	return h.trustedProxies.ClientIP(r)
 }
 
 // RequestIDFor returns the correlation identifier for a request: the inbound
@@ -1006,6 +1047,11 @@ type requestLog struct {
 	// jevTrace is the optional Jev diagnostic trace of the automatic path. It is
 	// nil on the specified-model path and when the trace is disabled.
 	jevTrace *logging.JevTrace
+	// jevFailureStatus and jevFailureDetail explain a Jev call the endpoint
+	// refused with a non-2xx status. They reach the service log line only and
+	// are never stored in the routing log.
+	jevFailureStatus int
+	jevFailureDetail string
 	// routed reports whether a routing decision was made for this request. It is
 	// what decides the presence of routing_latency_ms in the stored row: the column
 	// is NULL when no decision happened, and 0 when one happened inside the same
@@ -1119,6 +1165,8 @@ func (l *requestLog) applyRoutingDecision(target auto.Target) {
 	l.GatewayAttempts = target.Attempts
 	l.RoutingLatency = target.RoutingLatency
 	l.JevLatency = target.JevLatency
+	l.jevFailureStatus = target.JevFailureStatus
+	l.jevFailureDetail = target.JevFailureDetail
 	l.routed = true
 	// The trace is metadata only: identifiers, counts, durations and the
 	// normalized distribution. The routing log stores it when its own switch is
@@ -1221,6 +1269,12 @@ func (l *requestLog) emit(logger *slog.Logger, started time.Time) {
 		}
 		if l.JevLatency != 0 {
 			attributes = append(attributes, "jev_latency_ms", l.JevLatency.Milliseconds())
+		}
+		if l.jevFailureStatus != 0 {
+			attributes = append(attributes, "jev_failure_status", l.jevFailureStatus)
+			if l.jevFailureDetail != "" {
+				attributes = append(attributes, "jev_failure_detail", l.jevFailureDetail)
+			}
 		}
 	}
 	if l.upstreamStatus != 0 && l.upstreamStatus != status {

@@ -54,8 +54,9 @@ type JevConfig struct {
 	// It is reserved for the stage 8 debug trail.
 	CaptureRawIO bool `json:"capture_raw_io"`
 	// InputMode selects how much of the conversation the automatic routing path
-	// sends to Jev: content (the view as extracted), redacted (the same view
-	// after best-effort redaction and bounded excerpts) or features_only (no
+	// sends to Jev: content (a bounded digest of the latest user turns, with
+	// other turns summarized), redacted (the same digest after best-effort
+	// redaction) or features_only (no
 	// client text at all, just counts and enumerations). It is orthogonal to
 	// Enabled: "Jev is on" and "Jev may see the prompt" are separate decisions.
 	InputMode string `json:"input_mode"`
