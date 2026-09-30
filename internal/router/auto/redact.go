@@ -106,3 +106,10 @@ func truncateUTF8(value string, limit int) string {
 	}
 	return value[:cut]
 }
+
+// RedactText applies the redacted input mode's reduction to text that leaves this
+// process by another route, such as an upstream error excerpt in the routing log.
+// Sharing the one rule set means a pattern added here protects both.
+func RedactText(text string) string {
+	return redactText(text)
+}

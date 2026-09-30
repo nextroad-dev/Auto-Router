@@ -183,3 +183,35 @@ func TestDropJevTopModelPreservesRoutingEvents(t *testing.T) {
 		t.Fatalf("routing event was not preserved: %+v", stored)
 	}
 }
+
+func TestRoutingLogRoundTripsAttemptErrorDetail(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, Options{Path: ":memory:", BusyTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	store := NewRoutingLog(db)
+	started := time.Now().UTC()
+	attempts := []logging.Attempt{
+		{RequestID: "attempt-detail", AttemptIndex: 1, StartedAt: started, Status: 400, ErrorDetail: "Unsupported parameter (param=reasoning_effort)", UsageStatus: logging.UsageStatusAbsent},
+		{RequestID: "attempt-detail", AttemptIndex: 2, StartedAt: started, Status: 200, UsageStatus: logging.UsageStatusAbsent},
+	}
+	if err := store.InsertAttempts(ctx, attempts); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.SelectAttemptsForRequest(ctx, "attempt-detail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 2 || stored[0].Attempt.ErrorDetail != attempts[0].ErrorDetail || stored[1].Attempt.ErrorDetail != "" {
+		t.Fatalf("stored attempts = %+v, want the error detail on the first only", stored)
+	}
+	oversized := logging.Attempt{RequestID: "attempt-detail", AttemptIndex: 3, StartedAt: started, ErrorDetail: string(make([]byte, logging.MaxAttemptErrorDetailBytes+1)), UsageStatus: logging.UsageStatusAbsent}
+	if err := store.InsertAttempts(ctx, []logging.Attempt{oversized}); err == nil {
+		t.Fatal("an unbounded error detail was stored")
+	}
+}

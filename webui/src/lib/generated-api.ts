@@ -1802,6 +1802,12 @@ export interface components {
             status?: number | null;
             /** @description The failure recorded for this upstream attempt, if it did not complete. */
             error_code?: components["schemas"]["InferenceErrorCode"] | null;
+            /**
+             * @description For an attempt the upstream answered with a non-2xx status, a bounded excerpt of the upstream
+             *     error message with URLs, email addresses, credentials and long opaque strings redacted. It is
+             *     null for a successful attempt and when the error body carried no readable message.
+             */
+            error_detail?: string | null;
             /** Format: int64 */
             input_tokens?: number | null;
             /** Format: int64 */

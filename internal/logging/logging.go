@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Recorder is the request path's write seam. It is implemented by *Writer and is
@@ -146,7 +147,14 @@ type Usage struct {
 	Source string
 }
 
+// MaxAttemptErrorDetailBytes bounds Attempt.ErrorDetail. The detail is an excerpt
+// of an upstream error message, never a body: this bound is what keeps it one.
+const MaxAttemptErrorDetailBytes = 512
+
 // Attempt records one upstream try without storing request or response bodies.
+// ErrorDetail is the one exception, and a narrow one: for an attempt the upstream
+// answered with a non-2xx status it carries a bounded, redacted excerpt of the
+// error message, so an operator can see why without reproducing the request.
 type Attempt struct {
 	RequestID    string
 	AttemptIndex int
@@ -157,6 +165,7 @@ type Attempt struct {
 	CompletedAt  *time.Time
 	Status       int
 	ErrorCode    string
+	ErrorDetail  string
 	InputTokens  *int64
 	OutputTokens *int64
 	TotalTokens  *int64
@@ -176,6 +185,9 @@ func (a Attempt) Valid() error {
 	}
 	if !ValidUsageStatus(a.UsageStatus) {
 		return errors.New("attempt usage status is invalid")
+	}
+	if len(a.ErrorDetail) > MaxAttemptErrorDetailBytes || !utf8.ValidString(a.ErrorDetail) {
+		return errors.New("attempt error detail must be bounded UTF-8")
 	}
 	for _, count := range []*int64{a.InputTokens, a.OutputTokens, a.TotalTokens} {
 		if count != nil && *count < 0 {

@@ -333,6 +333,17 @@ var businessMigrations = []migration{
 			ALTER TABLE routing_events DROP COLUMN jev_top_model;
 		`,
 	},
+	{
+		Version: 13,
+		Name:    "add_attempt_error_detail",
+		// error_detail is a bounded, redacted excerpt of an upstream error message
+		// for an attempt answered with a non-2xx status. The bound is in bytes in
+		// Go (logging.MaxAttemptErrorDetailBytes); SQLite counts characters, which
+		// can only be fewer, so the check here is a backstop, not the contract.
+		SQL: `
+			ALTER TABLE routing_attempts ADD COLUMN error_detail TEXT CHECK (error_detail IS NULL OR length(error_detail) <= 512);
+		`,
+	},
 }
 
 // Migrate initializes the migration journal and applies this binary's schema.

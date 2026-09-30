@@ -3319,6 +3319,13 @@ components:
           oneOf:
             - $ref: '#/components/schemas/InferenceErrorCode'
             - type: 'null'
+        error_detail:
+          type: [string, 'null']
+          maxLength: 512
+          description: |
+            For an attempt the upstream answered with a non-2xx status, a bounded excerpt of the upstream
+            error message with URLs, email addresses, credentials and long opaque strings redacted. It is
+            null for a successful attempt and when the error body carried no readable message.
         input_tokens: {type: [integer, 'null'], format: int64}
         output_tokens: {type: [integer, 'null'], format: int64}
         total_tokens: {type: [integer, 'null'], format: int64}

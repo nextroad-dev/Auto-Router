@@ -79,6 +79,7 @@ type logAttemptPayload struct {
 	CompletedAt  *string `json:"completed_at"`
 	Status       *int    `json:"status"`
 	ErrorCode    *string `json:"error_code"`
+	ErrorDetail  *string `json:"error_detail"`
 	InputTokens  *int64  `json:"input_tokens"`
 	OutputTokens *int64  `json:"output_tokens"`
 	TotalTokens  *int64  `json:"total_tokens"`
@@ -165,7 +166,7 @@ func (h *adminHandler) handleLogList(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, stored := range attempts {
 			a := stored.Attempt
-			item.Attempts = append(item.Attempts, logAttemptPayload{ID: stored.ID, Index: a.AttemptIndex, Group: optionalString(a.GroupName), Provider: optionalString(a.ProviderKey), Model: optionalString(a.ModelID), StartedAt: a.StartedAt.UTC().Format(time.RFC3339Nano), CompletedAt: formatOptionalTime(a.CompletedAt), Status: optionalStatus(a.Status), ErrorCode: optionalString(a.ErrorCode), InputTokens: a.InputTokens, OutputTokens: a.OutputTokens, TotalTokens: a.TotalTokens, UsageStatus: a.UsageStatus})
+			item.Attempts = append(item.Attempts, logAttemptPayload{ID: stored.ID, Index: a.AttemptIndex, Group: optionalString(a.GroupName), Provider: optionalString(a.ProviderKey), Model: optionalString(a.ModelID), StartedAt: a.StartedAt.UTC().Format(time.RFC3339Nano), CompletedAt: formatOptionalTime(a.CompletedAt), Status: optionalStatus(a.Status), ErrorCode: optionalString(a.ErrorCode), ErrorDetail: optionalString(a.ErrorDetail), InputTokens: a.InputTokens, OutputTokens: a.OutputTokens, TotalTokens: a.TotalTokens, UsageStatus: a.UsageStatus})
 		}
 		// The trace is fetched per event only when one may exist, so a page of
 		// events without traces costs one query rather than one per row in the worst

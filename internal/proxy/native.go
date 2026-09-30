@@ -271,7 +271,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		response, callErr := h.executor.Do(r.Context(), upstream)
 		if callErr != nil {
 			code := executorErrorCode(callErr)
-			h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, 0, code, logging.Usage{})
+			h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, 0, code, "", logging.Usage{})
 			if errors.Is(callErr, providers.ErrUnsupportedConversion) {
 				record.fail(http.StatusUnprocessableEntity, "unsupported_conversion")
 				writeError(w, http.StatusUnprocessableEntity, "invalid_request_error", "unsupported_conversion", "the selected provider cannot preserve this native request")
@@ -298,7 +298,8 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		if requestedModel == models.AutoModelID && response.StatusCode >= http.StatusBadRequest && attempt < autoAttemptLimit(autoTarget) {
 			next, retry := h.autoRouter.Failover(r.Context(), autoTarget, auto.AttemptFailure{StatusCode: response.StatusCode})
 			if retry {
-				h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", logging.Usage{})
+				detail := upstreamErrorDetail(readErrorOpening(response.Body))
+				h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", detail, logging.Usage{})
 				_ = response.Body.Close()
 				autoTarget = next
 				target = targetFromAuto(catalog, autoTarget)
@@ -315,7 +316,7 @@ func (h *Handler) native(w http.ResponseWriter, r *http.Request, protocol provid
 		defer response.Body.Close()
 		record.upstreamStatus = response.StatusCode
 		h.relayNative(w, r, record, response)
-		h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", record.usage)
+		h.recordAttempt(r, record, attempt, group, target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", record.upstreamErrorDetail, record.usage)
 		return
 	}
 }
@@ -572,8 +573,16 @@ func (h *Handler) relayNative(w http.ResponseWriter, r *http.Request, record *re
 	if h.routingLogEnabled(r) {
 		observer = &nativeUsageObserver{stream: record.stream, contentType: response.Header.Get("Content-Type")}
 	}
-	written, err := copyFlushing(w, response.Body, http.NewResponseController(w), observer.observe)
+	var capture *errorCapture
+	if response.StatusCode >= http.StatusBadRequest {
+		capture = &errorCapture{}
+	}
+	written, err := copyFlushing(w, response.Body, http.NewResponseController(w), func(chunk []byte) {
+		observer.observe(chunk)
+		capture.observe(chunk)
+	})
 	record.BytesWritten = written
+	record.upstreamErrorDetail = capture.detail()
 	if err != nil && clientGone(r, err) {
 		record.canceled()
 	}

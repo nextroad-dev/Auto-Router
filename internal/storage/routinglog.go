@@ -125,8 +125,8 @@ func (l *RoutingLog) InsertAttempts(ctx context.Context, attempts []logging.Atte
 	defer tx.Rollback()
 	statement, err := tx.PrepareContext(ctx, `INSERT INTO routing_attempts
 		(request_id, attempt_index, group_name, provider_key, model_id, started_at, completed_at, status, error_code,
-		 input_tokens, output_tokens, total_tokens, usage_status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 error_detail, input_tokens, output_tokens, total_tokens, usage_status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare routing attempt insert: %w", err)
 	}
@@ -141,7 +141,7 @@ func (l *RoutingLog) InsertAttempts(ctx context.Context, attempts []logging.Atte
 			status = a.Status
 		}
 		_, err := statement.ExecContext(ctx, a.RequestID, a.AttemptIndex, nullString(a.GroupName), nullString(a.ProviderKey), nullString(a.ModelID),
-			formatTimestamp(a.StartedAt), completed, status, nullString(a.ErrorCode), nullInt64(a.InputTokens), nullInt64(a.OutputTokens), nullInt64(a.TotalTokens), a.UsageStatus)
+			formatTimestamp(a.StartedAt), completed, status, nullString(a.ErrorCode), nullString(a.ErrorDetail), nullInt64(a.InputTokens), nullInt64(a.OutputTokens), nullInt64(a.TotalTokens), a.UsageStatus)
 		if err != nil {
 			return fmt.Errorf("insert routing attempt %q/%d: %w", a.RequestID, a.AttemptIndex, err)
 		}
@@ -182,7 +182,7 @@ func (l *RoutingLog) SelectAttemptsForRequest(ctx context.Context, requestID str
 	if l.db == nil {
 		return nil, errors.New("the routing log has no database")
 	}
-	rows, err := l.db.QueryContext(ctx, `SELECT id, request_id, attempt_index, group_name, provider_key, model_id, started_at, completed_at, status, error_code, input_tokens, output_tokens, total_tokens, usage_status FROM routing_attempts WHERE request_id=? ORDER BY attempt_index`, requestID)
+	rows, err := l.db.QueryContext(ctx, `SELECT id, request_id, attempt_index, group_name, provider_key, model_id, started_at, completed_at, status, error_code, error_detail, input_tokens, output_tokens, total_tokens, usage_status FROM routing_attempts WHERE request_id=? ORDER BY attempt_index`, requestID)
 	if err != nil {
 		return nil, fmt.Errorf("read routing attempts: %w", err)
 	}
@@ -190,17 +190,18 @@ func (l *RoutingLog) SelectAttemptsForRequest(ctx context.Context, requestID str
 	result := make([]StoredAttempt, 0)
 	for rows.Next() {
 		var e StoredAttempt
-		var group, provider, model, completed, errorCode sql.NullString
+		var group, provider, model, completed, errorCode, errorDetail sql.NullString
 		var status sql.NullInt64
 		var in, out, total sql.NullInt64
 		var started string
-		if err := rows.Scan(&e.ID, &e.Attempt.RequestID, &e.Attempt.AttemptIndex, &group, &provider, &model, &started, &completed, &status, &errorCode, &in, &out, &total, &e.Attempt.UsageStatus); err != nil {
+		if err := rows.Scan(&e.ID, &e.Attempt.RequestID, &e.Attempt.AttemptIndex, &group, &provider, &model, &started, &completed, &status, &errorCode, &errorDetail, &in, &out, &total, &e.Attempt.UsageStatus); err != nil {
 			return nil, fmt.Errorf("scan routing attempt: %w", err)
 		}
 		e.Attempt.GroupName = group.String
 		e.Attempt.ProviderKey = provider.String
 		e.Attempt.ModelID = model.String
 		e.Attempt.ErrorCode = errorCode.String
+		e.Attempt.ErrorDetail = errorDetail.String
 		e.Attempt.StartedAt, err = time.Parse(time.RFC3339Nano, started)
 		if err != nil {
 			return nil, fmt.Errorf("parse attempt start time: %w", err)

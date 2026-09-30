@@ -405,7 +405,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 	attemptStarted := time.Now()
 	response, err := h.executor.Do(r.Context(), upstreamRequest)
 	if err != nil {
-		h.recordAttempt(r, record, 1, "", target.ProviderKey, target.Pair.ModelID, attemptStarted, 0, executorErrorCode(err), logging.Usage{})
+		h.recordAttempt(r, record, 1, "", target.ProviderKey, target.Pair.ModelID, attemptStarted, 0, executorErrorCode(err), "", logging.Usage{})
 		h.writeExecutorError(w, record, err)
 		return
 	}
@@ -413,7 +413,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, protocol provi
 	record.upstreamStatus = response.StatusCode
 	record.stream = upstreamRequest.Stream
 	h.relay(w, r, record, response)
-	h.recordAttempt(r, record, 1, "", target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", record.usage)
+	h.recordAttempt(r, record, 1, "", target.ProviderKey, target.Pair.ModelID, attemptStarted, response.StatusCode, "", record.upstreamErrorDetail, record.usage)
 }
 
 // forwardAuto resolves model="auto" and forwards the result. It is separated from
@@ -474,7 +474,7 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 		attemptStarted := time.Now()
 		response, err := h.executor.Do(r.Context(), upstreamRequest)
 		if err != nil {
-			h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, 0, executorErrorCode(err), logging.Usage{})
+			h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, 0, executorErrorCode(err), "", logging.Usage{})
 			failure := err
 			// The attempt bound is checked before the orchestrator is consulted, so
 			// a router that would always say "retry" cannot turn this loop into an
@@ -497,7 +497,10 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 		if response.StatusCode >= http.StatusBadRequest && attempt < autoAttemptLimit(target) {
 			next, retry := h.autoRouter.Failover(r.Context(), target, auto.AttemptFailure{StatusCode: response.StatusCode})
 			if retry {
-				h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, response.StatusCode, "", logging.Usage{})
+				// The body is discarded, so its opening can be read for the attempt's
+				// error detail without affecting what the client receives.
+				detail := upstreamErrorDetail(readErrorOpening(response.Body))
+				h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, response.StatusCode, "", detail, logging.Usage{})
 				_ = response.Body.Close()
 				target = next
 				record.FailoverUsed = true
@@ -512,7 +515,7 @@ func (h *Handler) forwardAuto(w http.ResponseWriter, r *http.Request, protocol p
 		// the response may already be a stream, and splicing a new upstream
 		// response into an answered request is exactly what stage 3 forbids.
 		h.relay(w, r, record, response)
-		h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, response.StatusCode, "", record.usage)
+		h.recordAttempt(r, record, attempt, string(target.SelectedGroup), target.ProviderKey, target.Model, attemptStarted, response.StatusCode, "", record.upstreamErrorDetail, record.usage)
 		return
 	}
 }
@@ -547,7 +550,7 @@ func executorErrorCode(err error) string {
 // recordAttempt uses the writer's optional attempt seam so existing embedded
 // Recorder implementations remain compatible. It records actual upstream tries,
 // including safe pre-request failures that led to a fallback.
-func (h *Handler) recordAttempt(r *http.Request, request *requestLog, index int, group, provider, model string, started time.Time, status int, code string, usage logging.Usage) {
+func (h *Handler) recordAttempt(r *http.Request, request *requestLog, index int, group, provider, model string, started time.Time, status int, code, detail string, usage logging.Usage) {
 	if !h.routingLogEnabled(r) {
 		return
 	}
@@ -562,7 +565,7 @@ func (h *Handler) recordAttempt(r *http.Request, request *requestLog, index int,
 	recorder.RecordAttempt(logging.Attempt{
 		RequestID: request.RequestID, AttemptIndex: index, GroupName: group,
 		ProviderKey: provider, ModelID: model, StartedAt: started, CompletedAt: &completed,
-		Status: status, ErrorCode: code, InputTokens: usage.InputTokens,
+		Status: status, ErrorCode: code, ErrorDetail: detail, InputTokens: usage.InputTokens,
 		OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, UsageStatus: usage.Status,
 	})
 }
@@ -638,8 +641,17 @@ func (h *Handler) relay(w http.ResponseWriter, r *http.Request, record *requestL
 	if h.routingLogEnabled(r) {
 		observer = newUsageObserver(record.protocol, response.Header.Get("Content-Type"), record.stream)
 	}
-	written, err := copyFlushing(w, response.Body, controller, observer.observe)
+	// An error body is also captured, bounded, for the attempt's error detail.
+	var capture *errorCapture
+	if response.StatusCode >= http.StatusBadRequest {
+		capture = &errorCapture{}
+	}
+	written, err := copyFlushing(w, response.Body, controller, func(chunk []byte) {
+		observer.observe(chunk)
+		capture.observe(chunk)
+	})
 	record.BytesWritten = written
+	record.upstreamErrorDetail = capture.detail()
 	if err != nil && clientGone(r, err) {
 		record.canceled()
 	}
@@ -1059,9 +1071,12 @@ type requestLog struct {
 	routed bool
 
 	upstreamStatus int
-	stream         bool
-	BytesWritten   int64
-	canceledFlag   bool
+	// upstreamErrorDetail is the redacted excerpt of a relayed non-2xx upstream
+	// body. It is stored on the attempt and written to the service log line.
+	upstreamErrorDetail string
+	stream              bool
+	BytesWritten        int64
+	canceledFlag        bool
 }
 
 // recordEvent converts the request record into a routing log event. The mapping is
@@ -1282,6 +1297,9 @@ func (l *requestLog) emit(logger *slog.Logger, started time.Time) {
 	}
 	if l.ErrorCode != "" {
 		attributes = append(attributes, "error_code", l.ErrorCode)
+	}
+	if l.upstreamErrorDetail != "" {
+		attributes = append(attributes, "upstream_error_detail", l.upstreamErrorDetail)
 	}
 	switch {
 	case status >= 500:
