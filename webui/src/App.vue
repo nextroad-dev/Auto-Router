@@ -5,9 +5,10 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import JfButton from '@/components/JfButton.vue'
 import JfIcon from '@/components/JfIcon.vue'
+import ConfirmHost from '@/components/ConfirmHost.vue'
 import { api, setUnauthorizedHandler } from '@/lib/api'
 import { clearSession } from '@/lib/session'
-import { savedToastVisible } from '@/lib/save-toast'
+import { savedToastMessage, savedToastVisible } from '@/lib/save-toast'
 import { useOverlayFocus } from '@/lib/overlay'
 import { router } from '@/router'
 
@@ -206,8 +207,10 @@ async function logout() {
     </div>
 
     <div v-if="savedToastVisible" class="save-toast" role="status" aria-live="polite" aria-atomic="true">
-      更改已保存
+      {{ savedToastMessage }}
     </div>
+
+    <ConfirmHost />
   </div>
 </template>
 

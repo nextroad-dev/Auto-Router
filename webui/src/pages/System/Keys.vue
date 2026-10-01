@@ -2,6 +2,8 @@
 import { onMounted, reactive, ref } from 'vue'
 import { api, createInboundKeyRequest, type InboundKey, type OneTimeKey } from '@/lib/api'
 import { errorNotice } from '@/lib/errors'
+import { confirmAction } from '@/lib/confirm'
+import { showSavedToast } from '@/lib/save-toast'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfAlert from '@/components/JfAlert.vue'
 import JfBadge from '@/components/JfBadge.vue'
@@ -79,7 +81,13 @@ async function createKey() {
 }
 
 async function rotateKey(key: InboundKey) {
-  if (!window.confirm(`确定要轮换密钥“${key.name}”吗？旧密钥将立即失效，所有使用旧密钥的客户端需同步更新。`)) return
+  const confirmed = await confirmAction({
+    title: `轮换推理密钥“${key.name}”？`,
+    description: '旧密钥立即失效，所有使用它的客户端都需要换成新密钥。',
+    confirmLabel: '轮换密钥',
+    danger: true,
+  })
+  if (!confirmed) return
   loading.value = true
   try {
     const result = await api.postEmpty<OneTimeKey>(`/admin/v1/keys/${encodeURIComponent(key.name)}/rotate`)
@@ -93,10 +101,17 @@ async function rotateKey(key: InboundKey) {
 }
 
 async function deleteKey(key: InboundKey) {
-  if (!window.confirm(`确定要撤销并删除密钥“${key.name}”吗？使用该密钥的推理请求将被立刻拒绝。`)) return
+  const confirmed = await confirmAction({
+    title: `撤销推理密钥“${key.name}”？`,
+    description: '使用该密钥的请求会立即被拒绝。撤销后记录保留在列表中，但不能再轮换或恢复。',
+    confirmLabel: '撤销密钥',
+    danger: true,
+  })
+  if (!confirmed) return
   loading.value = true
   try {
     await api.delete(`/admin/v1/keys/${encodeURIComponent(key.name)}`)
+    showSavedToast(`已撤销推理密钥：${key.name}`)
     await fetchKeys()
   } catch (cause) {
     error.value = errorNotice(cause)
@@ -167,7 +182,7 @@ const columns: JfColumn[] = [
 
           <template #cell-active="{ row }">
             <JfBadge :tone="row.active ? 'success' : 'neutral'">
-              {{ row.active ? '有效' : '已失效' }}
+              {{ row.active ? '有效' : '已撤销' }}
             </JfBadge>
           </template>
 
@@ -176,10 +191,11 @@ const columns: JfColumn[] = [
           </template>
 
           <template #cell-actions="{ row }">
-            <div class="jf-action-group justify-end">
+            <div v-if="row.active" class="jf-action-group justify-end">
               <JfButton size="sm" variant="ghost" icon="arrow-path-rounded-square" @click="rotateKey(row)">轮换</JfButton>
               <JfButton size="sm" variant="danger-ghost" icon="trash" @click="deleteKey(row)">撤销</JfButton>
             </div>
+            <span v-else class="jf-caption text-ink-secondary">无可用操作</span>
           </template>
         </JfTable>
       </div>

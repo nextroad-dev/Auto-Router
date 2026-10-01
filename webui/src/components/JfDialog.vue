@@ -12,12 +12,15 @@ const props = withDefaults(defineProps<{
   /** A destructive confirmation is announced as an alertdialog. */
   role?: 'dialog' | 'alertdialog'
   closeLabel?: string
+  /** `confirm` stacks above drawers and other dialogs it may be raised from. */
+  layer?: 'modal' | 'confirm'
 }>(), {
   description: undefined,
   size: 'md',
   dismissible: true,
   role: 'dialog',
   closeLabel: '关闭',
+  layer: 'modal',
 })
 
 const emit = defineEmits<{ 'update:open': [boolean] }>()
@@ -40,7 +43,7 @@ function onScrimClick() {
 <template>
   <Teleport to="body">
     <Transition name="jf-dialog">
-      <div v-if="open" class="jf-dialog-root" @click.self="onScrimClick">
+      <div v-if="open" class="jf-dialog-root" :data-layer="layer" @click.self="onScrimClick">
         <div class="jf-dialog-scrim" aria-hidden="true" />
         <div
           ref="panel"
@@ -80,6 +83,10 @@ function onScrimClick() {
   display: grid;
   place-items: center;
   padding: var(--jf-space-4);
+}
+
+.jf-dialog-root[data-layer='confirm'] {
+  z-index: calc(var(--jf-z-modal) + 5);
 }
 
 .jf-dialog-scrim {

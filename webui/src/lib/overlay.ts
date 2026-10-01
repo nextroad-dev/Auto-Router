@@ -12,6 +12,10 @@ const FOCUSABLE = [
 let locks = 0
 let savedBodyOverflow = ''
 
+// Open surfaces in opening order. Only the topmost one answers Escape and contains Tab, so a
+// confirmation raised from inside a drawer neither closes the drawer nor loses focus to it.
+const openStack: symbol[] = []
+
 function lockPageScroll() {
   if (locks === 0) {
     savedBodyOverflow = document.body.style.overflow
@@ -38,9 +42,15 @@ export function useOverlayFocus(options: {
   onEscape?: () => void
 }) {
   let returnFocusTo: HTMLElement | null = null
+  const token = Symbol('overlay')
+
+  function leaveStack() {
+    const index = openStack.indexOf(token)
+    if (index >= 0) openStack.splice(index, 1)
+  }
 
   function onKeyDown(event: KeyboardEvent) {
-    if (!options.open.value) return
+    if (!options.open.value || openStack.at(-1) !== token) return
 
     if (event.key === 'Escape') {
       if (options.dismissible && options.dismissible.value === false) return
@@ -77,6 +87,7 @@ export function useOverlayFocus(options: {
   watch(options.open, async (value) => {
     if (value) {
       returnFocusTo = document.activeElement as HTMLElement | null
+      openStack.push(token)
       lockPageScroll()
       document.addEventListener('keydown', onKeyDown, true)
       await nextTick()
@@ -87,6 +98,7 @@ export function useOverlayFocus(options: {
     }
 
     document.removeEventListener('keydown', onKeyDown, true)
+    leaveStack()
     releasePageScroll()
     returnFocusTo?.focus?.()
     returnFocusTo = null
@@ -95,6 +107,7 @@ export function useOverlayFocus(options: {
   onScopeDispose(() => {
     if (options.open.value) {
       document.removeEventListener('keydown', onKeyDown, true)
+      leaveStack()
       releasePageScroll()
     }
   })

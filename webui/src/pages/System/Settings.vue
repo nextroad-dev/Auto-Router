@@ -23,6 +23,7 @@ import {
 } from '@/lib/settings-form'
 import { clearSession } from '@/lib/session'
 import { showSavedToast } from '@/lib/save-toast'
+import { confirmAction } from '@/lib/confirm'
 
 const router = useRouter()
 type SettingsChange = components['schemas']['SettingsApplied'] | components['schemas']['SettingsReset']
@@ -42,7 +43,6 @@ const dirtySettings = new Set<string>()
 const pendingTextPaths = new Set<string>()
 const settingVersions = new Map<string, number>()
 const textSaves = new Map<string, ReturnType<typeof createDebouncedSave>>()
-const resetConfirm = ref(false)
 
 const inputModes = (['redacted', 'content', 'features_only'] as const)
   .map(mode => ({ label: enumLabel('inputMode', mode), value: mode }))
@@ -290,6 +290,16 @@ async function persistSettings(requestedPaths: Set<string>) {
   }
 }
 
+async function confirmReset() {
+  const confirmed = await confirmAction({
+    title: '重置全部运行时覆盖？',
+    description: '所有在管理台修改过的设置和 Jev 密钥都会恢复为启动配置。此操作不可撤销。',
+    confirmLabel: '确认重置',
+    danger: true,
+  })
+  if (confirmed) await resetSettings()
+}
+
 async function resetSettings() {
   saving.value = true
   error.value = undefined
@@ -301,8 +311,7 @@ async function resetSettings() {
   try {
     const result = await api.delete<SettingsChange>('/admin/v1/settings')
     settingsResponse(result, false)
-    resetConfirm.value = false
-    showSavedToast()
+    showSavedToast('已重置全部运行时覆盖')
   } catch (cause) {
     error.value = errorNotice(cause)
   } finally {
@@ -439,7 +448,7 @@ onMounted(() => { void loadSettings() })
     <JfCard title="路由策略与置信度">
       <div class="grid gap-6">
         <div class="grid gap-5 sm:grid-cols-2">
-          <JfField label="Jev 选组最低置信度（低于此值使用默认组）" name="policy-low-confidence">
+          <JfField :label="value('jev.enabled', false) ? 'Jev 选组最低置信度（低于此值使用默认组）' : 'Jev 选组最低置信度（Jev 未启用，暂不生效）'" name="policy-low-confidence">
             <JfSlider
               :model-value="Number(value('routing.policy.low_confidence', 0.45))"
               :min="0"
@@ -467,6 +476,11 @@ onMounted(() => { void loadSettings() })
     <!-- 3. Jev 推荐服务集成 -->
     <JfCard title="Jev 推荐服务集成">
       <div class="grid gap-6">
+        <JfAlert
+          v-if="!value('jev.enabled', false)"
+          tone="info"
+          title="Jev 未启用：自动路由统一使用默认组，以下设置和置信度阈值在启用 Jev 后才生效。启用前需先填写服务地址、模型和认证密钥。"
+        />
         <div class="grid gap-5 sm:grid-cols-2">
           <JfField inline label="启用 Jev 智能推荐" name="jev-enabled">
             <JfSwitch
@@ -632,21 +646,8 @@ onMounted(() => { void loadSettings() })
       <h3 class="jf-module-title text-danger mb-1">危险操作：重置所有运行时覆盖</h3>
       <JfAlert class="mb-4" tone="warning" title="重置范围：清除全部运行时配置覆盖及 Jev 密钥；不会删除提供商、模型、绑定或推理密钥。" />
 
-      <div
-        v-if="resetConfirm"
-        class="rounded-[var(--jf-radius-control)] border border-warning bg-warning-bg p-4 mb-4"
-        role="alertdialog"
-        aria-label="确认重置所有运行时覆盖"
-      >
-        <p class="font-medium">确认重置全部运行时覆盖？此操作不可撤销。</p>
-        <div class="jf-action-group mt-3 justify-end">
-          <JfButton variant="ghost" :disabled="saving" @click="resetConfirm = false">取消</JfButton>
-          <JfButton variant="danger" :loading="saving" @click="resetSettings">确认重置</JfButton>
-        </div>
-      </div>
-
-      <div v-else class="flex justify-end">
-        <JfButton variant="danger-ghost" :disabled="loading || saving" @click="resetConfirm = true">
+      <div class="flex justify-end">
+        <JfButton variant="danger-ghost" :disabled="loading || saving" @click="confirmReset">
           重置所有运行时覆盖
         </JfButton>
       </div>
