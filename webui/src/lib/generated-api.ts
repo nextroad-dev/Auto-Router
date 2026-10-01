@@ -975,8 +975,8 @@ export interface paths {
         /**
          * Serve the dashboard shell
          * @description Serves the bundled Vue SPA shell (`text/html`). The same bytes are served for `/admin/`,
-         *     `/admin/login`, `/admin/providers`, `/admin/pairs`,
-         *     `/admin/settings` and `/admin/keys`:
+         *     `/admin/login`, `/admin/providers`, `/admin/models`, `/admin/groups`, `/admin/pairs`,
+         *     `/admin/settings`, `/admin/keys` and `/admin/logs`:
          *     the shell is structurally independent of the database, and every number on a page is fetched
          *     by the browser from an authenticated `/admin/v1/*` endpoint. That is why these paths can be
          *     served without a credential and why they disclose nothing.
@@ -1037,6 +1037,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Serve the model groups page shell
+         * @description See `GET /admin/`. This exact, data-free shell route supports GET and HEAD; group data comes from `/admin/v1/groups`.
+         */
+        get: operations["getDashboardGroupsPage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/pairs": {
         parameters: {
             query?: never;
@@ -1045,8 +1065,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Serve the route bindings page shell
-         * @description See `GET /admin/`. This exact, data-free shell route supports GET and HEAD; binding data comes from `/admin/v1/pairs`.
+         * Serve the legacy model groups page shell
+         * @description See `GET /admin/`. Former address of the model groups page; the client redirects it to `/admin/groups` so existing bookmarks keep working.
          */
         get: operations["getDashboardPairsPage"];
         put?: never;
@@ -4310,6 +4330,33 @@ export interface operations {
         };
     };
     getDashboardProvidersPage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The page shell. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description The management surface is not mounted. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDashboardGroupsPage: {
         parameters: {
             query?: never;
             header?: never;

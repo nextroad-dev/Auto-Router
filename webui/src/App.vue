@@ -5,9 +5,10 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import JfButton from '@/components/JfButton.vue'
 import JfIcon from '@/components/JfIcon.vue'
+import ConfirmHost from '@/components/ConfirmHost.vue'
 import { api, setUnauthorizedHandler } from '@/lib/api'
 import { clearSession } from '@/lib/session'
-import { savedToastVisible } from '@/lib/save-toast'
+import { savedToastMessage, savedToastVisible } from '@/lib/save-toast'
 import { useOverlayFocus } from '@/lib/overlay'
 import { router } from '@/router'
 
@@ -52,7 +53,7 @@ const navigation = computed(() => [
   { label: t('app.overview'), icon: 'squares-2x2', to: '/' },
   { label: t('app.providers'), icon: 'server-stack', to: '/providers' },
   { label: t('app.models'), icon: 'cpu-chip', to: '/models' },
-  { label: t('app.groups'), icon: 'layers-2', to: '/pairs' },
+  { label: t('app.groups'), icon: 'layers-2', to: '/groups' },
 ])
 const systemNavigation = computed(() => [
   { label: t('app.settings'), icon: 'cog-6-tooth', to: '/settings' },
@@ -206,8 +207,10 @@ async function logout() {
     </div>
 
     <div v-if="savedToastVisible" class="save-toast" role="status" aria-live="polite" aria-atomic="true">
-      更改已保存
+      {{ savedToastMessage }}
     </div>
+
+    <ConfirmHost />
   </div>
 </template>
 

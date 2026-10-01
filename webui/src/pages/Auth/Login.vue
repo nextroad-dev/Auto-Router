@@ -123,7 +123,7 @@ onMounted(() => { void loadSetupStatus() })
         <JfInput
           v-model="password"
           type="password"
-          :placeholder="initialized ? '输入管理员密码' : '创建管理员密码（≥12位）'"
+          :placeholder="initialized ? '输入管理员密码' : '至少 12 字节（约 12 个英文字符或 4 个汉字）'"
           icon="lock-closed"
           size="lg"
           :disabled="busy"

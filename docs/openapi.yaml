@@ -1955,8 +1955,8 @@ paths:
       operationId: getDashboardPage
       description: |
         Serves the bundled Vue SPA shell (`text/html`). The same bytes are served for `/admin/`,
-        `/admin/login`, `/admin/providers`, `/admin/pairs`,
-        `/admin/settings` and `/admin/keys`:
+        `/admin/login`, `/admin/providers`, `/admin/models`, `/admin/groups`, `/admin/pairs`,
+        `/admin/settings`, `/admin/keys` and `/admin/logs`:
         the shell is structurally independent of the database, and every number on a page is fetched
         by the browser from an authenticated `/admin/v1/*` endpoint. That is why these paths can be
         served without a credential and why they disclose nothing.
@@ -2017,12 +2017,28 @@ paths:
         '404':
           description: The management surface is not mounted.
 
+  /admin/groups:
+    get:
+      tags: [Dashboard]
+      summary: Serve the model groups page shell
+      operationId: getDashboardGroupsPage
+      description: See `GET /admin/`. This exact, data-free shell route supports GET and HEAD; group data comes from `/admin/v1/groups`.
+      security: []
+      responses:
+        '200':
+          description: The page shell.
+          content:
+            text/html:
+              schema: {type: string}
+        '404':
+          description: The management surface is not mounted.
+
   /admin/pairs:
     get:
       tags: [Dashboard]
-      summary: Serve the route bindings page shell
+      summary: Serve the legacy model groups page shell
       operationId: getDashboardPairsPage
-      description: See `GET /admin/`. This exact, data-free shell route supports GET and HEAD; binding data comes from `/admin/v1/pairs`.
+      description: See `GET /admin/`. Former address of the model groups page; the client redirects it to `/admin/groups` so existing bookmarks keep working.
       security: []
       responses:
         '200':

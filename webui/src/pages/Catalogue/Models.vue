@@ -4,6 +4,7 @@ import { api, getAllPages, type Model, type Pair } from '@/lib/api'
 import { createDebouncedSave, createSerialAutosaveQueue } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
 import { showSavedToast } from '@/lib/save-toast'
+import { confirmAction } from '@/lib/confirm'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfAlert from '@/components/JfAlert.vue'
 import JfBadge from '@/components/JfBadge.vue'
@@ -222,7 +223,13 @@ async function togglePair(pair: Pair) {
 async function deletePair(pair: Pair) {
   const key = pairRowKey(pair)
   if (deletingPair.value) return
-  if (!window.confirm(`确定永久解除提供商“${pair.provider}”与模型“${pair.model}”的绑定吗？该绑定会从所有路由组移除，后续注册表同步不会自动恢复。`)) return
+  const confirmed = await confirmAction({
+    title: `解除提供商“${pair.provider}”与模型“${pair.model}”的绑定？`,
+    description: '该绑定会从所有模型分组中移除，后续注册表同步也不会自动恢复。',
+    confirmLabel: '解除绑定',
+    danger: true,
+  })
+  if (!confirmed) return
 
   deletingPair.value = key
   error.value = undefined
@@ -230,6 +237,7 @@ async function deletePair(pair: Pair) {
     await api.delete<operations['deleteAdminPair']['responses'][200]['content']['application/json']>(
       `/admin/v1/pairs/${encodeURIComponent(pair.provider)}/${encodeURIComponent(pair.model)}`,
     )
+    showSavedToast(`已解除绑定：${pair.provider} · ${pair.model}`)
     await loadData()
   } catch (cause) {
     error.value = errorNotice(cause)
@@ -350,7 +358,7 @@ function updatePairText(field: 'upstream_model_id' | 'context_window' | 'max_out
   }
 }
 
-function updatePairSwitch(field: 'supports_tools' | 'supports_vision' | 'supports_audio_input' | 'supports_reasoning' | 'enabled', value: boolean) {
+function updatePairSwitch(field: 'supports_tools' | 'supports_vision' | 'supports_audio_input' | 'supports_reasoning', value: boolean) {
   pairForm[field] = value
   pairError.value = undefined
   pairDirty.add(field)
@@ -600,7 +608,7 @@ onMounted(() => {
     </JfCard>
 
     <!-- Provider Bindings & Capabilities Table Card -->
-    <JfCard title="Provider 模型绑定与能力" flush>
+    <JfCard title="提供商模型绑定与能力" flush>
       <template #actions>
         <JfBadge tone="neutral">{{ visiblePairs.length }}</JfBadge>
       </template>
@@ -760,10 +768,6 @@ onMounted(() => {
             </JfField>
           </div>
         </div>
-
-        <JfField label="启用该上游绑定" inline>
-          <JfSwitch :model-value="pairForm.enabled" @update:model-value="updatePairSwitch('enabled', $event)" />
-        </JfField>
 
         <ErrorAlert v-if="pairError" :error="pairError" />
       </form>

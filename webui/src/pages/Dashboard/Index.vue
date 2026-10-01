@@ -58,6 +58,7 @@ const groupColumns: JfColumn[] = [
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 let operationsTimer: ReturnType<typeof setInterval> | undefined
 let summaryRequestId = 0
+let dashboardRequestId = 0
 
 async function loadHealth() {
   if (healthLoading.value) return
@@ -94,16 +95,19 @@ async function refreshAll() {
   await Promise.all([loadDashboard(), refreshOperations()])
 }
 
-async function loadDashboard() {
-  if (loading.value) return
+// Usage rankings follow the same reporting window as the summary so one screen never
+// mixes periods; only output TPS is a fixed 60-second figure, and its card says so.
+async function loadDashboard(window = summaryWindow.value) {
+  const requestId = ++dashboardRequestId
   loading.value = true
   error.value = undefined
   try {
-    report.value = await api.get<DashboardReport>('/admin/v1/dashboard')
+    const result = await api.get<DashboardReport>(`/admin/v1/dashboard?window=${encodeURIComponent(window)}`)
+    if (requestId === dashboardRequestId) report.value = result
   } catch (cause) {
-    error.value = errorNotice(cause)
+    if (requestId === dashboardRequestId) error.value = errorNotice(cause)
   } finally {
-    loading.value = false
+    if (requestId === dashboardRequestId) loading.value = false
   }
 }
 
@@ -111,7 +115,7 @@ onMounted(() => {
   void loadDashboard()
   void refreshOperations()
   refreshTimer = setInterval(() => {
-    if (document.visibilityState === 'visible') void loadDashboard()
+    if (document.visibilityState === 'visible' && !loading.value) void loadDashboard()
   }, 5000)
   operationsTimer = setInterval(() => {
     if (document.visibilityState === 'visible') void refreshOperations()
@@ -125,7 +129,8 @@ onUnmounted(() => {
 
 function changeSummaryWindow(next: SummaryWindow) {
   summaryWindow.value = next
-  loadSummary(next)
+  void loadSummary(next)
+  void loadDashboard(next)
 }
 
 function count(value: number | null | undefined) {
@@ -143,6 +148,15 @@ function tps(value: number | null | undefined) {
 function rowName(row: { id: string; name?: string }) {
   return row.name?.trim() || row.id
 }
+
+const healthLabel = computed(() => {
+  if (health.value?.status === 'ok') return '运行正常'
+  if (health.value?.status === 'not_ready') return '未就绪'
+  if (healthError.value) return '状态未知'
+  return healthLoading.value ? '检查中…' : '—'
+})
+
+const tpsWindowLabel = '近 60 秒'
 
 function summaryRate(name: string) {
   return summary.value?.rates.find(item => item.name === name)
@@ -267,9 +281,10 @@ const tokenBreakdown = computed(() => {
   const input = summary.value?.tokens.input_tokens ?? 0
   const output = summary.value?.tokens.output_tokens ?? 0
   const total = input + output
-  const inPct = total > 0 ? (input / total) * 100 : 50
-  const outPct = total > 0 ? (output / total) * 100 : 50
+  const inPct = total > 0 ? (input / total) * 100 : 0
+  const outPct = total > 0 ? (output / total) * 100 : 0
   return {
+    empty: total <= 0,
     input,
     output,
     total,
@@ -306,13 +321,13 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
     <!-- 顶部紧凑控制栏：消除顶部大面积留白 -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
-        <h1 class="jf-page-title text-2xl font-medium leading-none">系统总览</h1>
+        <h1 class="jf-page-title text-2xl font-medium leading-none">总览</h1>
         <span
           class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
           :class="health?.status === 'ok' ? 'bg-success-bg text-success' : 'bg-warning-bg text-warning'"
         >
           <span class="h-1.5 w-1.5 rounded-full" :class="health?.status === 'ok' ? 'bg-success' : 'bg-warning'"></span>
-          {{ health?.status === 'ok' ? '服务运行正常' : health?.status === 'not_ready' ? '系统未就绪' : '检查中…' }}
+          {{ health?.status === 'ok' ? '服务运行正常' : health?.status === 'not_ready' ? '系统未就绪' : healthError ? '健康状态未知' : '检查中…' }}
         </span>
       </div>
 
@@ -339,7 +354,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
 
     <ErrorAlert v-if="error" :error="error">
       <template #actions>
-        <JfButton variant="danger-ghost" size="sm" @click="loadDashboard">重试</JfButton>
+        <JfButton variant="danger-ghost" size="sm" @click="loadDashboard()">重试</JfButton>
       </template>
     </ErrorAlert>
     <ErrorAlert v-if="healthError" :error="healthError" />
@@ -355,7 +370,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
             <JfIcon name="circle-check" size="sm" :class="health?.status === 'ok' ? 'text-success' : 'text-ink-secondary'" />
           </span>
         </div>
-        <div class="jf-metric mt-2">{{ health?.status === 'ok' ? '运行正常' : health?.status === 'not_ready' ? '未就绪' : '—' }}</div>
+        <div class="jf-metric mt-2">{{ healthLabel }}</div>
       </JfCard>
 
       <JfCard density="compact">
@@ -380,32 +395,12 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
 
       <JfCard density="compact">
         <div class="flex items-center justify-between">
-          <span class="jf-caption font-medium text-ink-secondary">实时输出 TPS</span>
+          <span class="jf-caption font-medium text-ink-secondary">输出 TPS（{{ tpsWindowLabel }}）</span>
           <span class="metric-icon-wrap">
             <JfIcon name="gauge" size="sm" class="text-ink-secondary" />
           </span>
         </div>
         <div class="jf-metric mt-2">{{ tps(report?.output_tps_60s) }}</div>
-      </JfCard>
-
-      <JfCard density="compact">
-        <div class="flex items-center justify-between">
-          <span class="jf-caption font-medium text-ink-secondary">自动路由占比</span>
-          <span class="metric-icon-wrap">
-            <JfIcon name="layers-2" size="sm" class="text-ink-secondary" />
-          </span>
-        </div>
-        <div class="jf-metric mt-2">{{ rate(summaryRate('auto_usage_rate')?.value) }}</div>
-      </JfCard>
-
-      <JfCard density="compact">
-        <div class="flex items-center justify-between">
-          <span class="jf-caption font-medium text-ink-secondary">{{ latencySourceLabel }}平均延迟</span>
-          <span class="metric-icon-wrap">
-            <JfIcon name="clock" size="sm" class="text-ink-secondary" />
-          </span>
-        </div>
-        <div class="jf-metric mt-2">{{ meanLatency !== null ? `${meanLatency} ms` : '—' }}</div>
       </JfCard>
 
       <JfCard density="compact">
@@ -426,6 +421,24 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
           </span>
         </div>
         <div class="jf-metric mt-2">{{ health?.catalog.providers.enabled ?? '—' }} / {{ health?.catalog.providers.total ?? '—' }}</div>
+      </JfCard>
+      <JfCard density="compact">
+        <div class="flex items-center justify-between">
+          <span class="jf-caption font-medium text-ink-secondary">已启用模型</span>
+          <span class="metric-icon-wrap">
+            <JfIcon name="cpu-chip" size="sm" class="text-ink-secondary" />
+          </span>
+        </div>
+        <div class="jf-metric mt-2">{{ health?.catalog.models.enabled ?? '—' }} / {{ health?.catalog.models.total ?? '—' }}</div>
+      </JfCard>
+      <JfCard density="compact">
+        <div class="flex items-center justify-between">
+          <span class="jf-caption font-medium text-ink-secondary">已启用绑定</span>
+          <span class="metric-icon-wrap">
+            <JfIcon name="layers-2" size="sm" class="text-ink-secondary" />
+          </span>
+        </div>
+        <div class="jf-metric mt-2">{{ health?.catalog.pairs.enabled ?? '—' }} / {{ health?.catalog.pairs.total ?? '—' }}</div>
       </JfCard>
     </section>
 
@@ -465,7 +478,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
             </svg>
             <div class="absolute inset-0 flex flex-col items-center justify-center text-center">
               <span class="jf-metric text-xl font-medium leading-none">{{ totalStatusCount > 0 ? `${statusDonut.successPct}%` : '—' }}</span>
-              <span class="jf-caption mt-1 text-ink-secondary">{{ totalStatusCount > 0 ? '成功率' : '暂无数据' }}</span>
+              <span class="jf-caption mt-1 text-ink-secondary">{{ totalStatusCount > 0 ? '2xx 占比' : '暂无数据' }}</span>
             </div>
           </div>
 
@@ -510,29 +523,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
       <!-- 环形仪表盘：智能决策效能 -->
       <JfCard title="智能路由决策效能">
         <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <!-- 仪表 1: 客户端成功率 -->
-          <div class="flex flex-col items-center">
-            <div class="relative flex h-20 w-20 items-center justify-center">
-              <svg aria-hidden="true" class="h-full w-full -rotate-90" viewBox="0 0 80 80">
-                <circle cx="40" cy="40" r="34" fill="none" stroke="var(--jf-border-subtle)" stroke-width="7" />
-                <circle
-                  cx="40"
-                  cy="40"
-                  r="34"
-                  fill="none"
-                  stroke="var(--jf-success-text)"
-                  stroke-width="7"
-                  :stroke-dasharray="ringDash(summaryRate('client_request_success_rate')?.value)"
-                  stroke-linecap="round"
-                  class="transition-all duration-500"
-                />
-              </svg>
-              <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('client_request_success_rate')?.value) }}</span>
-            </div>
-            <span class="jf-caption mt-2 text-center text-ink-secondary">请求成功率</span>
-          </div>
-
-          <!-- 仪表 2: 自动路由占比 -->
+          <!-- 仪表 1: 自动路由占比 -->
           <div class="flex flex-col items-center">
             <div class="relative flex h-20 w-20 items-center justify-center">
               <svg aria-hidden="true" class="h-full w-full -rotate-90" viewBox="0 0 80 80">
@@ -551,7 +542,29 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
               </svg>
               <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('auto_usage_rate')?.value) }}</span>
             </div>
-            <span class="jf-caption mt-2 text-center text-ink-secondary">自动路由流量</span>
+            <span class="jf-caption mt-2 text-center text-ink-secondary">自动路由占比</span>
+          </div>
+
+          <!-- 仪表 2: Jev 调用成功率 -->
+          <div class="flex flex-col items-center">
+            <div class="relative flex h-20 w-20 items-center justify-center">
+              <svg aria-hidden="true" class="h-full w-full -rotate-90" viewBox="0 0 80 80">
+                <circle cx="40" cy="40" r="34" fill="none" stroke="var(--jf-border-subtle)" stroke-width="7" />
+                <circle
+                  cx="40"
+                  cy="40"
+                  r="34"
+                  fill="none"
+                  stroke="var(--jf-success-text)"
+                  stroke-width="7"
+                  :stroke-dasharray="ringDash(summaryRate('jev_invocation_rate')?.value)"
+                  stroke-linecap="round"
+                  class="transition-all duration-500"
+                />
+              </svg>
+              <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('jev_invocation_rate')?.value) }}</span>
+            </div>
+            <span class="jf-caption mt-2 text-center text-ink-secondary">Jev 调用成功率</span>
           </div>
 
           <!-- 仪表 3: 自动决策成功率 -->
@@ -573,7 +586,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
               </svg>
               <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('auto_decision_success_rate')?.value) }}</span>
             </div>
-            <span class="jf-caption mt-2 text-center text-ink-secondary">自动决策成功</span>
+            <span class="jf-caption mt-2 text-center text-ink-secondary">自动决策成功率</span>
           </div>
 
           <!-- 仪表 4: Jev Top-1 采纳率 -->
@@ -612,7 +625,8 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
               <span class="text-ink-secondary">Token 构成（输入 / 输出）</span>
               <span class="font-mono text-ink">总计 {{ count(tokenBreakdown.total) }}</span>
             </div>
-            <div class="flex h-3 w-full overflow-hidden rounded-full bg-tonal">
+            <p v-if="tokenBreakdown.empty" class="py-1 text-xs text-ink-secondary">暂无 Token 用量数据</p>
+            <div v-else class="flex h-3 w-full overflow-hidden rounded-full bg-tonal">
               <div
                 class="bg-info transition-all duration-500"
                 :style="{ width: `${tokenBreakdown.inPct}%` }"
@@ -624,7 +638,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
                 :title="`输出 Token: ${count(tokenBreakdown.output)} (${tokenBreakdown.outPct}%)`"
               ></div>
             </div>
-            <div class="mt-2 flex items-center justify-between text-xs">
+            <div v-if="!tokenBreakdown.empty" class="mt-2 flex items-center justify-between text-xs">
               <span class="inline-flex items-center gap-1.5 text-ink">
                 <span class="h-2 w-2 rounded-full bg-info"></span>
                 输入: {{ count(tokenBreakdown.input) }} ({{ tokenBreakdown.inPct }}%)
@@ -639,10 +653,11 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
           <!-- 路由模式分配条 -->
           <div class="border-t border-line pt-3">
             <div class="mb-1.5 flex items-center justify-between text-xs">
-              <span class="text-ink-secondary">路由选择（自动决策 / 显式指定）</span>
+              <span class="text-ink-secondary">路由选择（自动路由 / 指定模型）</span>
               <span class="font-mono text-ink">总计 {{ count(routeRatio.total) }} 次</span>
             </div>
-            <div class="flex h-3 w-full overflow-hidden rounded-full bg-tonal">
+            <p v-if="routeRatio.total <= 0" class="py-1 text-xs text-ink-secondary">暂无请求数据</p>
+            <div v-else class="flex h-3 w-full overflow-hidden rounded-full bg-tonal">
               <div
                 class="bg-primary transition-all duration-500"
                 :style="{ width: `${routeRatio.autoPct}%` }"
@@ -651,17 +666,17 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
               <div
                 class="bg-warning transition-all duration-500"
                 :style="{ width: `${routeRatio.explicitPct}%` }"
-                :title="`显式指定: ${count(routeRatio.explicit)} (${routeRatio.explicitPct}%)`"
+                :title="`指定模型: ${count(routeRatio.explicit)} (${routeRatio.explicitPct}%)`"
               ></div>
             </div>
-            <div class="mt-2 flex items-center justify-between text-xs">
+            <div v-if="routeRatio.total > 0" class="mt-2 flex items-center justify-between text-xs">
               <span class="inline-flex items-center gap-1.5 text-ink">
                 <span class="h-2 w-2 rounded-full bg-primary"></span>
                 自动路由: {{ count(routeRatio.auto) }} ({{ routeRatio.autoPct }}%)
               </span>
               <span class="inline-flex items-center gap-1.5 text-ink">
                 <span class="h-2 w-2 rounded-full bg-warning"></span>
-                显式指定: {{ count(routeRatio.explicit) }} ({{ routeRatio.explicitPct }}%)
+                指定模型: {{ count(routeRatio.explicit) }} ({{ routeRatio.explicitPct }}%)
               </span>
             </div>
           </div>

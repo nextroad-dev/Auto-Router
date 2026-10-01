@@ -31,6 +31,7 @@ var adminPageShells = map[string]struct{}{
 	"/admin/login":     {},
 	"/admin/providers": {},
 	"/admin/models":    {},
+	"/admin/groups":    {},
 	"/admin/pairs":     {},
 	"/admin/settings":  {},
 	"/admin/keys":      {},

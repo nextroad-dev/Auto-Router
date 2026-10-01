@@ -4,6 +4,7 @@ import { api, pageURL, type Page, type Provider } from '@/lib/api'
 import { createDebouncedSave, createSerialAutosaveQueue } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
 import { showSavedToast } from '@/lib/save-toast'
+import { confirmAction } from '@/lib/confirm'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfAlert from '@/components/JfAlert.vue'
 import JfBadge from '@/components/JfBadge.vue'
@@ -70,7 +71,7 @@ const kindOptions = [
 const enabledOptions = [
   { label: '全部状态', value: 'all' },
   { label: '已启用', value: 'true' },
-  { label: '已禁用', value: 'false' },
+  { label: '已停用', value: 'false' },
 ]
 
 function resetProviderAutosave() {
@@ -190,6 +191,23 @@ async function fetchProviders(reset = true) {
 
 onMounted(() => { void fetchProviders() })
 
+// Search runs as the operator types, like the model page's filter; Enter still runs it at once.
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleSearch(delay = 300) {
+  if (searchTimer !== undefined) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    searchTimer = undefined
+    if (loading.value || loadingMore.value) scheduleSearch(100)
+    else void fetchProviders(true)
+  }, delay)
+}
+function searchNow() {
+  if (searchTimer !== undefined) clearTimeout(searchTimer)
+  searchTimer = undefined
+  scheduleSearch(0)
+}
+watch(search, () => scheduleSearch())
+
 function openCreate() {
   resetProviderAutosave()
   editing.value = false
@@ -246,10 +264,17 @@ async function toggleProvider(provider: ProviderRow) {
 }
 
 async function deleteProvider(provider: ProviderRow) {
-  if (!window.confirm(`确定要删除提供商“${provider.display_name || provider.key}”吗？关联的绑定关系也将被清理。`)) return
+  const confirmed = await confirmAction({
+    title: `删除提供商“${provider.display_name || provider.key}”？`,
+    description: '它的全部模型绑定会一并解除，并从所有模型分组中移除。此操作不可撤销。',
+    confirmLabel: '删除提供商',
+    danger: true,
+  })
+  if (!confirmed) return
   deletingProvider.value = provider.key
   try {
     await api.delete(`/admin/v1/providers/${encodeURIComponent(provider.key)}`)
+    showSavedToast(`已删除提供商：${provider.display_name || provider.key}`)
     await fetchProviders(true)
   } catch (cause) {
     error.value = errorNotice(cause)
@@ -348,8 +373,26 @@ async function openModels(provider: ProviderRow) {
   }
 }
 
-function isConfigured(modelId: string) {
-  return configuredPairs.value.some(pair => pair.model === modelId && pair.enabled)
+/** The existing binding for a discovered upstream ID, whether or not it is enabled. */
+function configuredPair(upstreamId: string) {
+  return configuredPairs.value.find(pair => pair.upstream_model_id === upstreamId)
+}
+
+async function enableModelPair(pair: ProviderPair) {
+  const provider = activeProvider.value
+  if (!provider || selectingModel.value || deletingModel.value) return
+  selectingModel.value = pair.upstream_model_id
+  modelsError.value = undefined
+  modelsNotice.value = ''
+  try {
+    await api.patch(`/admin/v1/pairs/${encodeURIComponent(provider.key)}/${encodeURIComponent(pair.model)}`, { enabled: true })
+    pair.enabled = true
+    showSavedToast()
+  } catch (cause) {
+    modelsError.value = errorNotice(cause)
+  } finally {
+    selectingModel.value = ''
+  }
 }
 
 async function addModelPair(upstreamId: string) {
@@ -391,7 +434,13 @@ async function addModelPair(upstreamId: string) {
 async function removeModelPair(pair: ProviderPair) {
   const provider = activeProvider.value
   if (!provider || deletingModel.value) return
-  if (!window.confirm(`确定永久解除“${provider.display_name || provider.key}”与“${pair.model}”的绑定吗？该绑定会从所有路由组移除，后续注册表同步不会自动恢复。`)) return
+  const confirmed = await confirmAction({
+    title: `解除“${provider.display_name || provider.key}”与“${pair.model}”的绑定？`,
+    description: '该绑定会从所有模型分组中移除，后续注册表同步也不会自动恢复。',
+    confirmLabel: '解除绑定',
+    danger: true,
+  })
+  if (!confirmed) return
 
   deletingModel.value = pair.model
   modelsError.value = undefined
@@ -417,8 +466,8 @@ const columns: JfColumn[] = [
   { key: 'key', title: '提供商', nowrap: true },
   { key: 'kind', title: '类型' },
   { key: 'base_url', title: '端点地址' },
-  { key: 'api_key_set', title: 'API 密钥' },
-  { key: 'enabled', title: '状态' },
+  { key: 'api_key_set', title: '上游密钥' },
+  { key: 'enabled', title: '状态', nowrap: true },
   { key: 'models', title: '模型绑定' },
   { key: 'actions', title: '操作', nowrap: true },
 ]
@@ -455,9 +504,8 @@ const columns: JfColumn[] = [
             icon="magnifying-glass"
             placeholder="搜索提供商名称或标识"
             aria-label="搜索提供商名称或标识"
-            :disabled="loading || loadingMore"
             class="w-48 sm:w-60"
-            @keydown.enter="fetchProviders(true)"
+            @keydown.enter="searchNow"
           />
           <JfSelect
             v-model="enabled"
@@ -494,11 +542,16 @@ const columns: JfColumn[] = [
           </template>
 
           <template #cell-enabled="{ row }">
-            <JfSwitch
-              :model-value="row.enabled"
-              :aria-label="`${row.enabled ? '禁用' : '启用'} ${row.display_name || row.key}`"
-              @update:model-value="toggleProvider(row)"
-            />
+            <div class="flex items-center gap-2">
+              <JfSwitch
+                :model-value="row.enabled"
+                :aria-label="`${row.enabled ? '停用' : '启用'}提供商 ${row.display_name || row.key}`"
+                @update:model-value="toggleProvider(row)"
+              />
+              <span class="jf-caption font-medium select-none" :class="row.enabled ? 'text-ink' : 'text-ink-secondary'">
+                {{ row.enabled ? '已启用' : '已停用' }}
+              </span>
+            </div>
           </template>
 
           <template #cell-models="{ row }">
@@ -522,6 +575,17 @@ const columns: JfColumn[] = [
               >
                 删除
               </JfButton>
+              <span v-else title="同步或配置文件来源的提供商不可删除，可停用">
+                <JfButton
+                  variant="danger-ghost"
+                  size="sm"
+                  icon="trash"
+                  disabled
+                  :aria-label="`删除 ${row.display_name || row.key}（同步或配置文件来源的提供商不可删除，可停用）`"
+                >
+                  删除
+                </JfButton>
+              </span>
             </div>
           </template>
         </JfTable>
@@ -588,7 +652,7 @@ const columns: JfColumn[] = [
         </JfField>
 
         <JfField
-          label="API 密钥"
+          label="上游密钥"
           name="provider-apikey"
         >
           <JfInput
@@ -701,8 +765,20 @@ const columns: JfColumn[] = [
                 <code class="font-mono font-medium block jf-truncate">{{ model.id }}</code>
                 <span v-if="model.label" class="jf-caption text-ink-secondary block">{{ model.label }}</span>
               </div>
-              <div class="shrink-0">
-                <JfBadge v-if="isConfigured(model.id)" tone="success">已绑定</JfBadge>
+              <div class="jf-action-group shrink-0">
+                <JfBadge v-if="configuredPair(model.id)?.enabled" tone="success">已绑定</JfBadge>
+                <template v-else-if="configuredPair(model.id)">
+                  <JfBadge tone="neutral">已绑定 · 已停用</JfBadge>
+                  <JfButton
+                    size="sm"
+                    variant="ghost"
+                    :loading="selectingModel === model.id"
+                    :disabled="Boolean(selectingModel) || Boolean(deletingModel)"
+                    @click="enableModelPair(configuredPair(model.id)!)"
+                  >
+                    重新启用
+                  </JfButton>
+                </template>
                 <JfButton
                   v-else
                   size="sm"

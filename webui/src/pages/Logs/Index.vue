@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { api, pageURL, type LogEvent, type Page } from '@/lib/api'
 import { errorCodeDescription, errorNotice } from '@/lib/errors'
 import { enumLabel, fallbackReasonLabel, jevStatusLabel, logErrorCodeLabel } from '@/lib/labels'
@@ -88,7 +88,12 @@ function currentQuery(cursor?: string | null): LogQuery {
   return query
 }
 
+let logsRequestId = 0
+
 async function fetchLogs(reset = true) {
+  if (searchTimer !== undefined) clearTimeout(searchTimer)
+  searchTimer = undefined
+  const requestId = ++logsRequestId
   if (reset) {
     const to = new Date()
     const durationMs: Record<string, number> = {
@@ -109,15 +114,24 @@ async function fetchLogs(reset = true) {
   error.value = undefined
   try {
     const result = await api.get<Page<LogEvent>>(pageURL('/admin/v1/logs', currentQuery(nextCursor.value)))
+    // A newer query replaced this one while it was in flight; its rows would mix filters.
+    if (requestId !== logsRequestId) return
     logs.value.push(...result.items)
     nextCursor.value = result.next_cursor
     hasMore.value = result.next_cursor !== null
   } catch (cause) {
-    error.value = errorNotice(cause)
+    if (requestId === logsRequestId) error.value = errorNotice(cause)
   } finally {
-    loading.value = false
+    if (requestId === logsRequestId) loading.value = false
   }
 }
+
+// Text filters apply as the operator types, matching the select filters beside them.
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch([search, errorCode], () => {
+  if (searchTimer !== undefined) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => { void fetchLogs(true) }, 300)
+})
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '—'
@@ -308,7 +322,7 @@ onMounted(() => { void fetchLogs(true) })
             <code class="font-mono text-sm">{{ selectedLog.requested_model }}</code>
           </div>
           <div>
-            <span class="jf-caption text-ink-secondary block">最终分派 Provider / 模型</span>
+            <span class="jf-caption text-ink-secondary block">最终分派提供商 / 模型</span>
             <span class="font-mono text-sm font-medium">
               {{ selectedLog.provider || '—' }} · {{ selectedLog.effective_model || '—' }}
             </span>

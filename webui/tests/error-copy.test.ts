@@ -59,6 +59,18 @@ describe('error copy table', () => {
     }
   })
 
+  it('never repeats a sentence inside one description', () => {
+    // Descriptions used to be a category prefix glued onto specific advice, which repeated
+    // or contradicted itself ("无法完成该操作……改动已保存"). Each one is now written for its code.
+    const repeated: string[] = []
+    for (const code of uniqueCodes) {
+      const { description } = copy[code as keyof typeof copy]
+      const sentences = description.split(/[。；]/).map(part => part.trim()).filter(Boolean)
+      if (new Set(sentences).size !== sentences.length) repeated.push(code)
+    }
+    expect(repeated).toEqual([])
+  })
+
   it('describes every code with an actionable sentence rather than a bare restatement', () => {
     const tooShort: string[] = []
     for (const code of uniqueCodes) {

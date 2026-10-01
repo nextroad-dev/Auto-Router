@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, ApiError, type SettingsDocument } from '@/lib/api'
 import { createDebouncedSave, createSerialAutosaveQueue, retryOnceOnConflict } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
+import { enumLabel } from '@/lib/labels'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfAlert from '@/components/JfAlert.vue'
 import JfButton from '@/components/JfButton.vue'
@@ -22,6 +23,7 @@ import {
 } from '@/lib/settings-form'
 import { clearSession } from '@/lib/session'
 import { showSavedToast } from '@/lib/save-toast'
+import { confirmAction } from '@/lib/confirm'
 
 const router = useRouter()
 type SettingsChange = components['schemas']['SettingsApplied'] | components['schemas']['SettingsReset']
@@ -41,13 +43,9 @@ const dirtySettings = new Set<string>()
 const pendingTextPaths = new Set<string>()
 const settingVersions = new Map<string, number>()
 const textSaves = new Map<string, ReturnType<typeof createDebouncedSave>>()
-const resetConfirm = ref(false)
 
-const inputModes = [
-  { label: '脱敏内容', value: 'redacted' },
-  { label: '提取内容', value: 'content' },
-  { label: '仅特征', value: 'features_only' },
-]
+const inputModes = (['redacted', 'content', 'features_only'] as const)
+  .map(mode => ({ label: enumLabel('inputMode', mode), value: mode }))
 
 const policyPaths = [
   'routing.policy.low_confidence',
@@ -226,7 +224,7 @@ function validateSettingsDraft(paths: string[]): string {
   for (const path of ['routing.log.retention_days', 'routing.log.jev_trace.retention_days']) {
     if (!paths.includes(path)) continue
     const days = Number(value(path, 0))
-    if (!Number.isInteger(days) || days < 0 || days > 3650) return '日志留存天数必须是 0 到 3650 之间的整数（0 表示永久留存）。'
+    if (!Number.isInteger(days) || days < 0 || days > 3650) return '日志留存天数必须是 0 到 3650 之间的整数（0 表示永久保留）。'
   }
   return ''
 }
@@ -292,6 +290,16 @@ async function persistSettings(requestedPaths: Set<string>) {
   }
 }
 
+async function confirmReset() {
+  const confirmed = await confirmAction({
+    title: '重置全部运行时覆盖？',
+    description: '所有在管理台修改过的设置和 Jev 密钥都会恢复为启动配置。此操作不可撤销。',
+    confirmLabel: '确认重置',
+    danger: true,
+  })
+  if (confirmed) await resetSettings()
+}
+
 async function resetSettings() {
   saving.value = true
   error.value = undefined
@@ -303,8 +311,7 @@ async function resetSettings() {
   try {
     const result = await api.delete<SettingsChange>('/admin/v1/settings')
     settingsResponse(result, false)
-    resetConfirm.value = false
-    showSavedToast()
+    showSavedToast('已重置全部运行时覆盖')
   } catch (cause) {
     error.value = errorNotice(cause)
   } finally {
@@ -381,7 +388,7 @@ onMounted(() => { void loadSettings() })
           <JfField label="Jev 不可用或低置信度时的默认组" name="routing-auto-default-group">
             <JfSelect
               :model-value="value('routing.auto.default_group', 'medium')"
-              :items="[{ label: '简单', value: 'simple' }, { label: '中等', value: 'medium' }, { label: '复杂', value: 'complex' }]"
+              :items="[{ label: '简单任务组', value: 'simple' }, { label: '中等任务组', value: 'medium' }, { label: '复杂任务组', value: 'complex' }]"
               :disabled="loading || !mutable('routing.auto.default_group')"
               class="w-full"
               @update:model-value="setValue('routing.auto.default_group', $event)"
@@ -441,7 +448,7 @@ onMounted(() => { void loadSettings() })
     <JfCard title="路由策略与置信度">
       <div class="grid gap-6">
         <div class="grid gap-5 sm:grid-cols-2">
-          <JfField label="Jev 选组最低置信度（低于此值使用默认组）" name="policy-low-confidence">
+          <JfField :label="value('jev.enabled', false) ? 'Jev 选组最低置信度（低于此值使用默认组）' : 'Jev 选组最低置信度（Jev 未启用，暂不生效）'" name="policy-low-confidence">
             <JfSlider
               :model-value="Number(value('routing.policy.low_confidence', 0.45))"
               :min="0"
@@ -469,6 +476,11 @@ onMounted(() => { void loadSettings() })
     <!-- 3. Jev 推荐服务集成 -->
     <JfCard title="Jev 推荐服务集成">
       <div class="grid gap-6">
+        <JfAlert
+          v-if="!value('jev.enabled', false)"
+          tone="info"
+          title="Jev 未启用：自动路由统一使用默认组，以下设置和置信度阈值在启用 Jev 后才生效。启用前需先填写服务地址、模型和认证密钥。"
+        />
         <div class="grid gap-5 sm:grid-cols-2">
           <JfField inline label="启用 Jev 智能推荐" name="jev-enabled">
             <JfSwitch
@@ -550,29 +562,29 @@ onMounted(() => { void loadSettings() })
             />
           </JfField>
 
-          <JfField label="常规日志留存天数" name="log-retention">
-            <JfSlider
-              :model-value="Number(value('routing.log.retention_days', 30))"
-              :min="0"
-              :max="365"
-              :step="1"
-              :format-value="v => v === 0 ? '永久保留' : `${v} 天`"
+          <JfField label="常规日志留存天数（0 表示永久保留）" name="log-retention">
+            <JfInput
+              :model-value="value('routing.log.retention_days', 30)"
+              type="number"
+              min="0"
+              max="3650"
+              class="w-full jf-tabular"
               :disabled="loading || !mutable('routing.log.retention_days')"
-              @update:model-value="setDraftValue('routing.log.retention_days', Number($event))"
-              @change="commitSetting('routing.log.retention_days')"
+              @update:model-value="setTextValue('routing.log.retention_days', Number($event))"
+              @blur="flushTextValue('routing.log.retention_days')"
             />
           </JfField>
 
-          <JfField label="Jev 追踪明细留存天数" name="log-jev-retention">
-            <JfSlider
-              :model-value="Number(value('routing.log.jev_trace.retention_days', 7))"
-              :min="0"
-              :max="90"
-              :step="1"
-              :format-value="v => v === 0 ? '永久保留' : `${v} 天`"
+          <JfField label="Jev 追踪明细留存天数（0 表示永久保留）" name="log-jev-retention">
+            <JfInput
+              :model-value="value('routing.log.jev_trace.retention_days', 7)"
+              type="number"
+              min="0"
+              max="3650"
+              class="w-full jf-tabular"
               :disabled="loading || !mutable('routing.log.jev_trace.retention_days')"
-              @update:model-value="setDraftValue('routing.log.jev_trace.retention_days', Number($event))"
-              @change="commitSetting('routing.log.jev_trace.retention_days')"
+              @update:model-value="setTextValue('routing.log.jev_trace.retention_days', Number($event))"
+              @blur="flushTextValue('routing.log.jev_trace.retention_days')"
             />
           </JfField>
         </div>
@@ -604,7 +616,7 @@ onMounted(() => { void loadSettings() })
             type="password"
             autocomplete="new-password"
             class="w-full"
-            placeholder="输入新的安全密码（≥12位）"
+            placeholder="至少 12 字节（约 12 个英文字符或 4 个汉字）"
             required
           />
         </JfField>
@@ -632,23 +644,10 @@ onMounted(() => { void loadSettings() })
     <!-- 6. 危险操作区 -->
     <div class="rounded-[var(--jf-radius-control)] border border-danger/20 bg-danger-bg p-5">
       <h3 class="jf-module-title text-danger mb-1">危险操作：重置所有运行时覆盖</h3>
-      <JfAlert class="mb-4" tone="warning" title="重置范围：清除全部运行时配置覆盖及 Jev 密钥；不会删除 Provider、模型、绑定或客户端密钥。" />
+      <JfAlert class="mb-4" tone="warning" title="重置范围：清除全部运行时配置覆盖及 Jev 密钥；不会删除提供商、模型、绑定或推理密钥。" />
 
-      <div
-        v-if="resetConfirm"
-        class="rounded-[var(--jf-radius-control)] border border-warning bg-warning-bg p-4 mb-4"
-        role="alertdialog"
-        aria-label="确认重置所有运行时覆盖"
-      >
-        <p class="font-medium">确认重置全部运行时覆盖？此操作不可撤销。</p>
-        <div class="jf-action-group mt-3 justify-end">
-          <JfButton variant="ghost" :disabled="saving" @click="resetConfirm = false">取消</JfButton>
-          <JfButton variant="danger" :loading="saving" @click="resetSettings">确认重置</JfButton>
-        </div>
-      </div>
-
-      <div v-else class="flex justify-end">
-        <JfButton variant="danger-ghost" :disabled="loading || saving" @click="resetConfirm = true">
+      <div class="flex justify-end">
+        <JfButton variant="danger-ghost" :disabled="loading || saving" @click="confirmReset">
           重置所有运行时覆盖
         </JfButton>
       </div>
