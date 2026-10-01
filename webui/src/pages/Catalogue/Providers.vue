@@ -348,8 +348,26 @@ async function openModels(provider: ProviderRow) {
   }
 }
 
-function isConfigured(modelId: string) {
-  return configuredPairs.value.some(pair => pair.model === modelId && pair.enabled)
+/** The existing binding for a discovered upstream ID, whether or not it is enabled. */
+function configuredPair(upstreamId: string) {
+  return configuredPairs.value.find(pair => pair.upstream_model_id === upstreamId)
+}
+
+async function enableModelPair(pair: ProviderPair) {
+  const provider = activeProvider.value
+  if (!provider || selectingModel.value || deletingModel.value) return
+  selectingModel.value = pair.upstream_model_id
+  modelsError.value = undefined
+  modelsNotice.value = ''
+  try {
+    await api.patch(`/admin/v1/pairs/${encodeURIComponent(provider.key)}/${encodeURIComponent(pair.model)}`, { enabled: true })
+    pair.enabled = true
+    showSavedToast()
+  } catch (cause) {
+    modelsError.value = errorNotice(cause)
+  } finally {
+    selectingModel.value = ''
+  }
 }
 
 async function addModelPair(upstreamId: string) {
@@ -701,8 +719,20 @@ const columns: JfColumn[] = [
                 <code class="font-mono font-medium block jf-truncate">{{ model.id }}</code>
                 <span v-if="model.label" class="jf-caption text-ink-secondary block">{{ model.label }}</span>
               </div>
-              <div class="shrink-0">
-                <JfBadge v-if="isConfigured(model.id)" tone="success">已绑定</JfBadge>
+              <div class="jf-action-group shrink-0">
+                <JfBadge v-if="configuredPair(model.id)?.enabled" tone="success">已绑定</JfBadge>
+                <template v-else-if="configuredPair(model.id)">
+                  <JfBadge tone="neutral">已绑定 · 已停用</JfBadge>
+                  <JfButton
+                    size="sm"
+                    variant="ghost"
+                    :loading="selectingModel === model.id"
+                    :disabled="Boolean(selectingModel) || Boolean(deletingModel)"
+                    @click="enableModelPair(configuredPair(model.id)!)"
+                  >
+                    重新启用
+                  </JfButton>
+                </template>
                 <JfButton
                   v-else
                   size="sm"

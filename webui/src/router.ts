@@ -30,10 +30,15 @@ export const router = createRouter({
       meta: { title: '模型管理', requiresAuth: true }
     },
     {
-      path: '/pairs',
+      path: '/groups',
       name: 'model-groups',
       component: () => import('./pages/Catalogue/ModelGroups.vue'),
       meta: { title: '模型分组', requiresAuth: true }
+    },
+    {
+      // Former address of the model groups page, kept so existing bookmarks still resolve.
+      path: '/pairs',
+      redirect: '/groups'
     },
     {
       path: '/settings',

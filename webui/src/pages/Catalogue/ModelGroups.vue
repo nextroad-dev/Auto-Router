@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, getAllPages, type Pair } from '@/lib/api'
+import { api, getAllPages, type Model, type Pair, type Provider } from '@/lib/api'
 import { createSerialAutosaveQueue } from '@/lib/autosave'
 import { showSavedToast } from '@/lib/save-toast'
 import { errorNotice } from '@/lib/errors'
@@ -16,6 +16,9 @@ import { router } from '@/router'
 
 type GroupName = 'simple' | 'medium' | 'complex'
 
+// The server rejects a group larger than this; see storage.ReplaceModelGroups.
+const MAX_GROUP_MEMBERS = 8
+
 const groupDefinitions: Array<{ key: GroupName; label: string }> = [
   { key: 'simple', label: '简单任务组' },
   { key: 'medium', label: '中等任务组' },
@@ -24,6 +27,8 @@ const groupDefinitions: Array<{ key: GroupName; label: string }> = [
 
 const groups = ref<Record<GroupName, GroupModel[]>>({ simple: [], medium: [], complex: [] })
 const availablePairs = ref<Pair[]>([])
+// Why a pair cannot be a group member, keyed by pairKey. A missing entry means routable.
+const unavailableReasons = ref<Record<string, string>>({})
 const loading = ref(false)
 const saving = ref(false)
 const error = ref<unknown>()
@@ -33,41 +38,72 @@ function pairKey(pair: GroupModel) {
 }
 
 type GroupSnapshot = Record<GroupName, GroupModel[]>
-const saveQueue = createSerialAutosaveQueue<GroupSnapshot>(async snapshot => {
+type GroupSave = { id: number; snapshot: GroupSnapshot }
+
+function cloneGroups(source: GroupSnapshot): GroupSnapshot {
+  return {
+    simple: source.simple.map(item => ({ ...item })),
+    medium: source.medium.map(item => ({ ...item })),
+    complex: source.complex.map(item => ({ ...item })),
+  }
+}
+
+// The last snapshot the server accepted. A rejected save rolls the page back to it so
+// the checkboxes never show a membership that was not stored.
+let confirmedGroups: GroupSnapshot = { simple: [], medium: [], complex: [] }
+let latestSaveId = 0
+
+const saveQueue = createSerialAutosaveQueue<GroupSave>(async ({ id, snapshot }) => {
   saving.value = true
   try {
     await api.put('/admin/v1/groups', snapshot)
+    confirmedGroups = cloneGroups(snapshot)
     error.value = undefined
     showSavedToast()
   } catch (cause) {
     error.value = errorNotice(cause)
+    // A newer edit is still queued; let it decide what the page shows.
+    if (id === latestSaveId) groups.value = cloneGroups(confirmedGroups)
   } finally {
     saving.value = false
   }
 }, (_current, next) => next)
 
 function persistGroups() {
-  saveQueue.enqueue({
-    simple: groups.value.simple.map(item => ({ ...item })),
-    medium: groups.value.medium.map(item => ({ ...item })),
-    complex: groups.value.complex.map(item => ({ ...item })),
-  })
+  saveQueue.enqueue({ id: ++latestSaveId, snapshot: cloneGroups(groups.value) })
+}
+
+function pairUnavailableReasons(pairs: Pair[], providers: Provider[], models: Model[]) {
+  const providerEnabled = new Map(providers.map(item => [item.key, item.enabled]))
+  const modelEnabled = new Map(models.map(item => [item.id, item.enabled]))
+  const reasons: Record<string, string> = {}
+  for (const pair of pairs) {
+    const key = pairKey(pair)
+    if (!pair.enabled) reasons[key] = '绑定已停用'
+    else if (providerEnabled.get(pair.provider) !== true) reasons[key] = '提供商已停用'
+    else if (modelEnabled.get(pair.model) !== true) reasons[key] = '模型已停用'
+  }
+  return reasons
 }
 
 async function loadGroups() {
   loading.value = true
   error.value = undefined
   try {
-    const [document, pairs] = await Promise.all([
+    const [document, pairs, providers, models] = await Promise.all([
       api.get<ModelGroupsDocument>('/admin/v1/groups'),
       getAllPages<Pair>('/admin/v1/pairs'),
+      getAllPages<Provider>('/admin/v1/providers'),
+      getAllPages<Model>('/admin/v1/models'),
     ])
     groups.value = {
       simple: [...(document.simple ?? [])],
       medium: [...(document.medium ?? [])],
       complex: [...(document.complex ?? [])],
     }
+    confirmedGroups = cloneGroups(groups.value)
     availablePairs.value = pairs.sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
+    unavailableReasons.value = pairUnavailableReasons(pairs, providers, models)
   } catch (cause) {
     error.value = errorNotice(cause)
   } finally {
@@ -75,16 +111,48 @@ async function loadGroups() {
   }
 }
 
+/** Why a group member cannot be routed to, or an empty string when it can. */
+function memberProblem(member: GroupModel) {
+  const key = pairKey(member)
+  if (!availablePairs.value.some(pair => pairKey(pair) === key)) return '绑定不存在'
+  return unavailableReasons.value[key] ?? ''
+}
+
 function isSelected(group: GroupName, pair: Pair) {
   return groups.value[group].some(item => item.provider === pair.provider && item.model === pair.model)
+}
+
+function isGroupFull(group: GroupName) {
+  return groups.value[group].length >= MAX_GROUP_MEMBERS
+}
+
+/** A pair can be checked only when it is routable and the group has room; unchecking is always allowed. */
+function pickerDisabled(group: GroupName, pair: Pair) {
+  if (isSelected(group, pair)) return false
+  return Boolean(unavailableReasons.value[pairKey(pair)]) || isGroupFull(group)
+}
+
+function pickerLabel(pair: Pair) {
+  const reason = unavailableReasons.value[pairKey(pair)]
+  return reason ? `${pair.provider} · ${pair.model}（${reason}）` : `${pair.provider} · ${pair.model}`
 }
 
 function togglePair(group: GroupName, pair: Pair, checked: boolean) {
   const current = [...groups.value[group]]
   const key = pairKey(pair)
   const existing = current.findIndex(item => pairKey(item) === key)
-  if (checked && existing < 0) current.push({ provider: pair.provider, model: pair.model })
+  if (checked && existing < 0) {
+    if (pickerDisabled(group, pair)) return
+    current.push({ provider: pair.provider, model: pair.model })
+  }
   if (!checked && existing >= 0) current.splice(existing, 1)
+  groups.value[group] = current
+  persistGroups()
+}
+
+function removeMember(group: GroupName, index: number) {
+  const current = [...groups.value[group]]
+  current.splice(index, 1)
   groups.value[group] = current
   persistGroups()
 }
@@ -134,7 +202,7 @@ onMounted(() => { void loadGroups() })
         :title="definition.label"
       >
         <template #actions>
-          <JfBadge tone="neutral">{{ groups[definition.key].length }} 个候选</JfBadge>
+          <JfBadge :tone="isGroupFull(definition.key) ? 'warning' : 'neutral'">{{ groups[definition.key].length }} / {{ MAX_GROUP_MEMBERS }} 个候选</JfBadge>
         </template>
 
         <div v-if="loading" class="grid gap-2" aria-busy="true">
@@ -151,18 +219,23 @@ onMounted(() => { void loadGroups() })
                   v-for="pair in availablePairs"
                   :key="pairKey(pair)"
                   :model-value="isSelected(definition.key, pair)"
-                  :label="`${pair.provider} · ${pair.model}`"
+                  :label="pickerLabel(pair)"
+                  :disabled="pickerDisabled(definition.key, pair)"
                   class="rounded-[var(--jf-radius-control)] px-2 py-1 transition-colors hover:bg-tonal-hover"
                   @update:model-value="togglePair(definition.key, pair, $event)"
                 />
               </div>
               <p v-else class="jf-caption text-ink-secondary py-2 text-center">暂无可用模型</p>
             </div>
+            <p v-if="isGroupFull(definition.key)" class="jf-caption mt-1.5 text-ink-secondary">每组最多 {{ MAX_GROUP_MEMBERS }} 个候选，移除后才能继续添加。</p>
           </div>
 
           <!-- Priority Ordering -->
           <div>
             <h4 class="jf-module-title mb-2">组内候选优先次序</h4>
+            <p v-if="groups[definition.key].some(memberProblem)" class="jf-caption mb-2 text-warning">
+              组内有不可用的成员，服务端会拒绝保存整个分组；请先移除标记的成员。
+            </p>
             <ol v-if="groups[definition.key].length" class="grid gap-1.5">
               <li
                 v-for="(pair, index) in groups[definition.key]"
@@ -176,6 +249,7 @@ onMounted(() => { void loadGroups() })
                   <span class="text-ink-secondary">{{ pair.provider }} · </span>
                   <span class="font-mono font-medium">{{ pair.model }}</span>
                 </span>
+                <JfBadge v-if="memberProblem(pair)" tone="warning" class="jf-nowrap shrink-0">{{ memberProblem(pair) }}</JfBadge>
                 <div class="flex items-center gap-1 shrink-0">
                   <JfButton
                     variant="ghost"
@@ -194,6 +268,14 @@ onMounted(() => { void loadGroups() })
                     :aria-label="`下移 ${pair.provider} ${pair.model}`"
                     :disabled="index === groups[definition.key].length - 1"
                     @click="movePair(definition.key, index, 1)"
+                  />
+                  <JfButton
+                    variant="danger-ghost"
+                    square
+                    size="sm"
+                    icon="x-mark"
+                    :aria-label="`移除 ${pair.provider} ${pair.model}`"
+                    @click="removeMember(definition.key, index)"
                   />
                 </div>
               </li>

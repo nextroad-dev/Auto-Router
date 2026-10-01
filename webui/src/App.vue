@@ -52,7 +52,7 @@ const navigation = computed(() => [
   { label: t('app.overview'), icon: 'squares-2x2', to: '/' },
   { label: t('app.providers'), icon: 'server-stack', to: '/providers' },
   { label: t('app.models'), icon: 'cpu-chip', to: '/models' },
-  { label: t('app.groups'), icon: 'layers-2', to: '/pairs' },
+  { label: t('app.groups'), icon: 'layers-2', to: '/groups' },
 ])
 const systemNavigation = computed(() => [
   { label: t('app.settings'), icon: 'cog-6-tooth', to: '/settings' },

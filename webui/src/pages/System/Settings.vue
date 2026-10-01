@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, ApiError, type SettingsDocument } from '@/lib/api'
 import { createDebouncedSave, createSerialAutosaveQueue, retryOnceOnConflict } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
+import { enumLabel } from '@/lib/labels'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfAlert from '@/components/JfAlert.vue'
 import JfButton from '@/components/JfButton.vue'
@@ -43,11 +44,8 @@ const settingVersions = new Map<string, number>()
 const textSaves = new Map<string, ReturnType<typeof createDebouncedSave>>()
 const resetConfirm = ref(false)
 
-const inputModes = [
-  { label: '脱敏内容', value: 'redacted' },
-  { label: '提取内容', value: 'content' },
-  { label: '仅特征', value: 'features_only' },
-]
+const inputModes = (['redacted', 'content', 'features_only'] as const)
+  .map(mode => ({ label: enumLabel('inputMode', mode), value: mode }))
 
 const policyPaths = [
   'routing.policy.low_confidence',
@@ -226,7 +224,7 @@ function validateSettingsDraft(paths: string[]): string {
   for (const path of ['routing.log.retention_days', 'routing.log.jev_trace.retention_days']) {
     if (!paths.includes(path)) continue
     const days = Number(value(path, 0))
-    if (!Number.isInteger(days) || days < 0 || days > 3650) return '日志留存天数必须是 0 到 3650 之间的整数（0 表示永久留存）。'
+    if (!Number.isInteger(days) || days < 0 || days > 3650) return '日志留存天数必须是 0 到 3650 之间的整数（0 表示永久保留）。'
   }
   return ''
 }
@@ -550,29 +548,29 @@ onMounted(() => { void loadSettings() })
             />
           </JfField>
 
-          <JfField label="常规日志留存天数" name="log-retention">
-            <JfSlider
-              :model-value="Number(value('routing.log.retention_days', 30))"
-              :min="0"
-              :max="365"
-              :step="1"
-              :format-value="v => v === 0 ? '永久保留' : `${v} 天`"
+          <JfField label="常规日志留存天数（0 表示永久保留）" name="log-retention">
+            <JfInput
+              :model-value="value('routing.log.retention_days', 30)"
+              type="number"
+              min="0"
+              max="3650"
+              class="w-full jf-tabular"
               :disabled="loading || !mutable('routing.log.retention_days')"
-              @update:model-value="setDraftValue('routing.log.retention_days', Number($event))"
-              @change="commitSetting('routing.log.retention_days')"
+              @update:model-value="setTextValue('routing.log.retention_days', Number($event))"
+              @blur="flushTextValue('routing.log.retention_days')"
             />
           </JfField>
 
-          <JfField label="Jev 追踪明细留存天数" name="log-jev-retention">
-            <JfSlider
-              :model-value="Number(value('routing.log.jev_trace.retention_days', 7))"
-              :min="0"
-              :max="90"
-              :step="1"
-              :format-value="v => v === 0 ? '永久保留' : `${v} 天`"
+          <JfField label="Jev 追踪明细留存天数（0 表示永久保留）" name="log-jev-retention">
+            <JfInput
+              :model-value="value('routing.log.jev_trace.retention_days', 7)"
+              type="number"
+              min="0"
+              max="3650"
+              class="w-full jf-tabular"
               :disabled="loading || !mutable('routing.log.jev_trace.retention_days')"
-              @update:model-value="setDraftValue('routing.log.jev_trace.retention_days', Number($event))"
-              @change="commitSetting('routing.log.jev_trace.retention_days')"
+              @update:model-value="setTextValue('routing.log.jev_trace.retention_days', Number($event))"
+              @blur="flushTextValue('routing.log.jev_trace.retention_days')"
             />
           </JfField>
         </div>
