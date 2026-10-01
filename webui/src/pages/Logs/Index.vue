@@ -308,7 +308,7 @@ onMounted(() => { void fetchLogs(true) })
             <code class="font-mono text-sm">{{ selectedLog.requested_model }}</code>
           </div>
           <div>
-            <span class="jf-caption text-ink-secondary block">最终分派 Provider / 模型</span>
+            <span class="jf-caption text-ink-secondary block">最终分派提供商 / 模型</span>
             <span class="font-mono text-sm font-medium">
               {{ selectedLog.provider || '—' }} · {{ selectedLog.effective_model || '—' }}
             </span>

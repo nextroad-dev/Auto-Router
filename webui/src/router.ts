@@ -50,7 +50,7 @@ export const router = createRouter({
       path: '/keys',
       name: 'keys',
       component: () => import('./pages/System/Keys.vue'),
-      meta: { title: '凭据管理', requiresAuth: true }
+      meta: { title: '推理密钥', requiresAuth: true }
     },
     {
       path: '/logs',

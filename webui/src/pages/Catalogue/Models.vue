@@ -600,7 +600,7 @@ onMounted(() => {
     </JfCard>
 
     <!-- Provider Bindings & Capabilities Table Card -->
-    <JfCard title="Provider 模型绑定与能力" flush>
+    <JfCard title="提供商模型绑定与能力" flush>
       <template #actions>
         <JfBadge tone="neutral">{{ visiblePairs.length }}</JfBadge>
       </template>

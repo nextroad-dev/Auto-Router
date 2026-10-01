@@ -8,7 +8,7 @@ describe('errorNotice', () => {
     expect(notice.status).toBe(409)
     expect(notice.code).toBe('unknown_pair')
     expect(notice.title).toBe('找不到指定绑定')
-    expect(notice.description).toContain('刷新列表确认对象是否仍然存在')
+    expect(notice.description).toContain('刷新列表后重试')
     // The server's English message is never shown when the code is known.
     expect(notice.description).not.toContain('the requested binding')
   })
@@ -27,7 +27,7 @@ describe('errorNotice', () => {
   it('renders a forwarding code that also appears on the management surface', () => {
     const notice = errorNotice(new ApiError(422, 'no_eligible_candidate', 'no eligible model is available'))
     expect(notice.title).toBe('没有可用的候选模型')
-    expect(notice.description).toContain('检查模型组配置')
+    expect(notice.description).toContain('检查模型分组配置')
   })
 
   it('grades an unknown code by HTTP status class', () => {

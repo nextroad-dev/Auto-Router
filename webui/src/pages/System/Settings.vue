@@ -379,7 +379,7 @@ onMounted(() => { void loadSettings() })
           <JfField label="Jev 不可用或低置信度时的默认组" name="routing-auto-default-group">
             <JfSelect
               :model-value="value('routing.auto.default_group', 'medium')"
-              :items="[{ label: '简单', value: 'simple' }, { label: '中等', value: 'medium' }, { label: '复杂', value: 'complex' }]"
+              :items="[{ label: '简单任务组', value: 'simple' }, { label: '中等任务组', value: 'medium' }, { label: '复杂任务组', value: 'complex' }]"
               :disabled="loading || !mutable('routing.auto.default_group')"
               class="w-full"
               @update:model-value="setValue('routing.auto.default_group', $event)"
@@ -602,7 +602,7 @@ onMounted(() => { void loadSettings() })
             type="password"
             autocomplete="new-password"
             class="w-full"
-            placeholder="输入新的安全密码（≥12位）"
+            placeholder="至少 12 字节（约 12 个英文字符或 4 个汉字）"
             required
           />
         </JfField>
@@ -630,7 +630,7 @@ onMounted(() => { void loadSettings() })
     <!-- 6. 危险操作区 -->
     <div class="rounded-[var(--jf-radius-control)] border border-danger/20 bg-danger-bg p-5">
       <h3 class="jf-module-title text-danger mb-1">危险操作：重置所有运行时覆盖</h3>
-      <JfAlert class="mb-4" tone="warning" title="重置范围：清除全部运行时配置覆盖及 Jev 密钥；不会删除 Provider、模型、绑定或客户端密钥。" />
+      <JfAlert class="mb-4" tone="warning" title="重置范围：清除全部运行时配置覆盖及 Jev 密钥；不会删除提供商、模型、绑定或推理密钥。" />
 
       <div
         v-if="resetConfirm"

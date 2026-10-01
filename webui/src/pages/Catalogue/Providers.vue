@@ -70,7 +70,7 @@ const kindOptions = [
 const enabledOptions = [
   { label: '全部状态', value: 'all' },
   { label: '已启用', value: 'true' },
-  { label: '已禁用', value: 'false' },
+  { label: '已停用', value: 'false' },
 ]
 
 function resetProviderAutosave() {
@@ -435,7 +435,7 @@ const columns: JfColumn[] = [
   { key: 'key', title: '提供商', nowrap: true },
   { key: 'kind', title: '类型' },
   { key: 'base_url', title: '端点地址' },
-  { key: 'api_key_set', title: 'API 密钥' },
+  { key: 'api_key_set', title: '上游密钥' },
   { key: 'enabled', title: '状态' },
   { key: 'models', title: '模型绑定' },
   { key: 'actions', title: '操作', nowrap: true },
@@ -514,7 +514,7 @@ const columns: JfColumn[] = [
           <template #cell-enabled="{ row }">
             <JfSwitch
               :model-value="row.enabled"
-              :aria-label="`${row.enabled ? '禁用' : '启用'} ${row.display_name || row.key}`"
+              :aria-label="`${row.enabled ? '停用' : '启用'}提供商 ${row.display_name || row.key}`"
               @update:model-value="toggleProvider(row)"
             />
           </template>
@@ -606,7 +606,7 @@ const columns: JfColumn[] = [
         </JfField>
 
         <JfField
-          label="API 密钥"
+          label="上游密钥"
           name="provider-apikey"
         >
           <JfInput

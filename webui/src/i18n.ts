@@ -12,7 +12,7 @@ export const messages = {
       models: '模型管理',
       groups: '模型分组',
       settings: '系统设置',
-      keys: 'API 密钥',
+      keys: '推理密钥',
       logs: '请求日志',
       admin: '管理员',
       logout: '退出登录',
@@ -31,7 +31,7 @@ export const messages = {
       empty: '暂无数据',
       error: '暂时无法加载数据',
       enabled: '已启用',
-      disabled: '已禁用',
+      disabled: '已停用',
       status: '状态',
       actions: '操作',
       cancel: '取消',
@@ -48,47 +48,47 @@ export const messages = {
         // ---- Management-surface codes -------------------------------------------------
         invalid_request: {
           title: '请求内容无效',
-          description: '检查表单中的必填项与格式后重试。',
+          description: '检查填写的内容与格式后重试。',
         },
         invalid_filter: {
           title: '筛选条件无效',
-          description: '检查表单中的必填项与格式后重试。调整筛选项后重新查询。',
+          description: '调整筛选条件后重新查询。',
         },
         invalid_cursor: {
           title: '分页位置已失效',
-          description: '检查表单中的必填项与格式后重试。重新加载列表。',
+          description: '分页位置已过期，请重新加载列表。',
         },
         invalid_group: {
           title: '模型分组配置无效',
-          description: '检查表单中的必填项与格式后重试。三个分组各含互不重复的已启用绑定，每组最多 8 个。',
+          description: '每组成员不能重复，必须是已启用的绑定（其提供商与模型也须启用），每组最多 8 个。',
         },
         invalid_scopes: {
-          title: '凭据权限范围无效',
-          description: '检查表单中的必填项与格式后重试。推理凭据仅支持 inference 范围。',
+          title: '推理密钥权限范围无效',
+          description: '推理密钥只支持 inference 范围。',
         },
         invalid_model: {
           title: '模型标识无效',
-          description: '检查表单中的必填项与格式后重试。',
+          description: '模型标识须以字母或数字开头，只能包含字母、数字及 . _ : / - @ ~ +，最多 128 个字符，且不能是 auto。',
         },
         invalid_password: {
           title: '密码不正确或不符合要求',
-          description: '请重新登录管理台，或改用具备该权限的凭据。密码长度至少 12 字节。',
+          description: '确认当前密码输入正确；新密码至少需要 12 字节。',
         },
         invalid_session: {
           title: '管理会话已失效',
-          description: '请重新登录管理台，或改用具备该权限的凭据。',
+          description: '登录已过期，请重新登录管理台。',
         },
         invalid_api_key: {
-          title: '凭据无效或已失效',
-          description: '请重新登录管理台，或改用具备该权限的凭据。',
+          title: '推理密钥无效或已失效',
+          description: '检查请求携带的推理密钥是否正确；密钥轮换后需改用新密钥。',
         },
         insufficient_scope: {
           title: '权限不足',
-          description: '请重新登录管理台，或改用具备该权限的凭据。',
+          description: '当前登录身份或推理密钥没有执行该操作的权限。',
         },
         cross_site_request: {
           title: '请求来源未通过安全校验',
-          description: '请重新登录管理台，或改用具备该权限的凭据。请从管理台页面内发起操作。',
+          description: '请直接在管理台页面内操作，不要从其他站点发起请求。',
         },
         bootstrap_token_required: {
           title: '需要初始化令牌',
@@ -96,165 +96,165 @@ export const messages = {
         },
         too_many_attempts: {
           title: '尝试次数过多',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。请稍后重试。',
+          description: '失败次数过多，请等待一分钟后再试。',
         },
         request_too_large: {
           title: '提交内容过大',
-          description: '检查表单中的必填项与格式后重试。减少提交体积后重试。',
+          description: '提交内容超过大小上限，请减少内容后重试。',
         },
         unknown_model: {
           title: '找不到指定模型',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。',
+          description: '该模型可能已被删除，刷新列表后重试。',
         },
         unknown_provider: {
           title: '找不到指定提供商',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。',
+          description: '该提供商可能已被删除，刷新列表后重试。',
         },
         unknown_pair: {
           title: '找不到指定绑定',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。',
+          description: '该绑定可能已被解除，刷新列表后重试。',
         },
         not_found: {
           title: '接口不存在',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。管理台与后端版本可能不匹配，刷新页面后重试。',
+          description: '管理台与服务端版本可能不一致，刷新页面后重试。',
         },
         provider_exists: {
           title: '提供商标识已存在',
-          description: '刷新后重试；重复提交不会覆盖已有数据。',
+          description: '换一个提供商标识，或直接编辑已有的提供商。',
         },
         model_exists: {
           title: '模型标识已存在',
-          description: '刷新后重试；重复提交不会覆盖已有数据。',
+          description: '换一个模型标识，或直接编辑已有的模型。',
         },
         pair_exists: {
           title: '该提供商与模型绑定已存在',
-          description: '刷新后重试；重复提交不会覆盖已有数据。',
+          description: '该绑定已存在，可在模型管理页编辑它。',
         },
         provider_not_deletable: {
           title: '该提供商不可删除',
-          description: '请重新登录管理台，或改用具备该权限的凭据。仅管理员创建的提供商可删除。',
+          description: '只有管理员创建的提供商可以删除；同步或配置文件来源的提供商可以停用。',
         },
         provider_not_configured: {
           title: '提供商未配置上游地址',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。先在提供商页面填写上游地址。',
+          description: '先在提供商页面填写上游地址。',
         },
         key_not_found: {
-          title: '找不到该凭据',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。',
+          title: '找不到该推理密钥',
+          description: '该推理密钥可能已被删除，刷新列表后重试。',
         },
         key_name_exists: {
-          title: '凭据名称已存在',
-          description: '刷新后重试；重复提交不会覆盖已有数据。',
+          title: '推理密钥名称已存在',
+          description: '换一个名称，或轮换已有的同名推理密钥。',
         },
         credential_limit: {
-          title: '已达到凭据数量上限',
-          description: '刷新后重试；重复提交不会覆盖已有数据。先撤销不再使用的凭据。',
+          title: '已达到推理密钥数量上限',
+          description: '先删除不再使用的推理密钥，再创建新的。',
         },
         password_already_set: {
           title: '管理密码已设置',
-          description: '刷新后重试；重复提交不会覆盖已有数据。请直接登录；忘记密码需使用离线恢复流程。',
+          description: '请直接登录；忘记密码需使用离线恢复流程。',
         },
         password_not_set: {
           title: '管理密码尚未设置',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。先完成初始化设置。',
+          description: '先完成初始化，设置管理员密码。',
         },
         settings_conflict: {
           title: '设置已被其他操作修改',
-          description: '刷新后重试；重复提交不会覆盖已有数据。页面已重新读取最新值，确认后再提交。',
+          description: '页面已重新读取最新设置，确认后再修改一次。',
         },
         restart_required: {
           title: '该设置需要重启服务才能生效',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。改动已保存，重启后生效。',
+          description: '改动已保存，重启服务后生效。',
         },
         unsupported_setting: {
           title: '该设置不支持在线修改',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。需离线或在服务启动前修改。',
+          description: '该设置只能在服务启动前通过配置文件修改。',
         },
         read_only_state: {
           title: '当前设置为只读状态',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。服务未挂载可写存储，无法保存。',
+          description: '服务未挂载可写存储，设置无法保存。',
         },
         storage_error: {
           title: '存储操作失败',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          description: '数据库读写失败，请稍后重试；若持续失败请查看服务日志。',
         },
         snapshot_publish_failed: {
           title: '改动已保存但运行配置未刷新',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。重启服务后生效。',
+          description: '改动已写入数据库，但运行中的配置未刷新；重启服务后生效。',
         },
         sync_failed: {
           title: '同步失败，现有配置未被修改。',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          description: '确认服务能访问 models.dev 后重试，详细原因见服务日志。',
         },
         sync_unavailable: {
           title: '同步功能当前不可用',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          description: '服务当前无法执行同步，请稍后重试；若持续出现请查看服务日志。',
         },
         discovery_failed: {
           title: '无法读取提供商模型列表',
-          description: '请检查提供商地址与网络连通性后重试。',
+          description: '检查提供商地址、上游密钥与网络连通性后重试。',
         },
         metadata_lookup_failed: {
           title: '无法获取模型能力元数据',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。可在模型管理页手动填写能力。',
+          description: '暂时无法从 models.dev 读取能力信息，可稍后重试，或在模型管理页手动填写能力。',
         },
         dashboard_missing: {
           title: '管理台页面渲染失败',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。重新加载页面。',
+          description: '管理台页面资源缺失，请重新加载页面；若持续出现请重新构建或部署服务。',
         },
 
         // ---- Forwarding-surface codes -------------------------------------------------
         invalid_request_error: {
           title: '请求内容无效',
-          description: '检查表单中的必填项与格式后重试。',
+          description: '检查请求体的字段与格式后重试。',
         },
         unsupported_media_type: {
           title: '请求内容类型不支持',
-          description: '检查表单中的必填项与格式后重试。请使用 application/json。',
+          description: '请求须使用 Content-Type: application/json。',
         },
         unsupported_conversion: {
           title: '该提供商无法保持请求语义',
-          description: '检查表单中的必填项与格式后重试。改用兼容协议或简化请求。',
+          description: '所选提供商无法无损表达该请求，请改用协议兼容的提供商或简化请求。',
         },
         provider_override_disabled: {
           title: '未启用提供商覆盖语法',
-          description: '请重新登录管理台，或改用具备该权限的凭据。需管理员开启 routing.allow_provider_override。',
+          description: '可在“系统设置 → 全局路由行为”中开启“允许显式提供商覆盖”。',
         },
         invalid_model_identifier: {
           title: '模型标识格式无效',
-          description: '检查表单中的必填项与格式后重试。',
+          description: '检查请求中 model 字段的格式。',
         },
         model_not_found: {
           title: '找不到该模型',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。',
+          description: '请求的模型不存在或没有可用绑定，可通过 GET /v1/models 查看可用模型。',
         },
         provider_not_found: {
           title: '找不到该提供商',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。',
+          description: '请求的提供商不存在或已停用。',
         },
         auto_routing_unavailable: {
           title: '自动路由当前不可用',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          description: '检查模型分组配置后重试；详细原因见服务日志。',
         },
         routing_unavailable: {
-          title: '自动路由不可用',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          title: '路由服务不可用',
+          description: '路由服务暂未就绪，请稍后重试；若持续出现请查看服务日志。',
         },
         no_eligible_candidate: {
           title: '没有可用的候选模型',
-          description: '刷新列表确认对象是否仍然存在，可能已被其他操作删除。检查模型组配置与能力/上下文筛选条件。',
+          description: '检查模型分组配置，以及请求所需的能力与上下文窗口。',
         },
         truncated_evidence: {
           title: '请求超出分析边界，无法安全路由',
-          description: '检查表单中的必填项与格式后重试。减小请求体积或改用指定模型。',
+          description: '减小请求体积，或直接指定模型。',
         },
         upstream_unavailable: {
           title: '上游提供商无法访问',
-          description: '请检查提供商地址与网络连通性后重试。',
+          description: '检查提供商地址、上游密钥与网络连通性后重试。',
         },
         upstream_timeout: {
           title: '上游提供商响应超时',
-          description: '请检查提供商地址与网络连通性后重试。可重试或更换提供商。',
+          description: '上游未在限定时间内响应，可稍后重试或更换提供商。',
         },
         upstream_response_too_large: {
           title: '上游响应过大',
@@ -262,15 +262,15 @@ export const messages = {
         },
         client_closed_request: {
           title: '客户端提前断开连接',
-          description: '请检查提供商地址与网络连通性后重试。请求未完成，可重试。',
+          description: '客户端在请求完成前断开了连接，可重试。',
         },
         internal_error: {
           title: '服务内部错误',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          description: '请稍后重试；若持续出现请查看服务日志。',
         },
         debug_route_unavailable: {
           title: '离线诊断端点未就绪',
-          description: '服务暂时无法完成该操作，请稍后重试；若持续失败请查看服务日志。',
+          description: '离线诊断端点尚未就绪，请稍后重试。',
         },
       },
       // Front-end synthetic failures. They are not part of the OpenAPI vocabulary, so they
@@ -307,7 +307,7 @@ export const messages = {
         explicit: '指定模型',
       },
       selectionMode: {
-        explicit: '显式指定',
+        explicit: '指定模型',
         jev: 'Jev 推荐',
         blend: '混合决策',
         default_model: '默认模型兜底',

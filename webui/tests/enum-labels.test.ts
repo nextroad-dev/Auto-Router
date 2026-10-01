@@ -14,7 +14,7 @@ describe('enumLabel', () => {
   it('renders the closed routing vocabularies', () => {
     expect(enumLabel('routingMode', 'auto')).toBe('自动路由')
     expect(enumLabel('routingMode', 'explicit')).toBe('指定模型')
-    expect(enumLabel('selectionMode', 'explicit')).toBe('显式指定')
+    expect(enumLabel('selectionMode', 'explicit')).toBe('指定模型')
     expect(enumLabel('selectionMode', 'jev')).toBe('Jev 推荐')
     expect(enumLabel('selectionMode', 'blend')).toBe('混合决策')
     expect(enumLabel('selectionMode', 'default_model')).toBe('默认模型兜底')

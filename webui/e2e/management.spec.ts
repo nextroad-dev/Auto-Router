@@ -362,7 +362,7 @@ test('registry sync reports success and failure without inventing a successful s
   // The title is the existing sentence an operator already relies on; the description is the
   // new actionable half that this change adds.
   await expect(page.getByText('同步失败，现有配置未被修改。')).toBeVisible()
-  await expect(page.getByText(/请稍后重试/)).toBeVisible()
+  await expect(page.getByText(/详细原因见服务日志/)).toBeVisible()
   expect(mock.syncCount).toBe(2)
 
   await page.getByRole('button', { name: '立即同步 models.dev' }).click()
@@ -393,7 +393,7 @@ test('a known management error renders Chinese title and advice while an unknown
   mock.failProviders()
   await page.goto('/admin/providers')
   await expect(page.getByText('找不到指定提供商')).toBeVisible()
-  await expect(page.getByText(/刷新列表确认对象是否仍然存在/)).toBeVisible()
+  await expect(page.getByText(/该提供商可能已被删除/)).toBeVisible()
   // The raw machine code stays out of the operator-facing alert.
   await expect(page.getByText('unknown_provider')).toHaveCount(0)
 
@@ -475,7 +475,7 @@ test('provider pagination appends rows and resets when a filter changes', async 
   expect(mock.providerRequests.at(-1)).toEqual({ cursor: 'page-2', enabled: null })
 
   await page.getByRole('combobox', { name: '提供商状态筛选' }).click()
-  await page.getByRole('option', { name: '已禁用', exact: true }).click()
+  await page.getByRole('option', { name: '已停用', exact: true }).click()
   await expect(page.getByText('Second Provider', { exact: true })).toHaveCount(0)
   await expect.poll(() => mock.providerRequests.at(-1)).toEqual({ cursor: null, enabled: 'false' })
 

@@ -58,7 +58,7 @@ async function createKey() {
   formError.value = undefined
   const name = formData.name.trim()
   if (!name) {
-    formError.value = '请输入凭据名称。'
+    formError.value = '请输入密钥名称。'
     return
   }
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) {
@@ -70,7 +70,7 @@ async function createKey() {
     const result = await api.post<OneTimeKey>('/admin/v1/keys', createInboundKeyRequest(name))
     slideOpen.value = false
     await fetchKeys()
-    showKey(result, `新建密钥成功 · ${name}`)
+    showKey(result, `推理密钥已创建 · ${name}`)
   } catch (cause) {
     formError.value = errorNotice(cause)
   } finally {
@@ -84,7 +84,7 @@ async function rotateKey(key: InboundKey) {
   try {
     const result = await api.postEmpty<OneTimeKey>(`/admin/v1/keys/${encodeURIComponent(key.name)}/rotate`)
     await fetchKeys()
-    showKey(result, `密钥轮换成功 · ${key.name}`)
+    showKey(result, `推理密钥已轮换 · ${key.name}`)
   } catch (cause) {
     error.value = errorNotice(cause)
   } finally {
@@ -128,7 +128,7 @@ function showCreatedAt(value: string) {
 }
 
 const columns: JfColumn[] = [
-  { key: 'name', title: '凭据名称' },
+  { key: 'name', title: '密钥名称' },
   { key: 'active', title: '状态', nowrap: true },
   { key: 'created_at', title: '创建时间' },
   { key: 'actions', title: '操作', nowrap: true },
@@ -140,11 +140,11 @@ const columns: JfColumn[] = [
     <!-- Toolbar -->
     <section class="jf-toolbar">
       <div>
-        <h1 class="jf-page-title">凭据管理</h1>
+        <h1 class="jf-page-title">推理密钥</h1>
       </div>
       <div class="jf-action-group">
         <JfButton variant="secondary" icon="arrow-path" :loading="loading" @click="fetchKeys">刷新</JfButton>
-        <JfButton icon="plus" @click="openCreate">创建 API 密钥</JfButton>
+        <JfButton icon="plus" @click="openCreate">创建推理密钥</JfButton>
       </div>
     </section>
 
@@ -154,13 +154,13 @@ const columns: JfColumn[] = [
     <JfCard flush>
       <template #header>
         <div class="flex items-center gap-2">
-          <h2 class="jf-section-title">已登记 API 密钥</h2>
+          <h2 class="jf-section-title">已创建的推理密钥</h2>
           <JfBadge tone="neutral">{{ keys.length }}</JfBadge>
         </div>
       </template>
 
       <div class="jf-scroll-x">
-        <JfTable :columns="columns" :rows="keys" row-key="name" :loading="loading" empty-text="尚未创建任何客户端密钥">
+        <JfTable :columns="columns" :rows="keys" row-key="name" :loading="loading" empty-text="尚未创建任何推理密钥">
           <template #cell-name="{ row }">
             <span class="font-mono font-medium">{{ row.name }}</span>
           </template>
@@ -186,10 +186,10 @@ const columns: JfColumn[] = [
     </JfCard>
 
     <!-- Create Key Drawer -->
-    <JfDrawer v-model:open="slideOpen" title="创建客户端 API 密钥">
+    <JfDrawer v-model:open="slideOpen" title="创建推理密钥">
       <form class="grid gap-5" @submit.prevent="createKey">
         <JfField
-          label="凭据名称"
+          label="密钥名称"
           name="key-name"
           required
         >
@@ -219,7 +219,7 @@ const columns: JfColumn[] = [
       <div class="grid gap-4">
         <JfAlert
           tone="warning"
-          title="密钥仅展示一次，请立即复制并妥善保存"
+          title="推理密钥仅展示一次，请立即复制并妥善保存"
         />
 
         <div class="rounded-[var(--jf-radius-control)] border border-line bg-tonal p-3">
