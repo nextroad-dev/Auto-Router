@@ -81,6 +81,8 @@ async function installApiMocks(page: Page) {
   let conflictNextPatch = false
   let didSync = false
   let requestedSummaryWindow = ''
+  let requestedDashboardWindow = ''
+  let failHealth = false
   let patchBody: unknown
   const settingsPatchBodies: unknown[] = []
   const providerPatchRequests: Array<{ path: string; body: unknown }> = []
@@ -223,6 +225,8 @@ async function installApiMocks(page: Page) {
       didSync = true
       return json({ synchronized: true, url: 'https://models.dev/api.json', fetched_at: '2026-09-24T00:00:00Z', imported_pairs: 3, skipped_pairs: 1, warnings: [] })
     }
+    if (path === '/admin/v1/dashboard') requestedDashboardWindow = url.searchParams.get('window') ?? ''
+    if (path === '/admin/v1/health' && failHealth) return json({ error: { code: 'internal_error', message: 'health probe failed' } }, 500)
     if (path === '/admin/v1/dashboard') return json({ window: { key: '24h', from: '', to: '' }, success_rate: { numerator: 9, denominator: 10, value: 0.9 }, models: [], groups: [], output_tps_60s: 3.5 })
     if (path === '/admin/v1/health') return json({
       status: 'ok', uptime_ms: 7200000, started_at: '2026-09-24T00:00:00Z',
@@ -262,6 +266,8 @@ async function installApiMocks(page: Page) {
     get registryPatchRequests() { return registryPatchRequests },
     get groupPutBodies() { return groupPutBodies },
     get requestedSummaryWindow() { return requestedSummaryWindow },
+    get requestedDashboardWindow() { return requestedDashboardWindow },
+    failHealth() { failHealth = true },
     get providerRequests() { return providerRequests },
     get providerModelSelections() { return providerModelSelections },
     get pairDeleteRequests() { return pairDeleteRequests },
@@ -706,13 +712,13 @@ test('dashboard displays overall latency source and preserves zero measurements'
   await page.goto('/admin/')
 
   await expect(page.getByText('全部请求平均延迟', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('0 ms', { exact: true })).toHaveCount(3)
+  await expect(page.getByText('0 ms', { exact: true })).toHaveCount(2)
 })
 
 test('dashboard separates health from operational routing summary', async ({ page }) => {
   const mock = await installApiMocks(page)
   await page.goto('/admin/')
-  await expect(page.getByRole('heading', { name: '系统总览' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '总览', level: 1 })).toBeVisible()
   await expect(page.getByText('服务运行正常')).toBeVisible()
   await expect(page.getByRole('heading', { name: '请求状态分布' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '智能路由决策效能' })).toBeVisible()
@@ -721,4 +727,13 @@ test('dashboard separates health from operational routing summary', async ({ pag
   await page.getByRole('combobox').first().click()
   await page.getByRole('option', { name: /最近 7 天/ }).click()
   await expect.poll(() => mock.requestedSummaryWindow).toBe('7d')
+  await expect.poll(() => mock.requestedDashboardWindow).toBe('7d')
+})
+
+test('dashboard reports an unknown health state instead of checking forever', async ({ page }) => {
+  const mock = await installApiMocks(page)
+  mock.failHealth()
+  await page.goto('/admin/')
+  await expect(page.getByText('健康状态未知', { exact: true })).toBeVisible()
+  await expect(page.getByText('状态未知', { exact: true })).toBeVisible()
 })
