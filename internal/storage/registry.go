@@ -45,6 +45,7 @@ type ImportSummary struct {
 	ModelsAdded       int
 	ModelsUpdated     int
 	ModelsDisabled    int
+	ModelsExcluded    int
 	PairsAdded        int
 	PairsUpdated      int
 	PairsDisabled     int
@@ -77,8 +78,8 @@ type pairKey struct {
 // transaction. Validation and every cross-reference check happen before the
 // first write, so a rejected batch leaves the database untouched. Removed pairs
 // (models.dev) and removed local entries are disabled, never deleted; an explicit
-// administrator deletion is kept in deleted_provider_models and suppresses later
-// imports until the operator explicitly binds that pair again.
+// administrator deletions are kept in deleted_models/deleted_provider_models
+// and suppress later imports until the operator explicitly restores them.
 func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, in Import) (ImportSummary, error) {
 	var summary ImportSummary
 	if !source.Valid() {
@@ -124,6 +125,10 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 	if err != nil {
 		return summary, err
 	}
+	modelExclusions, err := readModelExclusions(ctx, tx)
+	if err != nil {
+		return summary, err
+	}
 	pairExclusions, err := readPairExclusions(ctx, tx)
 	if err != nil {
 		return summary, err
@@ -144,11 +149,19 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 	}
 	importedModels := make(map[string]struct{}, len(catalogModels))
 	for _, model := range catalogModels {
+		if _, excluded := modelExclusions[model.ID]; excluded {
+			summary.ModelsExcluded++
+			continue
+		}
 		importedModels[model.ID] = struct{}{}
 		knownModels[model.ID] = struct{}{}
 	}
 	importedPairs := make(map[pairKey]struct{}, len(pairs))
 	for _, pair := range pairs {
+		if _, excluded := modelExclusions[pair.ModelID]; excluded {
+			summary.PairsExcluded++
+			continue
+		}
 		if _, ok := knownProviders[pair.ProviderKey]; !ok {
 			return summary, fmt.Errorf("pair %s/%s references a provider that is neither stored nor part of this import", pair.ProviderKey, pair.ModelID)
 		}
@@ -183,6 +196,9 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 		}
 	}
 	for _, model := range catalogModels {
+		if _, excluded := modelExclusions[model.ID]; excluded {
+			continue
+		}
 		existing, ok := existingModels[model.ID]
 		switch {
 		case !ok:
@@ -201,6 +217,9 @@ func ApplyRegistryImport(ctx context.Context, db *sql.DB, source models.Source, 
 		}
 	}
 	for _, pair := range pairs {
+		if _, excluded := modelExclusions[pair.ModelID]; excluded {
+			continue
+		}
 		key := pairKey{pair.ProviderKey, pair.ModelID}
 		if _, excluded := pairExclusions[key]; excluded {
 			continue

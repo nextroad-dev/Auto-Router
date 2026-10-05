@@ -645,6 +645,40 @@ func (h *adminHandler) handleModelPatch(w http.ResponseWriter, r *http.Request) 
 	h.reloadAfterWrite(w, r, modelPayloadOf(view))
 }
 
+// handleModelDelete serves DELETE /admin/v1/models/{id...}.
+func (h *adminHandler) handleModelDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.requireDatabase(w) {
+		return
+	}
+	id := trimPathWildcard(r.PathValue("id"))
+	if err := storage.DeleteModel(r.Context(), h.db, id); err != nil {
+		if errors.Is(err, storage.ErrModelNotFound) {
+			unknownPathID(w, "unknown_model", "model")
+			return
+		}
+		storageFailure(w, h, "delete model", err)
+		return
+	}
+
+	groups, err := storage.LoadModelGroups(r.Context(), h.db)
+	if err == nil && h.reloadGroups != nil {
+		err = h.reloadGroups(r.Context(), groups)
+	}
+	if err != nil {
+		h.logger.Error("routing groups could not be refreshed after model deletion", "error", err.Error())
+		writeAdminError(w, http.StatusInternalServerError, "snapshot_publish_failed", "the model was deleted, but the running routing groups could not be refreshed; they will be picked up at the next restart", "")
+		return
+	}
+	if h.reloadCatalog != nil {
+		if err := h.reloadCatalog(r.Context()); err != nil {
+			h.logger.Error("the registry snapshot could not be republished after model deletion", "error", err.Error())
+			writeAdminError(w, http.StatusInternalServerError, "snapshot_publish_failed", "the model was deleted, but the running snapshot could not be republished; it will be picked up at the next restart", "")
+			return
+		}
+	}
+	writeAdminJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+}
+
 // modelCreateRequest is the body of POST /admin/v1/models.
 type modelCreateRequest struct {
 	ID          string `json:"id"`

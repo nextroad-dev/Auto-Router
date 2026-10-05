@@ -78,6 +78,8 @@ const showEmpty = computed(() => !props.loading && !props.rows.length)
 <style scoped>
 .jf-table-wrap {
   min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .jf-table {
@@ -112,6 +114,7 @@ const showEmpty = computed(() => !props.loading && !props.rows.length)
   color: var(--jf-text);
   font-variant-numeric: tabular-nums;
   vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 
 .jf-table tbody tr:last-child td {

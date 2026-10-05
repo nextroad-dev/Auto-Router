@@ -42,6 +42,10 @@ const pairError = ref<unknown>()
 const togglingModels = ref<Record<string, boolean>>({})
 const togglingPairs = ref<Record<string, boolean>>({})
 const deletingPair = ref('')
+const deletingModel = ref('')
+const deleteBlocked = computed(() => loading.value || syncing.value || saving.value
+  || Boolean(deletingModel.value) || Boolean(deletingPair.value)
+  || Object.keys(togglingModels.value).length > 0 || Object.keys(togglingPairs.value).length > 0)
 
 const modelForm = reactive({ id: '', display_name: '' })
 const pairForm = reactive({
@@ -88,16 +92,16 @@ const visiblePairs = computed(() => {
 })
 
 const modelColumns: JfColumn[] = [
-  { key: 'id', title: '模型标识', nowrap: true },
-  { key: 'display_name', title: '显示名称' },
+  { key: 'id', title: '模型标识', width: '16rem' },
+  { key: 'display_name', title: '显示名称', width: '14rem' },
   { key: 'enabled', title: '状态', nowrap: true },
   { key: 'pair_count', title: '绑定数', align: 'end' },
   { key: 'actions', title: '操作', nowrap: true },
 ]
 
 const pairColumns: JfColumn[] = [
-  { key: 'provider', title: '提供商', nowrap: true },
-  { key: 'model', title: '逻辑模型', nowrap: true },
+  { key: 'provider', title: '提供商', width: '10rem' },
+  { key: 'model', title: '逻辑模型', width: '16rem' },
   { key: 'upstream_model_id', title: '上游模型 ID' },
   { key: 'context_window', title: '上下文窗口', align: 'end' },
   { key: 'capabilities', title: '已声明能力' },
@@ -188,6 +192,7 @@ async function loadData() {
 }
 
 async function toggleModel(model: Model) {
+  if (deletingModel.value || deletingPair.value || syncing.value || togglingModels.value[model.id]) return
   const previous = model.enabled
   const next = !previous
   model.enabled = next
@@ -204,6 +209,7 @@ async function toggleModel(model: Model) {
 }
 
 async function togglePair(pair: Pair) {
+  if (deletingModel.value || deletingPair.value || syncing.value || togglingPairs.value[pairRowKey(pair)]) return
   const key = pairRowKey(pair)
   const previous = pair.enabled
   const next = !previous
@@ -220,9 +226,48 @@ async function togglePair(pair: Pair) {
   }
 }
 
+async function deleteModel(model: Model) {
+  if (deleteBlocked.value) return
+  // Reserve the operation before opening confirmation so a second click cannot
+  // create a second dialog/request or race a sync/enable action.
+  deletingModel.value = model.id
+  try {
+    const confirmed = await confirmAction({
+      title: '永久删除逻辑模型？',
+      description: `模型“${model.id}”及其 ${model.pair_count} 个提供商绑定会被删除，并从所有模型分组中移除。历史日志保留，后续同步不会自动恢复；可通过显式重新绑定恢复。`,
+      confirmLabel: '删除模型',
+      danger: true,
+    })
+    if (!confirmed) return
+    error.value = undefined
+    if (modelForm.id === model.id) {
+      resetModelAutosave()
+      modelEditorOpen.value = false
+    }
+    if (pairForm.model === model.id) {
+      resetPairAutosave()
+      pairEditorOpen.value = false
+    }
+    // Drain patches already sent/queued before deleting their target.
+    await registrySaveQueue.whenIdle()
+    await api.delete<operations['deleteAdminModel']['responses'][200]['content']['application/json']>(
+      `/admin/v1/models/${encodeURIComponent(model.id)}`,
+    )
+    showSavedToast(`已删除逻辑模型：${model.id}`)
+    await loadData()
+  } catch (cause) {
+    const notice = errorNotice(cause)
+    // A snapshot_publish_failed response means deletion already committed.
+    if (notice.code === 'snapshot_publish_failed' || notice.code === 'unknown_model') await loadData()
+    error.value = notice
+  } finally {
+    deletingModel.value = ''
+  }
+}
+
 async function deletePair(pair: Pair) {
   const key = pairRowKey(pair)
-  if (deletingPair.value) return
+  if (deleteBlocked.value) return
   const confirmed = await confirmAction({
     title: `解除提供商“${pair.provider}”与模型“${pair.model}”的绑定？`,
     description: '该绑定会从所有模型分组中移除，后续注册表同步也不会自动恢复。',
@@ -461,6 +506,7 @@ async function loadSyncState() {
 }
 
 async function synchronizeRegistry() {
+  if (deletingModel.value || deletingPair.value) return
   syncing.value = true
   syncError.value = undefined
   syncSuccess.value = ''
@@ -530,7 +576,7 @@ onMounted(() => {
         <JfButton
           icon="arrow-path"
           :loading="syncing"
-          :disabled="loading || syncLoading"
+          :disabled="loading || syncLoading || Boolean(deletingModel) || Boolean(deletingPair)"
           @click="synchronizeRegistry"
         >
           立即同步 models.dev
@@ -572,11 +618,11 @@ onMounted(() => {
       <div class="jf-scroll-x">
         <JfTable :rows="visibleModels" :columns="modelColumns" :loading="loading" row-key="id" empty-text="没有匹配的逻辑模型">
           <template #cell-id="{ row }">
-            <code class="font-mono font-medium">{{ row.id }}</code>
+            <code class="model-identifier font-mono font-medium" :title="row.id">{{ row.id }}</code>
           </template>
 
           <template #cell-display_name="{ row }">
-            <div class="font-medium">{{ row.display_name }}</div>
+            <div class="model-identifier font-medium" :title="row.display_name">{{ row.display_name }}</div>
             <JfBadge tone="neutral" class="mt-1">
               {{ row.owner === 'admin' ? '本地管理员维护' : row.source }}
             </JfBadge>
@@ -586,7 +632,7 @@ onMounted(() => {
             <div class="flex items-center gap-2">
               <JfSwitch
                 :model-value="row.enabled"
-                :disabled="Boolean(togglingModels[row.id])"
+                :disabled="Boolean(togglingModels[row.id]) || Boolean(deletingModel) || Boolean(deletingPair) || syncing"
                 :aria-label="`${row.enabled ? '停用' : '启用'}逻辑模型 ${row.display_name || row.id}`"
                 @update:model-value="toggleModel(row)"
               />
@@ -601,7 +647,18 @@ onMounted(() => {
           </template>
 
           <template #cell-actions="{ row }">
-            <JfButton variant="ghost" size="sm" icon="pencil-square" @click="editModel(row)">编辑</JfButton>
+            <div class="jf-action-group">
+              <JfButton variant="ghost" size="sm" icon="pencil-square" :disabled="Boolean(deletingModel)" @click="editModel(row)">编辑</JfButton>
+              <JfButton
+                variant="danger-ghost"
+                size="sm"
+                icon="trash"
+                :loading="deletingModel === row.id"
+                :disabled="deleteBlocked"
+                :aria-label="`删除逻辑模型 ${row.id}`"
+                @click="deleteModel(row)"
+              >删除</JfButton>
+            </div>
           </template>
         </JfTable>
       </div>
@@ -616,11 +673,11 @@ onMounted(() => {
       <div class="jf-scroll-x">
         <JfTable :rows="visiblePairs" :columns="pairColumns" :loading="loading" :row-key="pairRowKey" empty-text="没有匹配的模型绑定">
           <template #cell-provider="{ row }">
-            <code class="font-mono font-medium">{{ row.provider }}</code>
+            <code class="model-identifier font-mono font-medium" :title="row.provider">{{ row.provider }}</code>
           </template>
 
           <template #cell-model="{ row }">
-            <code class="font-mono">{{ row.model }}</code>
+            <code class="model-identifier font-mono" :title="row.model">{{ row.model }}</code>
           </template>
 
           <template #cell-upstream_model_id="{ row }">
@@ -642,7 +699,7 @@ onMounted(() => {
             <div class="flex items-center gap-2">
               <JfSwitch
                 :model-value="row.enabled"
-                :disabled="Boolean(togglingPairs[pairRowKey(row)])"
+                :disabled="Boolean(togglingPairs[pairRowKey(row)]) || Boolean(deletingModel) || Boolean(deletingPair) || syncing"
                 :aria-label="`${row.enabled ? '停用' : '启用'}模型绑定 ${row.provider} - ${row.model}`"
                 @update:model-value="togglePair(row)"
               />
@@ -661,12 +718,12 @@ onMounted(() => {
 
           <template #cell-actions="{ row }">
             <div class="jf-action-group">
-              <JfButton variant="ghost" size="sm" icon="pencil-square" @click="editPair(row)">编辑能力</JfButton>
+              <JfButton variant="ghost" size="sm" icon="pencil-square" :disabled="Boolean(deletingModel)" @click="editPair(row)">编辑能力</JfButton>
               <JfButton
                 variant="danger-ghost"
                 size="sm"
                 :loading="deletingPair === pairRowKey(row)"
-                :disabled="Boolean(deletingPair)"
+                :disabled="deleteBlocked"
                 :aria-label="`解除绑定 ${row.provider} - ${row.model}`"
                 @click="deletePair(row)"
               >
@@ -780,3 +837,13 @@ onMounted(() => {
     </JfDrawer>
   </div>
 </template>
+
+<style scoped>
+.model-identifier {
+  display: block;
+  min-width: 8rem;
+  max-width: 20rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+</style>

@@ -344,6 +344,16 @@ var businessMigrations = []migration{
 			ALTER TABLE routing_attempts ADD COLUMN error_detail TEXT CHECK (error_detail IS NULL OR length(error_detail) <= 512);
 		`,
 	},
+	{
+		Version: 14,
+		Name:    "persist_deleted_logical_model_exclusions",
+		SQL: `
+			CREATE TABLE deleted_models (
+				id TEXT PRIMARY KEY NOT NULL,
+				created_at TEXT NOT NULL
+			) STRICT;
+		`,
+	},
 }
 
 // Migrate initializes the migration journal and applies this binary's schema.

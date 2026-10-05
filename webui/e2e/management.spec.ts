@@ -103,6 +103,10 @@ async function installApiMocks(page: Page) {
   const providerSearches: string[] = []
   const providerModelSelections: Array<{ path: string; body: unknown }> = []
   const pairDeleteRequests: string[] = []
+  const modelDeleteRequests: string[] = []
+  let nextModelDeleteFailure: 'storage_error' | 'snapshot_publish_failed' | undefined
+  let discoveredModels = [{ id: 'gpt-4o', label: 'GPT-4o' }]
+  let dashboardModelRows: Array<Record<string, unknown>> = []
   await page.route('**/admin/v1/**', async route => {
     const request = route.request()
     const url = new URL(request.url())
@@ -139,6 +143,22 @@ async function installApiMocks(page: Page) {
       modelRows = modelRows.map(row => row.id === id ? { ...row, ...body } : row)
       return json(modelRows.find(row => row.id === id) ?? { id, ...body })
     }
+    if (path.startsWith('/admin/v1/models/') && request.method() === 'DELETE') {
+      modelDeleteRequests.push(path)
+      const id = decodeURIComponent(path.slice('/admin/v1/models/'.length))
+      const failure = nextModelDeleteFailure
+      nextModelDeleteFailure = undefined
+      if (failure === 'storage_error') return json({ error: { code: failure, message: 'delete failed' } }, 500)
+      if (!modelRows.some(row => row.id === id)) return json({ error: { code: 'unknown_model', message: 'unknown model' } }, 404)
+      modelRows = modelRows.filter(row => row.id !== id)
+      pairRows = pairRows.filter(row => row.model !== id)
+      providerDetailPairs = providerDetailPairs.filter(row => row.model !== id)
+      for (const key of ['simple', 'medium', 'complex'] as const) {
+        groupDocument[key] = groupDocument[key].filter(member => (member as { model: string }).model !== id)
+      }
+      if (failure) return json({ error: { code: failure, message: 'deleted, runtime refresh failed' } }, 500)
+      return json({ id, deleted: true })
+    }
     if (path === '/admin/v1/pairs' && request.method() === 'GET') return json({ items: pairRows, next_cursor: null })
     if (path.startsWith('/admin/v1/pairs/') && request.method() === 'PATCH') {
       const pathParts = path.split('/')
@@ -174,7 +194,7 @@ async function installApiMocks(page: Page) {
         failNextProviderDiscovery = false
         return json({ error: { code: 'request_failed', message: 'model discovery unavailable' } }, 502)
       }
-      return json({ items: [{ id: 'gpt-4o', label: 'GPT-4o' }], truncated: false })
+      return json({ items: discoveredModels, truncated: false })
     }
     if (path === '/admin/v1/providers/provider-a' && request.method() === 'GET') {
       return json({
@@ -228,7 +248,7 @@ async function installApiMocks(page: Page) {
     }
     if (path === '/admin/v1/dashboard') requestedDashboardWindow = url.searchParams.get('window') ?? ''
     if (path === '/admin/v1/health' && failHealth) return json({ error: { code: 'internal_error', message: 'health probe failed' } }, 500)
-    if (path === '/admin/v1/dashboard') return json({ window: { key: '24h', from: '', to: '' }, success_rate: { numerator: 9, denominator: 10, value: 0.9 }, models: [], groups: [], output_tps_60s: 3.5 })
+    if (path === '/admin/v1/dashboard') return json({ window: { key: '24h', from: '', to: '' }, success_rate: { numerator: 9, denominator: 10, value: 0.9 }, models: dashboardModelRows, groups: [], output_tps_60s: 3.5 })
     if (path === '/admin/v1/health') return json({
       status: 'ok', uptime_ms: 7200000, started_at: '2026-09-24T00:00:00Z',
       catalog: { generation: 4, providers: { total: 2, enabled: 1 }, models: { total: 3, enabled: 2 }, pairs: { total: 4, enabled: 2 } },
@@ -280,6 +300,10 @@ async function installApiMocks(page: Page) {
     get providerSearches() { return providerSearches },
     get providerModelSelections() { return providerModelSelections },
     get pairDeleteRequests() { return pairDeleteRequests },
+    get modelDeleteRequests() { return modelDeleteRequests },
+    failModelDeleteOnce(code: 'storage_error' | 'snapshot_publish_failed') { nextModelDeleteFailure = code },
+    setDiscoveredModels(rows: Array<{ id: string; label: string }>) { discoveredModels = rows },
+    setDashboardModelRows(rows: Array<Record<string, unknown>>) { dashboardModelRows = rows },
     setProviderDetailPairs(pairs: Array<{ model: string; upstream_model_id: string; enabled: boolean }>) { providerDetailPairs = pairs },
     setPairRows(rows: Array<Record<string, unknown>>) { pairRows = rows },
     setModelRows(rows: Array<Record<string, unknown>>) { modelRows = rows },
@@ -820,6 +844,139 @@ test('model management can permanently unbind a pair and refresh the table', asy
   await expect(page.getByText('没有匹配的模型绑定')).toBeVisible()
   await expect.poll(() => mock.pairDeleteRequests).toEqual(['/admin/v1/pairs/provider-a/tenant%2Fmodel'])
 })
+
+test('logical models of every source can be deleted with cancellation and binding refresh', async ({ page }) => {
+  const mock = await installApiMocks(page)
+  const ids = ['tenant/admin-model', 'tenant/config-model', 'tenant/synced-model']
+  mock.setModelRows(ids.map((id, index) => ({ ...groupModel(id), owner: ['admin', 'config', 'modelsdev'][index], source: index === 2 ? 'modelsdev' : 'local', pair_count: 2 })))
+  mock.setPairRows(ids.flatMap(id => [groupPair('provider-a', id), groupPair('provider-b', id)]))
+  await page.goto('/admin/models')
+  const firstDelete = page.getByRole('button', { name: `删除逻辑模型 ${ids[0]}`, exact: true })
+  await firstDelete.click()
+  const confirmation = page.getByRole('alertdialog')
+  await expect(confirmation).toContainText('2 个提供商绑定')
+  await expect(confirmation).toContainText('历史日志保留')
+  await confirmation.getByRole('button', { name: '取消' }).click()
+  await expect(confirmation).toHaveCount(0)
+  expect(mock.modelDeleteRequests).toEqual([])
+  await expect(firstDelete).toBeEnabled()
+  for (const id of ids) {
+    await page.getByRole('button', { name: `删除逻辑模型 ${id}`, exact: true }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: '删除模型', exact: true }).click()
+    await expect(page.getByRole('button', { name: `删除逻辑模型 ${id}`, exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: `解除绑定 provider-a - ${id}`, exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: `解除绑定 provider-b - ${id}`, exact: true })).toHaveCount(0)
+  }
+  expect(mock.modelDeleteRequests).toEqual(ids.map(id => `/admin/v1/models/${encodeURIComponent(id)}`))
+  await expect(page.getByText('没有匹配的逻辑模型')).toBeVisible()
+})
+
+test('logical model deletion prevents duplicate requests while busy', async ({ page }) => {
+  const mock = await installApiMocks(page)
+  mock.setModelRows([groupModel('tenant/model')])
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let requests = 0
+  await page.route('**/admin/v1/models/tenant%2Fmodel', async route => {
+    if (route.request().method() === 'DELETE') { requests++; await gate }
+    await route.fallback()
+  })
+  await page.goto('/admin/models')
+  const button = page.getByRole('button', { name: '删除逻辑模型 tenant/model', exact: true })
+  await button.click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除模型', exact: true }).click()
+  await expect.poll(() => requests).toBe(1)
+  await expect(button).toBeDisabled()
+  await expect(page.getByRole('button', { name: '立即同步 models.dev' })).toBeDisabled()
+  await button.evaluate(element => { (element as HTMLButtonElement).click() })
+  expect(requests).toBe(1)
+  release()
+  await expect(button).toHaveCount(0)
+  expect(mock.modelDeleteRequests).toHaveLength(1)
+})
+
+test('logical model deletion retains failed rows and reconciles committed snapshot failures', async ({ page }) => {
+  const mock = await installApiMocks(page)
+  mock.setModelRows([groupModel('model-a')])
+  mock.setPairRows([groupPair('provider-a', 'model-a')])
+  await page.goto('/admin/models')
+  const button = page.getByRole('button', { name: '删除逻辑模型 model-a', exact: true })
+  mock.failModelDeleteOnce('storage_error')
+  await button.click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除模型', exact: true }).click()
+  await expect(page.getByText('存储操作失败', { exact: true })).toBeVisible()
+  await expect(button).toBeEnabled()
+  mock.failModelDeleteOnce('snapshot_publish_failed')
+  await button.click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '删除模型', exact: true }).click()
+  await expect(page.getByText('改动已保存但运行配置未刷新', { exact: true })).toBeVisible()
+  await expect(button).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '解除绑定 provider-a - model-a', exact: true })).toHaveCount(0)
+})
+
+async function expectPageWidthBounded(page: Page) {
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+}
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 768, height: 1024 }, { width: 1280, height: 800 }, { width: 1440, height: 900 }]) {
+  test(`many long model names stay contained at ${viewport.width}px`, async ({ page }) => {
+    const mock = await installApiMocks(page)
+    await page.setViewportSize(viewport)
+    const ids = Array.from({ length: 100 }, (_, index) => `tenant/${'long-model-name-'.repeat(12)}${index}`)
+    mock.setModelRows(ids.map(id => groupModel(id)))
+    mock.setPairRows(ids.map(id => groupPair('provider-a', id)))
+    mock.setProviderRows([{ ...groupProvider('provider-a'), pair_count: ids.length }])
+    mock.setProviderDetailPairs(ids.map(id => ({ model: id, upstream_model_id: `upstream/${id}`, enabled: true })))
+    mock.setDiscoveredModels(ids.map(id => ({ id, label: `Label-${id}` })))
+    mock.setGroupDocument({ simple: ids.slice(0, 8).map(model => ({ provider: 'provider-a', model })), medium: [], complex: [] })
+    mock.setDashboardModelRows(ids.map(id => ({ id, display_name: id, requests: 10, input_tokens: 1000, output_tokens: 1000, total_tokens: 2000 })))
+
+    await page.goto('/admin/models')
+    await expect(page.getByRole('button', { name: `删除逻辑模型 ${ids[99]}`, exact: true })).toHaveCount(1)
+    await expectPageWidthBounded(page)
+    const bindingCard = page.locator('.jf-card').filter({ has: page.getByRole('heading', { name: '提供商模型绑定与能力', exact: true }) })
+    const tableScroll = bindingCard.locator('.jf-table-wrap')
+    await tableScroll.evaluate(element => { element.scrollLeft = element.scrollWidth })
+    const unbind = page.getByRole('button', { name: `解除绑定 provider-a - ${ids[0]}`, exact: true })
+    await unbind.scrollIntoViewIfNeeded()
+    const actionBox = await unbind.boundingBox()
+    expect(actionBox).not.toBeNull()
+    expect(actionBox!.x).toBeGreaterThanOrEqual(0)
+    expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(viewport.width)
+    await page.getByRole('button', { name: `删除逻辑模型 ${ids[0]}`, exact: true }).click()
+    const confirmation = page.getByRole('alertdialog')
+    await expect(confirmation).toBeVisible()
+    expect(await confirmation.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+    await confirmation.getByRole('button', { name: '取消' }).click()
+
+    await page.goto('/admin/providers')
+    await page.getByRole('button', { name: '模型绑定 · 100' }).click()
+    const drawer = page.getByRole('dialog', { name: /管理模型绑定/ })
+    await expect(drawer.getByRole('button', { name: `解除绑定 ${ids[0]}`, exact: true })).toBeVisible()
+    await expectPageWidthBounded(page)
+    expect(await drawer.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+    expect(await drawer.locator('.jf-drawer-body').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
+    await drawer.getByRole('button', { name: '完成', exact: true }).click()
+
+    await page.goto('/admin/groups')
+    await expect(page.getByRole('checkbox').first()).toBeVisible()
+    await expect(page.getByRole('checkbox')).toHaveCount(300)
+    await expectPageWidthBounded(page)
+    const move = page.getByRole('button', { name: `下移 provider-a ${ids[0]}`, exact: true })
+    await expect(move).toBeVisible()
+    await move.click()
+    await expect.poll(() => mock.groupPutBodies.length).toBe(1)
+    await expectPageWidthBounded(page)
+
+    await page.goto('/admin/')
+    await expect(page.getByRole('heading', { name: '总览', exact: true })).toBeVisible()
+    await expectPageWidthBounded(page)
+    const usageCard = page.locator('.jf-card').filter({ has: page.getByRole('heading', { name: '模型调用排行', exact: true }) })
+    await usageCard.getByRole('button', { name: '表格', exact: true }).click()
+    await expect(usageCard.locator('tbody tr')).toHaveCount(100)
+    await expectPageWidthBounded(page)
+  })
+}
 
 test('dashboard displays overall latency source and preserves zero measurements', async ({ page }) => {
   const mock = await installApiMocks(page)

@@ -71,7 +71,8 @@ withDefaults(defineProps<{
 }
 
 .jf-card-actions {
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .jf-card-body {

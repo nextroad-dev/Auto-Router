@@ -291,14 +291,28 @@ func CreateModel(ctx context.Context, db *sql.DB, model NewModel) error {
 	if displayName == "" {
 		displayName = model.ID
 	}
-	_, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin model creation: %w", err)
+	}
+	defer tx.Rollback()
+	if err := removeModelExclusion(ctx, tx, model.ID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO models (id, display_name, enabled, source, admin_owned, updated_at)
 		VALUES (?, ?, ?, 'local', 1, `+nowExpression+`)
 	`, model.ID, displayName, boolToInt(model.Enabled))
 	if err != nil && isUniqueViolation(err) {
 		return &ConflictError{Message: "a model with this id already exists"}
 	}
-	return wrapWrite("create model", err)
+	if err := wrapWrite("create model", err); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit model creation: %w", err)
+	}
+	return nil
 }
 
 // ModelFilter narrows a model listing. Empty fields leave the listing

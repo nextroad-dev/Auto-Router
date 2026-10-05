@@ -409,8 +409,9 @@ export interface paths {
          * @description Inserts an administrator-owned local model. The `auto` identifier and the reserved
          *     `provider:` prefix are rejected, so no registry entry can shadow either request syntax.
          *
-         *     There is no corresponding `DELETE`: a model is disabled, never removed, so a stored log row
-         *     never references a row that vanished.
+         *     Explicit creation clears a prior logical-model deletion exclusion. Previously deleted
+         *     provider/model bindings stay excluded until explicitly rebound. Historical log snapshots
+         *     are retained independently of the current registry.
          */
         post: operations["createAdminModel"];
         delete?: never;
@@ -443,7 +444,20 @@ export interface paths {
         get: operations["getAdminModel"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Permanently delete a logical model and all its bindings
+         * @description Deletes a logical model of any source, its provider/model bindings and all matching
+         *     routing-group members atomically. Surviving group members keep their order with compacted
+         *     positions. Providers, other models and historical routing logs/attempts are retained.
+         *     Persistent exclusions prevent local imports and models.dev synchronization from recreating
+         *     the model or its bindings, including bindings from newly discovered providers.
+         *     Explicit model creation or provider model selection clears the model exclusion; previously
+         *     deleted bindings stay excluded unless explicitly rebound.
+         *     The running groups and catalog are republished after commit. A 500
+         *     snapshot_publish_failed means deletion was committed but runtime refresh failed;
+         *     restarting loads the committed registry.
+         */
+        delete: operations["deleteAdminModel"];
         options?: never;
         head?: never;
         /**
@@ -3081,6 +3095,51 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["InsufficientScope"];
             /** @description No such model (`unknown_model`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminError"];
+                };
+            };
+            500: components["responses"]["AdminError"];
+        };
+    };
+    deleteAdminModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description The logical model ID. The route is a Go rest-wildcard (`{id...}`), so the value may contain
+                 *     slashes — real model IDs do, for example `meta-llama/Llama-3.3-70B`. A single trailing slash
+                 *     is removed before lookup. An unknown identifier is `404 unknown_model` rather than `400`,
+                 *     because the answer must not depend on whether the identifier would have been valid.
+                 */
+                id: components["parameters"]["ModelId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The model and its bindings were deleted. */
+            200: {
+                headers: {
+                    "X-Request-Id": components["headers"]["XRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        /** @enum {boolean} */
+                        deleted: true;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["InsufficientScope"];
+            /** @description No such model (unknown_model). */
             404: {
                 headers: {
                     [name: string]: unknown;

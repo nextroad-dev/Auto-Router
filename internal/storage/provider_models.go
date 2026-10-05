@@ -64,6 +64,9 @@ func SelectProviderModel(ctx context.Context, db *sql.DB, providerKey, modelID s
 	} else if err != nil {
 		return false, fmt.Errorf("read provider: %w", err)
 	}
+	if err := removeModelExclusion(ctx, tx, modelID); err != nil {
+		return false, err
+	}
 	if err := removePairExclusion(ctx, tx, providerKey, modelID); err != nil {
 		return false, err
 	}

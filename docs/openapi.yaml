@@ -731,8 +731,9 @@ paths:
         Inserts an administrator-owned local model. The `auto` identifier and the reserved
         `provider:` prefix are rejected, so no registry entry can shadow either request syntax.
 
-        There is no corresponding `DELETE`: a model is disabled, never removed, so a stored log row
-        never references a row that vanished.
+        Explicit creation clears a prior logical-model deletion exclusion. Previously deleted
+        provider/model bindings stay excluded until explicitly rebound. Historical log snapshots
+        are retained independently of the current registry.
       security:
         - adminSession: []
       requestBody:
@@ -833,6 +834,48 @@ paths:
               schema: {$ref: '#/components/schemas/AdminError'}
         '413':
           $ref: '#/components/responses/AdminError'
+        '500':
+          $ref: '#/components/responses/AdminError'
+
+    delete:
+      tags: [Admin]
+      summary: Permanently delete a logical model and all its bindings
+      operationId: deleteAdminModel
+      description: |
+        Deletes a logical model of any source, its provider/model bindings and all matching
+        routing-group members atomically. Surviving group members keep their order with compacted
+        positions. Providers, other models and historical routing logs/attempts are retained.
+        Persistent exclusions prevent local imports and models.dev synchronization from recreating
+        the model or its bindings, including bindings from newly discovered providers.
+        Explicit model creation or provider model selection clears the model exclusion; previously
+        deleted bindings stay excluded unless explicitly rebound.
+        The running groups and catalog are republished after commit. A 500
+        snapshot_publish_failed means deletion was committed but runtime refresh failed;
+        restarting loads the committed registry.
+      security:
+        - adminSession: []
+      responses:
+        '200':
+          description: The model and its bindings were deleted.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/XRequestId'}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, deleted]
+                properties:
+                  id: {type: string}
+                  deleted: {type: boolean, enum: [true]}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No such model (unknown_model).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminError'}
         '500':
           $ref: '#/components/responses/AdminError'
 

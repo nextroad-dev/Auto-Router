@@ -209,11 +209,11 @@ onMounted(() => { void loadGroups() })
           <JfSkeleton v-for="n in 4" :key="n" height="36px" shape="block" />
         </div>
 
-        <div v-else class="grid gap-4">
+        <div v-else class="grid min-w-0 gap-4">
           <!-- Candidate Picker -->
           <div>
             <h4 class="jf-module-title mb-2">选择候选模型</h4>
-            <div class="pair-picker max-h-64 overflow-y-auto rounded-[var(--jf-radius-control)] bg-tonal p-2.5">
+            <div class="pair-picker min-w-0 max-h-64 overflow-y-auto rounded-[var(--jf-radius-control)] bg-tonal p-2.5">
               <div v-if="availablePairs.length" class="space-y-0.5">
                 <JfCheckbox
                   v-for="pair in availablePairs"
@@ -236,16 +236,16 @@ onMounted(() => { void loadGroups() })
             <p v-if="groups[definition.key].some(memberProblem)" class="jf-caption mb-2 text-warning">
               组内有不可用的成员，服务端会拒绝保存整个分组；请先移除标记的成员。
             </p>
-            <ol v-if="groups[definition.key].length" class="grid gap-1.5">
+            <ol v-if="groups[definition.key].length" class="grid min-w-0 gap-1.5">
               <li
                 v-for="(pair, index) in groups[definition.key]"
                 :key="pairKey(pair)"
-                class="flex items-center gap-2 rounded-[var(--jf-radius-control)] bg-tonal px-3 py-2 transition-colors hover:bg-tonal-hover"
+                class="flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--jf-radius-control)] bg-tonal px-3 py-2 transition-colors hover:bg-tonal-hover"
               >
                 <span class="jf-caption jf-tabular jf-nowrap w-5 shrink-0 text-ink-secondary font-medium">
                   {{ index + 1 }}
                 </span>
-                <span class="jf-caption jf-truncate flex-1">
+                <span class="jf-caption jf-truncate min-w-20 flex-1" :title="`${pair.provider} · ${pair.model}`">
                   <span class="text-ink-secondary">{{ pair.provider }} · </span>
                   <span class="font-mono font-medium">{{ pair.model }}</span>
                 </span>

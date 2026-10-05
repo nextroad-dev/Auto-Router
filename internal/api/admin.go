@@ -201,6 +201,7 @@ func NewAdmin(options AdminOptions) http.Handler {
 	mux.HandleFunc("GET /admin/v1/models/{id...}", handler.handleModelDetail)
 	mux.HandleFunc("POST /admin/v1/models", handler.handleModelCreate)
 	mux.HandleFunc("PATCH /admin/v1/models/{id...}", handler.handleModelPatch)
+	mux.HandleFunc("DELETE /admin/v1/models/{id...}", handler.handleModelDelete)
 	mux.HandleFunc("GET /admin/v1/providers", handler.handleProviderList)
 	mux.HandleFunc("GET /admin/v1/providers/{key}", handler.handleProviderDetail)
 	mux.HandleFunc("POST /admin/v1/providers", handler.handleProviderCreate)

@@ -66,6 +66,14 @@ func DeletePair(ctx context.Context, db *sql.DB, providerKey, modelID string) er
 }
 
 func removePairFromRoutingGroups(ctx context.Context, tx *sql.Tx, providerKey, modelID string) error {
+	return removeRoutingGroupMembers(ctx, tx, func(member pairGroupMember) bool {
+		return member.provider == providerKey && member.model == modelID
+	})
+}
+
+// removeRoutingGroupMembers preserves the order of surviving members and
+// compacts their positions before any referenced registry rows are removed.
+func removeRoutingGroupMembers(ctx context.Context, tx *sql.Tx, remove func(pairGroupMember) bool) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT group_name, provider_key, model_id
 		FROM routing_group_members
@@ -81,7 +89,7 @@ func removePairFromRoutingGroups(ctx context.Context, tx *sql.Tx, providerKey, m
 			rows.Close()
 			return fmt.Errorf("scan routing groups for binding deletion: %w", err)
 		}
-		if member.provider != providerKey || member.model != modelID {
+		if !remove(member) {
 			members = append(members, member)
 		}
 	}

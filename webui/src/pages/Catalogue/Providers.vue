@@ -463,7 +463,7 @@ async function removeModelPair(pair: ProviderPair) {
 }
 
 const columns: JfColumn[] = [
-  { key: 'key', title: '提供商', nowrap: true },
+  { key: 'key', title: '提供商', width: '14rem' },
   { key: 'kind', title: '类型' },
   { key: 'base_url', title: '端点地址' },
   { key: 'api_key_set', title: '上游密钥' },
@@ -521,8 +521,8 @@ const columns: JfColumn[] = [
       <div class="jf-scroll-x">
         <JfTable :rows="providers" :columns="columns" :loading="loading" empty-text="尚未配置任何提供商">
           <template #cell-key="{ row }">
-            <div class="font-medium">{{ row.display_name || row.key }}</div>
-            <code class="jf-caption font-mono text-ink-secondary">{{ row.key }}</code>
+            <div class="max-w-56 jf-anywhere font-medium" :title="row.display_name || row.key">{{ row.display_name || row.key }}</div>
+            <code class="block max-w-56 jf-anywhere jf-caption font-mono text-ink-secondary" :title="row.key">{{ row.key }}</code>
           </template>
 
           <template #cell-kind="{ row }">
@@ -698,7 +698,7 @@ const columns: JfColumn[] = [
               v-model="manualModel"
               placeholder="输入上游模型 ID，例如 gpt-4o"
               aria-label="输入上游模型 ID"
-              class="grow font-mono"
+              class="min-w-0 grow font-mono"
               @keydown.enter.prevent="addModelPair(manualModel)"
             />
             <JfButton
@@ -721,11 +721,11 @@ const columns: JfColumn[] = [
             <div
               v-for="pair in configuredPairs"
               :key="pair.model"
-              class="flex items-center justify-between gap-3 rounded-[var(--jf-radius-control)] bg-tonal px-3.5 py-2.5"
+              class="flex min-w-0 flex-col items-stretch justify-between gap-3 rounded-[var(--jf-radius-control)] bg-tonal px-3.5 py-2.5 sm:flex-row sm:items-center"
             >
-              <div class="min-w-0">
-                <code class="font-mono font-medium block jf-truncate">{{ pair.model }}</code>
-                <span class="jf-caption text-ink-secondary block">上游 ID：{{ pair.upstream_model_id }}</span>
+              <div class="min-w-0 flex-1">
+                <code class="font-mono font-medium block jf-anywhere" :title="pair.model">{{ pair.model }}</code>
+                <span class="jf-caption text-ink-secondary block jf-anywhere">上游 ID：{{ pair.upstream_model_id }}</span>
               </div>
               <div class="jf-action-group shrink-0">
                 <JfBadge :tone="pair.enabled ? 'success' : 'neutral'">{{ pair.enabled ? '已启用' : '已停用' }}</JfBadge>
@@ -759,11 +759,11 @@ const columns: JfColumn[] = [
             <div
               v-for="model in candidateModels"
               :key="model.id"
-              class="flex items-center justify-between gap-3 rounded-[var(--jf-radius-control)] bg-tonal px-3.5 py-2.5"
+              class="flex min-w-0 flex-col items-stretch justify-between gap-3 rounded-[var(--jf-radius-control)] bg-tonal px-3.5 py-2.5 sm:flex-row sm:items-center"
             >
-              <div class="min-w-0">
-                <code class="font-mono font-medium block jf-truncate">{{ model.id }}</code>
-                <span v-if="model.label" class="jf-caption text-ink-secondary block">{{ model.label }}</span>
+              <div class="min-w-0 flex-1">
+                <code class="font-mono font-medium block jf-anywhere" :title="model.id">{{ model.id }}</code>
+                <span v-if="model.label" class="jf-caption text-ink-secondary block jf-anywhere">{{ model.label }}</span>
               </div>
               <div class="jf-action-group shrink-0">
                 <JfBadge v-if="configuredPair(model.id)?.enabled" tone="success">已绑定</JfBadge>

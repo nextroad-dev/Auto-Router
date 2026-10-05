@@ -190,6 +190,8 @@ pre {
 /* ——— Layout helpers ——— */
 .jf-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: var(--jf-space-8);
   align-content: start;
 }
@@ -218,6 +220,7 @@ pre {
 
 .jf-scroll-x {
   min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
 }
 
@@ -554,6 +557,7 @@ pre {
 }
 
 .dashboard-content-inner {
+  min-width: 0;
   margin-inline: auto;
   width: 100%;
   max-width: var(--jf-content-max);

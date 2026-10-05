@@ -116,6 +116,7 @@ function onScrimClick() {
 
 .jf-drawer-heading {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .jf-drawer-heading h2 {

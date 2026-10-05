@@ -40,7 +40,7 @@ const windowOptions: Array<{ label: string; value: SummaryWindow }> = [
 ]
 
 const modelColumns: JfColumn[] = [
-  { key: 'id', title: '逻辑模型', nowrap: true },
+  { key: 'id', title: '逻辑模型', width: '16rem' },
   { key: 'requests', title: '调用次数', align: 'end' },
   { key: 'input_tokens', title: '输入 Token', align: 'end' },
   { key: 'output_tokens', title: '输出 Token', align: 'end' },
@@ -741,7 +741,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
                 <span class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-tonal font-mono text-[10px] text-ink-secondary">
                   {{ idx + 1 }}
                 </span>
-                <span class="jf-truncate font-mono font-medium text-ink">{{ rowName(m) }}</span>
+                <span class="jf-truncate font-mono font-medium text-ink" :title="rowName(m)">{{ rowName(m) }}</span>
               </div>
               <div class="flex items-center gap-3 shrink-0 font-mono">
                 <span class="text-ink">{{ count(m.requests) }} 次</span>
@@ -762,7 +762,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
         <!-- 表格视图 -->
         <div v-else class="jf-scroll-x -mx-4 -mb-4">
           <JfTable :rows="report?.models ?? []" :columns="modelColumns" :loading="loading" empty-text="暂无模型用量记录">
-            <template #cell-id="{ row }"><span class="jf-mono font-medium">{{ rowName(row) }}</span></template>
+            <template #cell-id="{ row }"><span class="block min-w-28 max-w-56 jf-anywhere jf-mono font-medium" :title="rowName(row)">{{ rowName(row) }}</span></template>
             <template #cell-requests="{ row }"><span class="jf-nowrap jf-mono">{{ count(row.requests) }}</span></template>
             <template #cell-input_tokens="{ row }"><span class="jf-nowrap jf-mono">{{ count(row.input_tokens) }}</span></template>
             <template #cell-output_tokens="{ row }"><span class="jf-nowrap jf-mono">{{ count(row.output_tokens) }}</span></template>

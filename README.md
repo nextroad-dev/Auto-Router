@@ -138,6 +138,8 @@ Anthropic 和 Gemini 原生接口要求所选上游支持相同协议。OpenAI C
 
 当前组路由的日志 API 与 `-logs-check` 不再输出空的旧版 `candidate_models`、`model_count`、`selected_model` 和 `probabilities`；旧记录有实际数据时仍可读取，CLI JSON 的旧 `selected` 改为与 API 一致的 `selected_model`，旧模型分布同时保留模型标识和概率。Jev 追踪不再重复主记录已有的状态、耗时、置信度、兜底原因和指纹；`group_count` 可由 `candidate_groups.length` 得出，不再输出。当前推荐使用 `candidate_groups`、`recommended_group`、`selected_group` 与 `group_probabilities`。这些是日志输出契约变更，直接解析上述字段的脚本需要同步调整；没有删除历史数据库字段，也没有回填未知用量。
 
+模型管理页支持永久删除任意来源的逻辑模型：确认后会一并删除其全部提供商绑定、移除模型分组引用并刷新运行时目录，提供商和历史路由日志保持不变。删除排除记录会持久保存在数据库中，配置导入和 models.dev 同步不会自动恢复该模型；显式重新创建模型或在提供商页面重新绑定可以恢复模型，其他已删除绑定仍需逐个显式恢复。如果返回 `snapshot_publish_failed`，删除已经提交，但运行时刷新失败，需要重启以加载数据库中的最新目录。
+
 模型管理页可查看 models.dev 最近同步结果并显式触发全局同步；仪表盘分开显示服务健康/依赖状态与路由、Jev 窗口汇总。设置页的“重置所有运行时覆盖”会恢复代码默认值并清除运行时保存的 Jev 密钥，但不会删除 Provider、模型、绑定或入站凭据。
 
 `/debug/analyze` 与 `/debug/route` 是可选的诊断端点，服务端仍会执行 loopback/配置限制；它们可能处理敏感请求内容，不通过远程管理页面提供交互。`/debug/route` 对请求体试运行与 `model: "auto"` 完全相同的线上路由（含真实 Jev 调用，但不调用上游、不写路由日志），返回将要转发的目标、选组过程与特征。

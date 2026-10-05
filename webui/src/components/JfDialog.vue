@@ -126,6 +126,7 @@ function onScrimClick() {
 
 .jf-dialog-heading {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .jf-dialog-heading h2 {
