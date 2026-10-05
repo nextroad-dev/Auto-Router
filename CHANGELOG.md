@@ -2,7 +2,7 @@
 
 本文件记录对使用者可见的行为变更，尤其是日志字段与配置契约。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.1.0] - 2026-10-05
 
 ### 新增
 
