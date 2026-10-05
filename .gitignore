@@ -15,3 +15,7 @@
 *.test
 coverage.out
 /webui/.generated/
+
+# local tooling
+/.pi/
+/.serena/

@@ -1,0 +1,16 @@
+Auto Router
+Copyright 2026 Auto Router contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party assets embedded in the admin console build
+(internal/api/dashboard/static/web/):
+
+- IBM Plex Sans, IBM Plex Mono — Copyright IBM Corp., SIL Open Font License 1.1
+  (via @fontsource/ibm-plex-sans, @fontsource/ibm-plex-mono)
+- Noto Sans SC — Copyright Google LLC / Adobe, SIL Open Font License 1.1
+  (via @fontsource/noto-sans-sc)
+- Lucide icons — ISC License (via @iconify-json/lucide)
+
+The full list of frontend dependencies and their licenses is in
+webui/package-lock.json; Go dependencies are listed in go.sum.
