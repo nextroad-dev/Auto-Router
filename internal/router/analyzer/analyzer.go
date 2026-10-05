@@ -7,9 +7,6 @@
 //   - Pure: Analyze is a function over bytes. It performs no I/O, writes no
 //     log, mutates neither the input slice nor any global state, and depends on
 //     no HTTP layer, registry, Provider transport, configuration loader or SQLite.
-//     A source-level import guard test pins that dependency set, which is how
-//     "the analyzer never calls an agent and never sends a network request" is
-//     proven rather than asserted.
 //   - Content never fails: malformed, empty, JSON-`null` or oversized bodies
 //     produce zero-value features (plus Truncated when the body was not fully
 //     seen) and no error. Only the protocol identity can be rejected, because it
@@ -79,11 +76,6 @@ const (
 	// messages together). Exceeding it evicts the oldest messages and sets
 	// View.Truncated.
 	maxViewBytes = 1 << 20
-	// maxTextScanBytes bounds how much text is scanned for the code and
-	// reasoning marker phrases. The markers are heuristics, so the bound is a
-	// scan budget rather than a completeness claim.
-	maxTextScanBytes = 1 << 20
-
 	// tokenEstimateDivisor is the bytes-per-token divisor of the crude input
 	// size estimate. InputTokensEstimate is a heuristic for classification
 	// only, never a billing or usage number: stage 8 takes usage from the
@@ -170,10 +162,8 @@ type Features struct {
 	// values auto, required and none are not a forced choice.
 	ForcedToolChoice bool
 
-	HasCode         bool
-	ReasoningLikely bool
-	ChainedToolUse  bool
-	FileSearchUsed  bool
+	ChainedToolUse bool
+	FileSearchUsed bool
 
 	StreamRequested          bool
 	MaxOutputTokensRequested *int
@@ -272,7 +262,6 @@ type walk struct {
 	// viewMessageBytes, which is the part eviction can give back.
 	viewBytes        int
 	viewMessageBytes int
-	textScanned      int
 }
 
 func newWalk(protocol providers.Protocol, window []byte, windowTruncated bool) *walk {
@@ -324,13 +313,6 @@ func NormalizeRole(role string) string {
 	default:
 		return "other"
 	}
-}
-
-// IsNoReasoning reports a reasoning control value that explicitly asks for no
-// reasoning. The literal is the only spelling either protocol uses, so the
-// comparison is case-insensitive and nothing else is treated as "off".
-func IsNoReasoning(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "none")
 }
 
 func lengthClass(tokens int) LengthClass {

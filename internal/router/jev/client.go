@@ -49,9 +49,9 @@ const (
 	// kilobytes; the limit exists so a hostile or broken peer cannot stream
 	// unbounded data into memory.
 	maxResponseBytes = 1 << 20
-	// maxRequestBytes bounds the encoded request body. It is generous enough
-	// for a full conversation with tools, and bounded so a pathological input
-	// cannot exhaust memory.
+	// maxRequestBytes is a transport guard for the complete encoded body. It
+	// does not measure model tokens or represent Jev's context capacity. The
+	// automatic router applies its smaller byte budget before calling this client.
 	maxRequestBytes = 4 << 20
 	// maxCandidates is the largest candidate set one routing question may
 	// carry. The verified official Choice primitive accepts at most 255
@@ -86,9 +86,9 @@ type InputMode string
 const (
 	// InputModeContent sends a bounded digest of the analyzer's conversation
 	// view: excerpts of the latest user turns and of the system prompt, with
-	// assistant turns and tool outputs summarized as counts. It is the mode
-	// that makes the recommendation as well-informed as possible at the cost of
-	// sending prompt excerpts off-process.
+	// assistant turns and tool outputs summarized as counts, plus a short excerpt
+	// of the last assistant turn. It sends original-text excerpts off-process,
+	// not a full conversation or an LLM-generated semantic summary.
 	InputModeContent InputMode = "content"
 	// InputModeRedacted sends the same digest after deterministic, best-effort
 	// redaction: URLs, email addresses, inline data URIs, token-shaped and
@@ -205,11 +205,11 @@ type Request struct {
 	// Candidates is the non-empty, duplicate-free set of models the caller
 	// allows. Order is preserved in the request; the result is sorted.
 	Candidates []Candidate
-	// Messages is the conversation exactly as the client sent it. It is
-	// forwarded verbatim: rewriting the prompt would change what the model
-	// judges. The configured input mode controls what reaches this client.
+	// Messages is the routing input prepared by the caller. Automatic routing
+	// supplies bounded excerpts and count summaries, or structural features.
+	// This client serializes that prepared input without further reduction.
 	Messages []Message
-	// SystemPrompt, when non-empty, mirrors the client's system instruction.
+	// SystemPrompt contains the prepared system excerpt and routing-digest note.
 	SystemPrompt string
 	// Tools lists the tool names the client offered. Only the names are sent:
 	// the routing question is about capability, not about tool schemas.
@@ -273,10 +273,6 @@ type Config struct {
 	Timeout time.Duration
 	// CaptureRawIO keeps the raw request and response bytes in the Result.
 	CaptureRawIO bool
-	// InputMode selects how much of the conversation the caller sends. It is
-	// validated but never interpreted here: the orchestrator builds the request
-	// body, and this package only refuses a mode it does not know.
-	InputMode InputMode
 }
 
 // Client is a ready-to-use System One client. It is safe for concurrent use:
@@ -310,17 +306,6 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("%w: base URL must use https unless the host is loopback", ErrNotConfigured)
 	}
 	if err := validateModelName(cfg.Model); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNotConfigured, err)
-	}
-	// An empty mode means "the caller did not set one", which is the content
-	// mode: a client built programmatically keeps working. An unknown non-empty
-	// mode is refused so a typo cannot silently degrade to a different
-	// privacy/decision trade-off.
-	inputMode := cfg.InputMode
-	if inputMode == "" {
-		inputMode = InputModeContent
-	}
-	if _, err := ParseInputMode(string(inputMode)); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotConfigured, err)
 	}
 	if cfg.Timeout <= 0 {

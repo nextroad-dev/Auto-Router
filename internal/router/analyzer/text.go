@@ -4,76 +4,16 @@ import (
 	"strings"
 )
 
-// This file holds the text-level rules shared by both protocols: how a content
-// value yields text, which markers set HasCode and ReasoningLikely, and how a
-// text block is recorded. The rules are deliberately literal substring checks
-// over a bounded scan budget: stage 5 reports signals, and a heuristic that is
-// invisible in the code would be impossible to test or to explain in stage 6.
+// This file extracts text and media from the content shapes shared by both
+// protocols. Task difficulty is judged by Jev from the configured routing input;
+// the analyzer records protocol facts without scanning prose for keywords.
 
-// reasoningMarkers are the fixed phrases that make a reasoning-shaped request
-// likely. They are matched case-insensitively as substrings inside the analyzed
-// text window. The list is intentionally small and stable; a wider list would
-// turn a feature into a guess.
-var reasoningMarkers = []string{
-	"step by step",
-	"chain of thought",
-	"think step",
-	"think carefully",
-	"reason carefully",
-	"prove that",
-	"derive the",
-	"trade-off",
-	"tradeoff",
-	"pros and cons",
-}
-
-// codeMarkers are the fixed phrases that mark a code- or patch-shaped request.
-var codeMarkers = []string{"```", "diff --git", "--- a/", "+++ b/", "@@ "}
-
-// scanText updates the code and reasoning signals from one text block. All text
-// in a request shares one scan budget, so a request full of prose cannot make
-// the analysis arbitrarily expensive.
-func (w *walk) scanText(text string) {
-	if text == "" || w.textScanned >= maxTextScanBytes {
-		return
-	}
-	if remaining := maxTextScanBytes - w.textScanned; len(text) > remaining {
-		text = text[:remaining]
-	}
-	w.textScanned += len(text)
-	lowered := strings.ToLower(text)
-	if !w.features.HasCode && matchesMarker(lowered, codeMarkers) {
-		w.features.HasCode = true
-	}
-	if !w.features.ReasoningLikely && matchesMarker(lowered, reasoningMarkers) {
-		w.features.ReasoningLikely = true
-	}
-}
-
-// matchesMarker reports whether the lowered text contains any marker.
-func matchesMarker(lowered string, markers []string) bool {
-	for _, marker := range markers {
-		if strings.Contains(lowered, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// recordText records one block of message text: the input-kind signal, the code
-// and reasoning scans, and the tool/function rule. It returns the text so a
-// caller can put it in the view.
-func (w *walk) recordText(role, text string) string {
+// recordText records a text input kind and returns the text for the view.
+func (w *walk) recordText(text string) string {
 	if text == "" {
 		return ""
 	}
 	w.addKind(KindText)
-	w.scanText(text)
-	// Content produced by a tool call is machine output: it carries code far
-	// more often than not, and the routing decision cares about that.
-	if role == "tool" || role == "function" {
-		w.features.HasCode = true
-	}
 	return text
 }
 
@@ -118,10 +58,10 @@ func (w *walk) deepText(value node, depth int) (string, bool) {
 // concatenation of the text parts of an array. It reports whether the shape was
 // recognized at all, so an unknown shape is counted instead of silently treated
 // as empty text.
-func (w *walk) contentText(content node, role string) (string, bool) {
+func (w *walk) contentText(content node) (string, bool) {
 	switch content.kind {
 	case kindString:
-		return w.recordText(role, content.text()), true
+		return w.recordText(content.text()), true
 	case kindArray:
 		parts := content.items()
 		if len(parts) > maxContentPartsPerMessage {
@@ -130,7 +70,7 @@ func (w *walk) contentText(content node, role string) (string, bool) {
 		}
 		collected := make([]string, 0, len(parts))
 		for _, part := range parts {
-			if text, ok := w.partText(part, role, 1); ok && text != "" {
+			if text, ok := w.partText(part, 1); ok && text != "" {
 				collected = append(collected, text)
 			}
 		}
@@ -145,8 +85,8 @@ func (w *walk) contentText(content node, role string) (string, bool) {
 
 // partText interprets one content part. It reports the part's text (empty for
 // non-text parts) and whether the part type was recognized. Recognition updates
-// the media, chain-of-tools, file-search and reasoning signals as a side effect.
-func (w *walk) partText(part node, role string, depth int) (string, bool) {
+// the media and chained-tool-use signals as a side effect.
+func (w *walk) partText(part node, depth int) (string, bool) {
 	if part.kind != kindObject {
 		if part.kind != kindInvalid {
 			w.noteUnrecognized()
@@ -159,7 +99,7 @@ func (w *walk) partText(part node, role string, depth int) (string, bool) {
 		if !ok {
 			return "", true
 		}
-		return w.recordText(role, text), true
+		return w.recordText(text), true
 	case "refusal":
 		// A refusal is assistant text in both protocols; the field name differs
 		// between the chat and Responses shapes.
@@ -167,7 +107,7 @@ func (w *walk) partText(part node, role string, depth int) (string, bool) {
 		if !ok {
 			return "", true
 		}
-		return w.recordText(role, text), true
+		return w.recordText(text), true
 	case "image_url", "input_image":
 		// Chat nests the reference in an object ({"image_url": {"url": ...}});
 		// a bare string is accepted too, because both shapes appear in the wild.
@@ -183,7 +123,8 @@ func (w *walk) partText(part node, role string, depth int) (string, bool) {
 		w.features.ChainedToolUse = true
 		return "", true
 	case "reasoning", "reasoning_summary", "reasoning_text", "summary":
-		w.features.ReasoningLikely = true
+		// Provider reasoning is protocol machinery; it is not copied into the
+		// routing view and does not establish the difficulty of the next turn.
 		return "", true
 	case "":
 		if _, ok := part.member("text"); ok {
@@ -193,7 +134,7 @@ func (w *walk) partText(part node, role string, depth int) (string, bool) {
 			if !ok {
 				return "", true
 			}
-			return w.recordText(role, text), true
+			return w.recordText(text), true
 		}
 		w.noteUnrecognized()
 		return "", false

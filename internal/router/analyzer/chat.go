@@ -17,7 +17,6 @@ func (w *walk) chat(root node) {
 	w.chatToolChoice(root)
 	w.chatStream(root)
 	w.chatMaxOutput(root)
-	w.chatReasoning(root)
 }
 
 func (w *walk) chatMessages(root node) {
@@ -53,7 +52,7 @@ func (w *walk) chatMessage(message node) {
 	w.addRole(role)
 
 	if content, ok := message.member("content"); ok && !content.isNull() {
-		text, _ := w.contentText(content, role)
+		text, _ := w.contentText(content)
 		w.recordTurn(role, text)
 	}
 	// A tool-calling turn may carry the assistant's legacy function_call
@@ -67,14 +66,6 @@ func (w *walk) chatMessage(message node) {
 		} else if len(calls.items()) > 0 {
 			w.features.ChainedToolUse = true
 		}
-	}
-	// Chat has no reasoning content part: reasoning arrives as a separate
-	// member (reasoning or reasoning_content) on an assistant message.
-	if _, ok := message.member("reasoning_content"); ok {
-		w.features.ReasoningLikely = true
-	}
-	if raw, ok := message.member("reasoning"); ok && !raw.isNull() && raw.kind != kindInvalid {
-		w.features.ReasoningLikely = true
 	}
 }
 
@@ -175,19 +166,5 @@ func (w *walk) chatMaxOutput(root node) {
 			w.setMaxOutput(value)
 		}
 		return
-	}
-}
-
-// chatReasoning reads the chat-shaped reasoning controls.
-func (w *walk) chatReasoning(root node) {
-	if effort, ok := root.member("reasoning_effort"); ok {
-		if !effort.isNull() && effort.kind != kindInvalid {
-			if !IsNoReasoning(effort.stringValue()) {
-				w.features.ReasoningLikely = true
-			}
-		}
-	}
-	if _, ok := root.member("reasoning"); ok {
-		w.features.ReasoningLikely = true
 	}
 }

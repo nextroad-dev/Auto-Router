@@ -28,40 +28,39 @@ import (
 //     with an empty page, which is a different answer from a refused query.
 
 // logEventPayload is one stored event as the management surface reports it. Every
-// pointer field is a column that can be NULL, and NULL is reported as JSON null
-// rather than as a zero: "the upstream did not report this" is not "zero".
+// pointer field is a column that can be NULL. Unknown or inapplicable fields are
+// omitted; a non-nil zero remains zero. Storage is not rewritten by this view.
 type logEventPayload struct {
-	ID               int64    `json:"id"`
-	RequestID        string   `json:"request_id"`
-	StartedAt        string   `json:"started_at"`
-	DurationMS       int64    `json:"duration_ms"`
-	Protocol         string   `json:"protocol"`
-	RoutingMode      *string  `json:"routing_mode"`
-	SelectionMode    *string  `json:"selection_mode"`
-	RequestedModel   *string  `json:"requested_model"`
-	EffectiveModel   *string  `json:"effective_model"`
-	ProviderKey      *string  `json:"provider"`
-	UpstreamModel    *string  `json:"upstream_model"`
-	Status           int      `json:"status"`
-	UpstreamStatus   *int     `json:"upstream_status"`
-	ErrorCode        *string  `json:"error_code"`
-	Stream           bool     `json:"stream"`
-	BytesWritten     int64    `json:"bytes_written"`
-	ClientIP         *string  `json:"client_ip"`
-	JevStatus        *string  `json:"jev_status"`
-	Confidence       *float64 `json:"confidence"`
-	ConfidenceBand   *string  `json:"confidence_band"`
-	FallbackReason   *string  `json:"fallback_reason"`
-	EvidenceHash     *string  `json:"evidence_hash"`
-	GatewayAttempts  int      `json:"gateway_attempts"`
-	FailoverUsed     bool     `json:"failover_used"`
-	RoutingLatencyMS *int64   `json:"routing_latency_ms"`
-	JevLatencyMS     *int64   `json:"jev_latency_ms"`
-	InputTokens      *int64   `json:"input_tokens"`
-	OutputTokens     *int64   `json:"output_tokens"`
-	TotalTokens      *int64   `json:"total_tokens"`
-	UsageStatus      string   `json:"usage_status"`
-	UsageSource      *string  `json:"usage_source"`
+	ID               int64                `json:"id"`
+	RequestID        string               `json:"request_id"`
+	StartedAt        string               `json:"started_at"`
+	DurationMS       int64                `json:"duration_ms"`
+	Protocol         string               `json:"protocol"`
+	RoutingMode      *string              `json:"routing_mode,omitempty"`
+	SelectionMode    *string              `json:"selection_mode,omitempty"`
+	RequestedModel   *string              `json:"requested_model,omitempty"`
+	EffectiveModel   *string              `json:"effective_model,omitempty"`
+	ProviderKey      *string              `json:"provider,omitempty"`
+	UpstreamModel    *string              `json:"upstream_model,omitempty"`
+	Status           int                  `json:"status"`
+	UpstreamStatus   *int                 `json:"upstream_status,omitempty"`
+	ErrorCode        *string              `json:"error_code,omitempty"`
+	Stream           bool                 `json:"stream"`
+	BytesWritten     int64                `json:"bytes_written"`
+	ClientIP         *string              `json:"client_ip,omitempty"`
+	JevStatus        *string              `json:"jev_status,omitempty"`
+	Confidence       *float64             `json:"confidence,omitempty"`
+	FallbackReason   *string              `json:"fallback_reason,omitempty"`
+	Diagnostics      *logging.Diagnostics `json:"diagnostics,omitempty"`
+	GatewayAttempts  int                  `json:"gateway_attempts"`
+	FailoverUsed     bool                 `json:"failover_used"`
+	RoutingLatencyMS *int64               `json:"routing_latency_ms,omitempty"`
+	JevLatencyMS     *int64               `json:"jev_latency_ms,omitempty"`
+	InputTokens      *int64               `json:"input_tokens,omitempty"`
+	OutputTokens     *int64               `json:"output_tokens,omitempty"`
+	TotalTokens      *int64               `json:"total_tokens,omitempty"`
+	UsageStatus      string               `json:"usage_status"`
+	UsageSource      *string              `json:"usage_source,omitempty"`
 	// JevTrace is present only when a trace was stored for this request, which is
 	// what makes the request_id filter the one way to read a detail view: the trace
 	// belongs to the event, not to a second identifier namespace.
@@ -72,41 +71,35 @@ type logEventPayload struct {
 type logAttemptPayload struct {
 	ID           int64   `json:"id"`
 	Index        int     `json:"attempt_index"`
-	Group        *string `json:"group_name"`
-	Provider     *string `json:"provider"`
-	Model        *string `json:"model_id"`
+	Group        *string `json:"group_name,omitempty"`
+	Provider     *string `json:"provider,omitempty"`
+	Model        *string `json:"model_id,omitempty"`
 	StartedAt    string  `json:"started_at"`
-	CompletedAt  *string `json:"completed_at"`
-	Status       *int    `json:"status"`
-	ErrorCode    *string `json:"error_code"`
-	ErrorDetail  *string `json:"error_detail"`
-	InputTokens  *int64  `json:"input_tokens"`
-	OutputTokens *int64  `json:"output_tokens"`
-	TotalTokens  *int64  `json:"total_tokens"`
+	CompletedAt  *string `json:"completed_at,omitempty"`
+	Status       *int    `json:"status,omitempty"`
+	ErrorCode    *string `json:"error_code,omitempty"`
+	ErrorDetail  *string `json:"error_detail,omitempty"`
+	InputTokens  *int64  `json:"input_tokens,omitempty"`
+	OutputTokens *int64  `json:"output_tokens,omitempty"`
+	TotalTokens  *int64  `json:"total_tokens,omitempty"`
 	UsageStatus  string  `json:"usage_status"`
 }
 
-// jevTracePayload is the stored Jev trace. It carries identifiers, counts,
-// durations and the normalized distribution, exactly as the table does.
+// jevTracePayload adds candidate metadata and distributions to the main event.
+// It does not duplicate the event's status, duration, confidence or fingerprint.
+// Empty legacy model fields are omitted; stored history is not rewritten.
 type jevTracePayload struct {
-	Status             string             `json:"status"`
-	FailureReason      *string            `json:"failure_reason"`
+	FailureReason      *string            `json:"failure_reason,omitempty"`
 	InputMode          string             `json:"input_mode"`
-	LatencyMS          *int64             `json:"latency_ms"`
 	CandidateCount     int                `json:"candidate_count"`
-	CandidateModels    []string           `json:"candidate_models"`
-	ModelCount         int                `json:"model_count"`
-	SelectedModel      *string            `json:"selected_model"`
+	CandidateModels    []string           `json:"candidate_models,omitempty"`
+	ModelCount         int                `json:"model_count,omitempty"`
+	SelectedModel      *string            `json:"selected_model,omitempty"`
 	CandidateGroups    []string           `json:"candidate_groups"`
-	GroupCount         int                `json:"group_count"`
-	RecommendedGroup   *string            `json:"recommended_group"`
-	SelectedGroup      *string            `json:"selected_group"`
-	GroupProbabilities []groupProbability `json:"group_probabilities"`
-	Confidence         *float64           `json:"confidence"`
-	ConfidenceBand     *string            `json:"confidence_band"`
-	FallbackReason     *string            `json:"fallback_reason"`
-	EvidenceHash       *string            `json:"evidence_hash"`
-	Probabilities      []modelProbability `json:"probabilities"`
+	RecommendedGroup   *string            `json:"recommended_group,omitempty"`
+	SelectedGroup      *string            `json:"selected_group,omitempty"`
+	GroupProbabilities []groupProbability `json:"group_probabilities,omitempty"`
+	Probabilities      []modelProbability `json:"probabilities,omitempty"`
 }
 
 type modelProbability struct {
@@ -179,6 +172,8 @@ func (h *adminHandler) handleLogList(w http.ResponseWriter, r *http.Request) {
 			}
 			if trace != nil {
 				item.JevTrace = jevTracePayloadOf(trace)
+				item.Confidence = entry.Event.RecommendationConfidence(trace)
+				item.Diagnostics = entry.Event.DiagnosticDetails(trace)
 			}
 		}
 		payload = append(payload, item)
@@ -470,9 +465,9 @@ func (h *adminHandler) handleSyncState(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// logEventPayloadOf converts one stored event into its reported shape. The mapping
-// is total: every column has exactly one field, and a NULL column becomes a nil
-// pointer rather than a zero value.
+// logEventPayloadOf converts one stored event into its compact operational view.
+// Unknown columns become nil pointers (omitted on the wire), not zero values.
+// Historical-only metadata is grouped under diagnostics without mutating storage.
 func logEventPayloadOf(entry storage.StoredEvent) logEventPayload {
 	event := entry.Event
 	payload := logEventPayload{
@@ -502,10 +497,9 @@ func logEventPayloadOf(entry storage.StoredEvent) logEventPayload {
 	payload.ErrorCode = optionalString(event.ErrorCode)
 	payload.ClientIP = optionalString(event.ClientIP)
 	payload.JevStatus = optionalString(event.JevStatus)
-	payload.ConfidenceBand = optionalString(event.ConfidenceBand)
 	payload.FallbackReason = optionalString(event.FallbackReason)
-	payload.EvidenceHash = optionalString(event.EvidenceHash)
-	payload.Confidence = event.Confidence
+	payload.Diagnostics = event.DiagnosticDetails(entry.JevTrace)
+	payload.Confidence = event.RecommendationConfidence(entry.JevTrace)
 	payload.UsageSource = optionalString(event.Usage.Source)
 	if event.UpstreamStatus != 0 {
 		status := event.UpstreamStatus
@@ -520,23 +514,16 @@ func jevTracePayloadOf(trace *logging.JevTrace) *jevTracePayload {
 		return nil
 	}
 	payload := &jevTracePayload{
-		Status:             trace.Status,
 		FailureReason:      optionalString(trace.FailureReason),
 		InputMode:          trace.InputMode,
-		LatencyMS:          trace.LatencyMS,
 		CandidateCount:     trace.CandidateCount,
 		CandidateModels:    append([]string{}, trace.CandidateModels...),
 		ModelCount:         trace.ModelCount,
 		SelectedModel:      optionalString(trace.Selected),
 		CandidateGroups:    append([]string{}, trace.CandidateGroups...),
-		GroupCount:         trace.GroupCount,
 		RecommendedGroup:   optionalString(trace.RecommendedGroup),
 		SelectedGroup:      optionalString(trace.SelectedGroup),
 		GroupProbabilities: make([]groupProbability, 0, len(trace.GroupProbabilities)),
-		Confidence:         trace.Confidence,
-		ConfidenceBand:     optionalString(trace.ConfidenceBand),
-		FallbackReason:     optionalString(trace.FallbackReason),
-		EvidenceHash:       optionalString(trace.EvidenceHash),
 		Probabilities:      make([]modelProbability, 0, len(trace.Probabilities)),
 	}
 	for _, probability := range trace.Probabilities {
@@ -554,8 +541,8 @@ func jevTracePayloadOf(trace *logging.JevTrace) *jevTracePayload {
 	return payload
 }
 
-// optionalString maps an empty stored string onto a JSON null. No identifier in this
-// schema has an empty value that means something, so "" and "absent" are one fact.
+// optionalString maps an empty stored string onto an absent optional field. No
+// identifier has an empty value that means something, so "" and "absent" are one fact.
 func optionalString(value string) *string {
 	if value == "" {
 		return nil

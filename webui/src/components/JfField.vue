@@ -7,12 +7,14 @@ const props = withDefaults(defineProps<{
   label: string
   /** Id of the control inside the default slot; generated when omitted. */
   name?: string
+  help?: string
   error?: string
   required?: boolean
   /** Place the label beside the control for dense rows such as switch lists. */
   inline?: boolean
 }>(), {
   name: undefined,
+  help: undefined,
   error: undefined,
   required: false,
   inline: false,
@@ -21,12 +23,15 @@ const props = withDefaults(defineProps<{
 const generatedId = useId()
 const controlId = computed(() => props.name ?? `jf-field-${generatedId}`)
 const messageId = computed(() => `${controlId.value}-message`)
+const helpId = computed(() => `${controlId.value}-help`)
 
 // Read through getters so an error that only appears after submit still reaches the
 // control's aria-describedby without the page re-rendering the field.
 const context: JfFieldContext = reactive({
   get controlId() { return controlId.value },
-  get describedBy() { return props.error ? messageId.value : undefined },
+  get describedBy() {
+    return [props.help ? helpId.value : '', props.error ? messageId.value : ''].filter(Boolean).join(' ') || undefined
+  },
   get invalid() { return Boolean(props.error) },
   get required() { return props.required },
 })
@@ -44,6 +49,8 @@ provide(jfFieldKey, context)
     <div class="jf-field-control">
       <slot />
     </div>
+
+    <p v-if="help" :id="helpId" class="jf-field-message">{{ help }}</p>
 
     <!-- Keep validation feedback directly associated with its control. -->
     <p v-if="error" :id="messageId" class="jf-field-message" data-error="true">

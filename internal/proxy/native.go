@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,7 +24,6 @@ const (
 	protocolGeminiStream      providers.Protocol = providers.ProtocolGeminiStreamGenerateContent
 )
 
-const maxNativeObservedResponseBytes = 1 << 20
 const maxNativeAutoInputBytes = 2 << 20
 
 // ServeAnthropicMessages mounts the native Anthropic Messages ingress.
@@ -569,9 +567,9 @@ func (h *Handler) relayNative(w http.ResponseWriter, r *http.Request, record *re
 	copyResponseHeaders(w.Header(), response.Header)
 	w.Header().Set(RequestIDHeader, record.RequestID)
 	w.WriteHeader(response.StatusCode)
-	var observer *nativeUsageObserver
+	var observer *usageObserver
 	if h.routingLogEnabled(r) {
-		observer = &nativeUsageObserver{stream: record.stream, contentType: response.Header.Get("Content-Type")}
+		observer = newNativeUsageObserver(response.Header.Get("Content-Type"), record.stream)
 	}
 	var capture *errorCapture
 	if response.StatusCode >= http.StatusBadRequest {
@@ -589,132 +587,4 @@ func (h *Handler) relayNative(w http.ResponseWriter, r *http.Request, record *re
 	if observer != nil {
 		record.usage = observer.finish(err != nil)
 	}
-}
-
-type nativeUsageObserver struct {
-	stream      bool
-	contentType string
-	buffer      []byte
-	usage       logging.Usage
-	seen        bool
-	oversized   bool
-}
-
-func (o *nativeUsageObserver) observe(chunk []byte) {
-	if o == nil || o.oversized {
-		return
-	}
-	isStream := o.stream || strings.Contains(strings.ToLower(o.contentType), "text/event-stream")
-	if isStream {
-		if len(o.buffer)+len(chunk) > maxNativeObservedResponseBytes {
-			o.oversized = true
-			o.buffer = nil
-			return
-		}
-		o.buffer = append(o.buffer, chunk...)
-		for {
-			boundary := bytes.Index(o.buffer, []byte("\n\n"))
-			if boundary < 0 {
-				break
-			}
-			if usage, ok := parseNativeUsage(o.buffer[:boundary]); ok {
-				o.usage, o.seen = usage, true
-			}
-			o.buffer = o.buffer[boundary+2:]
-		}
-		if len(o.buffer) > maxNativeObservedResponseBytes {
-			o.oversized = true
-			o.buffer = nil
-		}
-		return
-	}
-	if len(o.buffer)+len(chunk) > maxNativeObservedResponseBytes {
-		o.oversized = true
-		o.buffer = nil
-		return
-	}
-	o.buffer = append(o.buffer, chunk...)
-	if usage, ok := parseNativeUsage(o.buffer); ok {
-		o.usage, o.seen = usage, true
-	}
-}
-
-func parseNativeUsage(raw []byte) (logging.Usage, bool) {
-	line := strings.TrimSpace(string(raw))
-	for _, part := range strings.Split(line, "\n") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "data:") {
-			line = strings.TrimSpace(strings.TrimPrefix(part, "data:"))
-			break
-		}
-	}
-	if line == "" || line == "[DONE]" {
-		return logging.Usage{}, false
-	}
-	var value map[string]json.RawMessage
-	if json.Unmarshal([]byte(line), &value) != nil {
-		return logging.Usage{}, false
-	}
-	if nested, ok := value["message"]; ok {
-		var message map[string]json.RawMessage
-		if json.Unmarshal(nested, &message) == nil {
-			value = message
-		}
-	}
-	usageRaw := value["usage"]
-	if len(usageRaw) == 0 {
-		usageRaw = value["usageMetadata"]
-	}
-	if len(usageRaw) == 0 {
-		return logging.Usage{}, false
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(usageRaw, &fields) != nil {
-		return logging.Usage{}, false
-	}
-	usage := logging.Usage{Status: logging.UsageStatusObserved}
-	usage.InputTokens = firstNativeToken(fields, "input_tokens", "promptTokenCount", "prompt_tokens")
-	usage.OutputTokens = firstNativeToken(fields, "output_tokens", "candidatesTokenCount", "completion_tokens")
-	usage.TotalTokens = firstNativeToken(fields, "total_tokens", "totalTokenCount")
-	if usage.InputTokens != nil && usage.OutputTokens != nil && usage.TotalTokens == nil {
-		total := *usage.InputTokens + *usage.OutputTokens
-		usage.TotalTokens = &total
-	}
-	if usage.InputTokens == nil && usage.OutputTokens == nil && usage.TotalTokens == nil {
-		return logging.Usage{}, false
-	}
-	return usage, true
-}
-
-func firstNativeToken(fields map[string]json.RawMessage, keys ...string) *int64 {
-	for _, key := range keys {
-		var count int64
-		if err := json.Unmarshal(fields[key], &count); err == nil && count >= 0 {
-			return &count
-		}
-	}
-	return nil
-}
-
-func (o *nativeUsageObserver) finish(interrupted bool) logging.Usage {
-	if o.oversized {
-		return logging.Usage{Status: logging.UsageStatusOversized}
-	}
-	if interrupted {
-		return logging.Usage{Status: logging.UsageStatusInterrupted}
-	}
-	if o.stream && len(o.buffer) > 0 {
-		if usage, ok := parseNativeUsage(o.buffer); ok {
-			o.usage, o.seen = usage, true
-		}
-	}
-	if o.seen {
-		return o.usage
-	}
-	if !o.stream && !strings.Contains(strings.ToLower(o.contentType), "text/event-stream") {
-		if usage, ok := parseNativeUsage(o.buffer); ok {
-			return usage
-		}
-	}
-	return logging.Usage{Status: logging.UsageStatusAbsent}
 }

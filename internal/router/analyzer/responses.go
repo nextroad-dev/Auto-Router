@@ -25,7 +25,6 @@ func (w *walk) responses(root node) {
 	w.responsesToolChoice(root)
 	w.responsesStream(root)
 	w.responsesMaxOutput(root)
-	w.responsesReasoning(root)
 }
 
 // responsesInstructions reads the system prompt. The Responses API puts it in
@@ -36,7 +35,7 @@ func (w *walk) responsesInstructions(root node) {
 	if !ok || raw.isNull() {
 		return
 	}
-	if text, _ := w.contentText(raw, "system"); text != "" {
+	if text, _ := w.contentText(raw); text != "" {
 		w.addSystem(text)
 	}
 }
@@ -50,7 +49,7 @@ func (w *walk) responsesInput(root node) {
 	switch raw.kind {
 	case kindString:
 		// A bare string is a single user message.
-		text := w.recordText("user", raw.text())
+		text := w.recordText(raw.text())
 		w.features.MessageCount++
 		w.addRole("user")
 		w.addViewMessage("user", text)
@@ -89,8 +88,7 @@ func (w *walk) responsesItem(item node) {
 		w.responsesToolOutput(item)
 	case "reasoning":
 		w.features.MessageCount++
-		w.addRole("reasoning")
-		w.features.ReasoningLikely = true
+		w.addRole("other")
 	case "file_search_call":
 		w.features.MessageCount++
 		w.addRole("file_search")
@@ -124,19 +122,19 @@ func (w *walk) responsesMessage(item node) {
 	if !ok || raw.isNull() {
 		return
 	}
-	text, _ := w.contentText(raw, role)
+	text, _ := w.contentText(raw)
 	w.recordTurn(role, text)
 }
 
-// responsesToolOutput handles a function_call_output item: the tool result,
-// which the routing question needs because it usually contains the payload the
-// next turn reasons about.
+// responsesToolOutput counts and retains a tool result in the bounded view.
+// The automatic routing digest reduces this text to role counts and byte sizes;
+// it does not forward or semantically summarize the tool-result contents.
 func (w *walk) responsesToolOutput(item node) {
 	w.features.MessageCount++
 	w.addRole("tool")
 	text := ""
 	if output, ok := item.member("output"); ok && !output.isNull() {
-		text, _ = w.contentText(output, "tool")
+		text, _ = w.contentText(output)
 	}
 	w.addViewMessage("tool", text)
 }
@@ -224,21 +222,4 @@ func (w *walk) responsesMaxOutput(root node) {
 	if value, ok := raw.intValue(); ok && value >= 1 {
 		w.setMaxOutput(value)
 	}
-}
-
-// responsesReasoning reads the reasoning control object. Any non-null object
-// requests reasoning: the effort and summary fields inside it only refine how
-// much, which stage 5 does not need to distinguish.
-func (w *walk) responsesReasoning(root node) {
-	raw, ok := root.member("reasoning")
-	if !ok || raw.isNull() || raw.kind == kindInvalid {
-		return
-	}
-	if raw.kind == kindObject {
-		if effort, ok := raw.member("effort"); ok && IsNoReasoning(effort.stringValue()) {
-			// {"effort": "none"} is an explicit request for no reasoning.
-			return
-		}
-	}
-	w.features.ReasoningLikely = true
 }

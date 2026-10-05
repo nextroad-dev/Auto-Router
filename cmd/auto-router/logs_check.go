@@ -130,31 +130,65 @@ func logsDatabaseExists(path string) error {
 }
 
 // writeLogsReport prints the text report in a fixed field order, so two runs over
-// the same rows produce byte-identical output. Every line is a label and a value
-// that came out of a column; nothing is derived and nothing is summarized.
+// the same rows produce byte-identical output. Empty optional fields are omitted,
+// and recommendation confidence uses the same semantics as the log API.
 func writeLogsReport(output io.Writer, events []storage.StoredEvent) {
 	fmt.Fprintf(output, "routing log check: %d entries, newest first\n", len(events))
-	fmt.Fprintf(output, "no upstream call, no agent, no retention sweep, the database was not modified\n\n")
+	fmt.Fprintf(output, "no upstream call, no agent, no retention sweep; opening an older database may apply schema migrations\n")
+	fmt.Fprintf(output, "status is the client HTTP result; jev_status is group recommendation; usage status is upstream token extraction\n")
+	fmt.Fprintf(output, "usage oversized is not context overflow; none means unknown, not zero; bytes_written is response bytes\n")
+	fmt.Fprintf(output, "optional fields are omitted when unknown/inapplicable; diagnostics are audit metadata, not routing inputs\n\n")
 	for _, entry := range events {
 		event := entry.Event
 		fmt.Fprintf(output, "id=%d request_id=%s\n", entry.ID, event.RequestID)
 		fmt.Fprintf(output, "  started_at=%s duration_ms=%d bytes_written=%d\n",
 			event.StartedAt.UTC().Format(time.RFC3339Nano), event.DurationMS, event.BytesWritten)
-		fmt.Fprintf(output, "  protocol=%s stream=%t status=%d upstream_status=%s error_code=%s\n",
-			event.Protocol, event.Stream, event.Status, formatOptionalStatus(event.UpstreamStatus), orNone(event.ErrorCode))
-		fmt.Fprintf(output, "  routing_mode=%s selection_mode=%s requested_model=%s\n",
-			orNone(event.RoutingMode), orNone(event.SelectionMode), orNone(event.RequestedModel))
-		fmt.Fprintf(output, "  effective_model=%s\n", orNone(event.EffectiveModel))
-		fmt.Fprintf(output, "  provider=%s upstream_model=%s attempts=%d failover=%t\n",
-			orNone(event.ProviderKey), orNone(event.UpstreamModel), event.GatewayAttempts, event.FailoverUsed)
-		fmt.Fprintf(output, "  client_ip=%s\n", orNone(event.ClientIP))
-		fmt.Fprintf(output, "  jev_status=%s confidence=%s band=%s fallback=%s evidence_hash=%s\n",
-			orNone(event.JevStatus), formatStoredOptionalFloat(event.Confidence), orNone(event.ConfidenceBand),
-			orNone(event.FallbackReason), orNone(event.EvidenceHash))
-		fmt.Fprintf(output, "  routing_latency_ms=%s jev_latency_ms=%s\n",
-			formatStoredOptionalInt(event.RoutingLatencyMS), formatStoredOptionalInt(event.JevLatencyMS))
-		fmt.Fprintf(output, "  usage status=%s source=%s input_tokens=%s output_tokens=%s total_tokens=%s\n",
-			event.Usage.Status, orNone(event.Usage.Source), formatStoredOptionalInt(event.Usage.InputTokens),
+		fmt.Fprintf(output, "  protocol=%s stream=%t status=%d", event.Protocol, event.Stream, event.Status)
+		if event.UpstreamStatus != 0 {
+			fmt.Fprintf(output, " upstream_status=%d", event.UpstreamStatus)
+		}
+		if event.ErrorCode != "" {
+			fmt.Fprintf(output, " error_code=%s", event.ErrorCode)
+		}
+		fmt.Fprintln(output)
+		for _, field := range []struct{ name, value string }{
+			{"routing_mode", event.RoutingMode}, {"selection_mode", event.SelectionMode},
+			{"requested_model", event.RequestedModel}, {"effective_model", event.EffectiveModel},
+			{"provider", event.ProviderKey}, {"upstream_model", event.UpstreamModel},
+		} {
+			if field.value != "" {
+				fmt.Fprintf(output, "  %s=%s\n", field.name, field.value)
+			}
+		}
+		fmt.Fprintf(output, "  attempts=%d failover=%t\n", event.GatewayAttempts, event.FailoverUsed)
+		if event.ClientIP != "" {
+			fmt.Fprintf(output, "  client_ip=%s\n", event.ClientIP)
+		}
+		if event.JevStatus != "" {
+			fmt.Fprintf(output, "  jev_status=%s", event.JevStatus)
+			if confidence := event.RecommendationConfidence(entry.JevTrace); confidence != nil {
+				fmt.Fprintf(output, " confidence=%s", formatStoredOptionalFloat(confidence))
+			}
+			if event.FallbackReason != "" {
+				fmt.Fprintf(output, " fallback=%s", event.FallbackReason)
+			}
+			fmt.Fprintln(output)
+		}
+		if event.RoutingLatencyMS != nil {
+			fmt.Fprintf(output, "  routing_latency_ms=%s\n", formatStoredOptionalInt(event.RoutingLatencyMS))
+		}
+		if event.JevLatencyMS != nil {
+			fmt.Fprintf(output, "  jev_latency_ms=%s\n", formatStoredOptionalInt(event.JevLatencyMS))
+		}
+		if diagnostics := event.DiagnosticDetails(entry.JevTrace); diagnostics != nil {
+			data, _ := json.Marshal(diagnostics)
+			fmt.Fprintf(output, "  diagnostics=%s\n", data)
+		}
+		fmt.Fprintf(output, "  usage status=%s", event.Usage.Status)
+		if event.Usage.Source != "" {
+			fmt.Fprintf(output, " source=%s", event.Usage.Source)
+		}
+		fmt.Fprintf(output, " input_tokens=%s output_tokens=%s total_tokens=%s\n", formatStoredOptionalInt(event.Usage.InputTokens),
 			formatStoredOptionalInt(event.Usage.OutputTokens), formatStoredOptionalInt(event.Usage.TotalTokens))
 		if entry.JevTrace != nil {
 			writeStoredTrace(output, entry.JevTrace)
@@ -166,26 +200,35 @@ func writeLogsReport(output io.Writer, events []storage.StoredEvent) {
 // writeStoredTrace prints the optional Jev trace. It is diagnostic data, so it is
 // printed under the event it belongs to rather than as a row of its own.
 func writeStoredTrace(output io.Writer, trace *logging.JevTrace) {
-	fmt.Fprintf(output, "  jev status=%s failure=%s input_mode=%s latency_ms=%s\n",
-		trace.Status, orNone(trace.FailureReason), trace.InputMode, formatStoredOptionalInt(trace.LatencyMS))
-	fmt.Fprintf(output, "  jev model_count=%d candidate_count=%d selected=%s\n",
-		trace.ModelCount, trace.CandidateCount, orNone(trace.Selected))
-	fmt.Fprintf(output, "  jev group_count=%d recommended_group=%s selected_group=%s candidate_groups=%s\n",
-		trace.GroupCount, orNone(trace.RecommendedGroup), orNone(trace.SelectedGroup), formatStringsOrNone(trace.CandidateGroups))
-	fmt.Fprintf(output, "  jev confidence=%s band=%s fallback=%s evidence_hash=%s\n",
-		formatStoredOptionalFloat(trace.Confidence), orNone(trace.ConfidenceBand),
-		orNone(trace.FallbackReason), orNone(trace.EvidenceHash))
-	fmt.Fprintf(output, "  jev candidates=%s\n", formatStringsOrNone(trace.CandidateModels))
-	distribution := make([]string, 0, len(trace.Probabilities))
-	for _, probability := range trace.Probabilities {
-		distribution = append(distribution, fmt.Sprintf("%s=%.6f", probability.Model, probability.Probability))
+	fmt.Fprintf(output, "  jev input_mode=%s candidate_count=%d candidate_groups=%s", trace.InputMode, trace.CandidateCount, formatStringsOrNone(trace.CandidateGroups))
+	if trace.RecommendedGroup != "" {
+		fmt.Fprintf(output, " recommended_group=%s", trace.RecommendedGroup)
 	}
-	fmt.Fprintf(output, "  jev distribution=%s\n", formatStringsOrNone(distribution))
+	if trace.SelectedGroup != "" {
+		fmt.Fprintf(output, " selected_group=%s", trace.SelectedGroup)
+	}
+	if trace.FailureReason != "" {
+		fmt.Fprintf(output, " failure_reason=%s", trace.FailureReason)
+	}
+	fmt.Fprintln(output)
+	// Keep historical model-level trace data readable without suggesting these
+	// empty fields participate in the current group-level recommendation.
+	if trace.ModelCount > 0 || len(trace.CandidateModels) > 0 || trace.Selected != "" || len(trace.Probabilities) > 0 {
+		fmt.Fprintf(output, "  jev legacy_model_count=%d legacy_selected_model=%s legacy_candidate_models=%s\n",
+			trace.ModelCount, orNone(trace.Selected), formatStringsOrNone(trace.CandidateModels))
+		distribution := make([]string, 0, len(trace.Probabilities))
+		for _, probability := range trace.Probabilities {
+			distribution = append(distribution, fmt.Sprintf("%s=%.6f", probability.Model, probability.Probability))
+		}
+		fmt.Fprintf(output, "  jev legacy_model_distribution=%s\n", formatStringsOrNone(distribution))
+	}
 	groupDistribution := make([]string, 0, len(trace.GroupProbabilities))
 	for _, probability := range trace.GroupProbabilities {
 		groupDistribution = append(groupDistribution, fmt.Sprintf("%s=%.6f", probability.Group, probability.Probability))
 	}
-	fmt.Fprintf(output, "  jev group_distribution=%s\n", formatStringsOrNone(groupDistribution))
+	if len(groupDistribution) > 0 {
+		fmt.Fprintf(output, "  jev group_distribution=%s\n", formatStringsOrNone(groupDistribution))
+	}
 }
 
 // logsCheckJSONEntry is the JSON shape of one report line. The keys match the text
@@ -199,31 +242,30 @@ type logsCheckJSONEntry struct {
 }
 
 type logsCheckJSONEvent struct {
-	RequestID        string   `json:"request_id"`
-	StartedAt        string   `json:"started_at"`
-	DurationMS       int64    `json:"duration_ms"`
-	Protocol         string   `json:"protocol"`
-	RoutingMode      string   `json:"routing_mode,omitempty"`
-	SelectionMode    string   `json:"selection_mode,omitempty"`
-	RequestedModel   string   `json:"requested_model,omitempty"`
-	EffectiveModel   string   `json:"effective_model,omitempty"`
-	ProviderKey      string   `json:"provider_key,omitempty"`
-	UpstreamModel    string   `json:"upstream_model,omitempty"`
-	Status           int      `json:"status"`
-	UpstreamStatus   *int     `json:"upstream_status,omitempty"`
-	ErrorCode        string   `json:"error_code,omitempty"`
-	Stream           bool     `json:"stream"`
-	BytesWritten     int64    `json:"bytes_written"`
-	ClientIP         string   `json:"client_ip,omitempty"`
-	JevStatus        string   `json:"jev_status,omitempty"`
-	Confidence       *float64 `json:"confidence,omitempty"`
-	ConfidenceBand   string   `json:"confidence_band,omitempty"`
-	FallbackReason   string   `json:"fallback_reason,omitempty"`
-	EvidenceHash     string   `json:"evidence_hash,omitempty"`
-	GatewayAttempts  int      `json:"gateway_attempts"`
-	FailoverUsed     bool     `json:"failover_used"`
-	RoutingLatencyMS *int64   `json:"routing_latency_ms,omitempty"`
-	JevLatencyMS     *int64   `json:"jev_latency_ms,omitempty"`
+	RequestID        string               `json:"request_id"`
+	StartedAt        string               `json:"started_at"`
+	DurationMS       int64                `json:"duration_ms"`
+	Protocol         string               `json:"protocol"`
+	RoutingMode      string               `json:"routing_mode,omitempty"`
+	SelectionMode    string               `json:"selection_mode,omitempty"`
+	RequestedModel   string               `json:"requested_model,omitempty"`
+	EffectiveModel   string               `json:"effective_model,omitempty"`
+	ProviderKey      string               `json:"provider_key,omitempty"`
+	UpstreamModel    string               `json:"upstream_model,omitempty"`
+	Status           int                  `json:"status"`
+	UpstreamStatus   *int                 `json:"upstream_status,omitempty"`
+	ErrorCode        string               `json:"error_code,omitempty"`
+	Stream           bool                 `json:"stream"`
+	BytesWritten     int64                `json:"bytes_written"`
+	ClientIP         string               `json:"client_ip,omitempty"`
+	JevStatus        string               `json:"jev_status,omitempty"`
+	Confidence       *float64             `json:"confidence,omitempty"`
+	FallbackReason   string               `json:"fallback_reason,omitempty"`
+	Diagnostics      *logging.Diagnostics `json:"diagnostics,omitempty"`
+	GatewayAttempts  int                  `json:"gateway_attempts"`
+	FailoverUsed     bool                 `json:"failover_used"`
+	RoutingLatencyMS *int64               `json:"routing_latency_ms,omitempty"`
+	JevLatencyMS     *int64               `json:"jev_latency_ms,omitempty"`
 	Usage            struct {
 		Status       string `json:"status"`
 		Source       string `json:"source,omitempty"`
@@ -234,24 +276,22 @@ type logsCheckJSONEvent struct {
 }
 
 type logsCheckJSONJev struct {
-	Status             string                     `json:"status"`
-	FailureReason      string                     `json:"failure_reason,omitempty"`
-	InputMode          string                     `json:"input_mode"`
-	Selected           string                     `json:"selected,omitempty"`
-	ConfidenceBand     string                     `json:"confidence_band,omitempty"`
-	FallbackReason     string                     `json:"fallback_reason,omitempty"`
-	EvidenceHash       string                     `json:"evidence_hash,omitempty"`
-	LatencyMS          *int64                     `json:"latency_ms,omitempty"`
-	CandidateModels    []string                   `json:"candidate_models"`
-	ModelCount         int                        `json:"model_count"`
-	CandidateCount     int                        `json:"candidate_count"`
-	CandidateGroups    []string                   `json:"candidate_groups"`
-	GroupCount         int                        `json:"group_count"`
-	RecommendedGroup   string                     `json:"recommended_group,omitempty"`
-	SelectedGroup      string                     `json:"selected_group,omitempty"`
-	Confidence         *float64                   `json:"confidence,omitempty"`
-	Probabilities      []float64                  `json:"probabilities,omitempty"`
-	GroupProbabilities []logging.GroupProbability `json:"group_probabilities,omitempty"`
+	FailureReason      string                      `json:"failure_reason,omitempty"`
+	InputMode          string                      `json:"input_mode"`
+	Selected           string                      `json:"selected_model,omitempty"`
+	CandidateModels    []string                    `json:"candidate_models,omitempty"`
+	ModelCount         int                         `json:"model_count,omitempty"`
+	CandidateCount     int                         `json:"candidate_count"`
+	CandidateGroups    []string                    `json:"candidate_groups"`
+	RecommendedGroup   string                      `json:"recommended_group,omitempty"`
+	SelectedGroup      string                      `json:"selected_group,omitempty"`
+	Probabilities      []logsCheckModelProbability `json:"probabilities,omitempty"`
+	GroupProbabilities []logging.GroupProbability  `json:"group_probabilities,omitempty"`
+}
+
+type logsCheckModelProbability struct {
+	Model       string  `json:"model"`
+	Probability float64 `json:"probability"`
 }
 
 // writeLogsJSON prints one JSON object per entry. The values are the stored ones:
@@ -281,10 +321,9 @@ func writeLogsJSON(output io.Writer, events []storage.StoredEvent) error {
 				BytesWritten:     event.BytesWritten,
 				ClientIP:         event.ClientIP,
 				JevStatus:        event.JevStatus,
-				Confidence:       event.Confidence,
-				ConfidenceBand:   event.ConfidenceBand,
+				Confidence:       event.RecommendationConfidence(entry.JevTrace),
 				FallbackReason:   event.FallbackReason,
-				EvidenceHash:     event.EvidenceHash,
+				Diagnostics:      event.DiagnosticDetails(entry.JevTrace),
 				GatewayAttempts:  event.GatewayAttempts,
 				FailoverUsed:     event.FailoverUsed,
 				RoutingLatencyMS: event.RoutingLatencyMS,
@@ -300,29 +339,19 @@ func writeLogsJSON(output io.Writer, events []storage.StoredEvent) error {
 		if entry.JevTrace != nil {
 			trace := entry.JevTrace
 			rendered := &logsCheckJSONJev{
-				Status:             trace.Status,
 				FailureReason:      trace.FailureReason,
 				InputMode:          trace.InputMode,
 				Selected:           trace.Selected,
-				ConfidenceBand:     trace.ConfidenceBand,
-				FallbackReason:     trace.FallbackReason,
-				EvidenceHash:       trace.EvidenceHash,
-				LatencyMS:          trace.LatencyMS,
 				CandidateModels:    trace.CandidateModels,
 				ModelCount:         trace.ModelCount,
 				CandidateCount:     trace.CandidateCount,
-				CandidateGroups:    trace.CandidateGroups,
-				GroupCount:         trace.GroupCount,
+				CandidateGroups:    append([]string{}, trace.CandidateGroups...),
 				RecommendedGroup:   trace.RecommendedGroup,
 				SelectedGroup:      trace.SelectedGroup,
-				Confidence:         trace.Confidence,
 				GroupProbabilities: trace.GroupProbabilities,
 			}
-			if rendered.CandidateModels == nil {
-				rendered.CandidateModels = []string{}
-			}
 			for _, probability := range trace.Probabilities {
-				rendered.Probabilities = append(rendered.Probabilities, probability.Probability)
+				rendered.Probabilities = append(rendered.Probabilities, logsCheckModelProbability{Model: probability.Model, Probability: probability.Probability})
 			}
 			line.JevTrace = rendered
 		}
@@ -331,15 +360,6 @@ func writeLogsJSON(output io.Writer, events []storage.StoredEvent) error {
 		}
 	}
 	return nil
-}
-
-// formatOptionalStatus renders an upstream status, where zero means "no upstream
-// response was read" and is printed as absent rather than as a status.
-func formatOptionalStatus(value int) string {
-	if value == 0 {
-		return "none"
-	}
-	return fmt.Sprintf("%d", value)
 }
 
 // optionalIntPointer maps a zero status onto nil for the JSON report.

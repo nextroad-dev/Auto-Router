@@ -1,1 +1,0 @@
-import{T as t}from"./index-CeO69YUd.js";import{b as e}from"./field-context-Dg4JwEpB.js";function i(r,n){return t.global.t(r)}function l(r){return t.global.te(r)}function f(r,n){return`labels.${r}.${n}`}function s(r,n){if(n==null||n==="")return"";const o=f(r,n);return l(o)?i(o):n}function c(r){return r==null||r===""?"":e(r)}export{s as e,c as l};

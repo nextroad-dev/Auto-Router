@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { messages } from '../src/i18n'
-import { enumLabel, fallbackReasonLabel, jevStatusLabel, logErrorCodeLabel } from '../src/lib/labels'
+import { enumLabel, fallbackReasonLabel, inputModeDescription, jevStatusLabel, logErrorCodeLabel, usageStatusDescription } from '../src/lib/labels'
 
 const labels = messages['zh-CN'].labels
 
@@ -15,31 +15,31 @@ describe('enumLabel', () => {
     expect(enumLabel('routingMode', 'auto')).toBe('自动路由')
     expect(enumLabel('routingMode', 'explicit')).toBe('指定模型')
     expect(enumLabel('selectionMode', 'explicit')).toBe('指定模型')
-    expect(enumLabel('selectionMode', 'jev')).toBe('Jev 推荐')
-    expect(enumLabel('selectionMode', 'blend')).toBe('混合决策')
-    expect(enumLabel('selectionMode', 'default_model')).toBe('默认模型兜底')
-    expect(enumLabel('selectionMode', 'first_eligible')).toBe('首个可用候选')
+    expect(enumLabel('selectionMode', 'jev')).toBe('旧版：Jev 直接选模型')
+    expect(enumLabel('selectionMode', 'blend')).toBe('旧版：混合决策')
+    expect(enumLabel('selectionMode', 'default_model')).toBe('旧版：默认模型兜底')
+    expect(enumLabel('selectionMode', 'first_eligible')).toBe('组内按配置顺序选模型')
   })
 
   it('renders the preference, band, observation and class vocabularies', () => {
     expect(enumLabel('confidenceBand', 'high')).toBe('高')
     expect(enumLabel('confidenceBand', 'medium')).toBe('中')
     expect(enumLabel('confidenceBand', 'low')).toBe('低')
-    expect(enumLabel('usageStatus', 'observed')).toBe('已观测')
-    expect(enumLabel('usageStatus', 'absent')).toBe('上游未上报')
-    expect(enumLabel('usageStatus', 'malformed')).toBe('格式异常')
-    expect(enumLabel('usageStatus', 'oversized')).toBe('超出观测上限')
-    expect(enumLabel('usageStatus', 'interrupted')).toBe('中断未观测')
+    expect(enumLabel('usageStatus', 'observed')).toBe('已提取上游用量')
+    expect(enumLabel('usageStatus', 'absent')).toBe('未读取到上游用量')
+    expect(enumLabel('usageStatus', 'malformed')).toBe('上游用量字段无效')
+    expect(enumLabel('usageStatus', 'oversized')).toBe('用量提取超限')
+    expect(enumLabel('usageStatus', 'interrupted')).toBe('响应中断，未读取到用量')
     expect(enumLabel('statusClass', 'success')).toBe('成功（2xx）')
     expect(enumLabel('statusClass', 'client_error')).toBe('客户端错误（4xx）')
     expect(enumLabel('statusClass', 'server_error')).toBe('服务端错误（5xx）')
-    expect(enumLabel('inputMode', 'content')).toBe('完整内容')
-    expect(enumLabel('inputMode', 'redacted')).toBe('脱敏内容')
-    expect(enumLabel('inputMode', 'features_only')).toBe('仅特征')
+    expect(enumLabel('inputMode', 'content')).toBe('原文截取摘要')
+    expect(enumLabel('inputMode', 'redacted')).toBe('脱敏截取摘要')
+    expect(enumLabel('inputMode', 'features_only')).toBe('仅请求结构特征')
   })
 
   it('covers every declared member of each vocabulary', () => {
-    const namespaces = ['protocol', 'routingMode', 'selectionMode', 'confidenceBand', 'usageStatus', 'statusClass', 'inputMode'] as const
+    const namespaces = ['protocol', 'routingMode', 'selectionMode', 'confidenceBand', 'usageStatus', 'statusClass', 'inputMode', 'group'] as const
     for (const namespace of namespaces) {
       const table = labels[namespace] as Record<string, string>
       expect(Object.keys(table).length).toBeGreaterThan(0)
@@ -64,16 +64,16 @@ describe('enumLabel', () => {
 describe('jevStatusLabel', () => {
   it('renders the literal statuses', () => {
     expect(jevStatusLabel('disabled')).toBe('未启用')
-    expect(jevStatusLabel('skipped_single_model')).toBe('单模型跳过')
+    expect(jevStatusLabel('skipped_single_model')).toBe('仅一个可用任务组，跳过推荐')
     expect(jevStatusLabel('skipped_insufficient_evidence')).toBe('证据不足跳过')
-    expect(jevStatusLabel('skipped_too_many_models')).toBe('候选过多跳过')
-    expect(jevStatusLabel('ok')).toBe('成功')
+    expect(jevStatusLabel('skipped_too_many_models')).toBe('旧版：候选模型过多，跳过推荐')
+    expect(jevStatusLabel('ok')).toBe('Jev 推荐成功')
   })
 
   it('expands the failure prefix into the localized reason', () => {
     expect(jevStatusLabel('failure:jev_timeout')).toBe('失败（Jev 超时）')
     expect(jevStatusLabel('failure:jev_unavailable')).toBe('失败（Jev 不可达）')
-    expect(jevStatusLabel('failure:jev_rejected')).toBe('失败（Jev 拒绝）')
+    expect(jevStatusLabel('failure:jev_rejected')).toBe('失败（Jev 拒绝请求）')
     expect(jevStatusLabel('failure:jev_invalid_result')).toBe('失败（Jev 结果无效）')
     expect(jevStatusLabel('failure:jev_canceled')).toBe('失败（Jev 调用取消）')
   })
@@ -92,12 +92,12 @@ describe('jevStatusLabel', () => {
 describe('fallbackReasonLabel', () => {
   it('renders the closed reason vocabulary', () => {
     expect(fallbackReasonLabel('none')).toBe('未发生兜底')
-    expect(fallbackReasonLabel('not_requested')).toBe('未请求推荐')
-    expect(fallbackReasonLabel('confidence_low')).toBe('置信度过低')
-    expect(fallbackReasonLabel('selected_model_ineligible')).toBe('推荐模型不可用')
+    expect(fallbackReasonLabel('not_requested')).toBe('未调用 Jev')
+    expect(fallbackReasonLabel('confidence_low')).toBe('选组置信度低于阈值')
+    expect(fallbackReasonLabel('selected_model_ineligible')).toBe('旧版：推荐模型不可用')
     expect(fallbackReasonLabel('jev_timeout')).toBe('Jev 超时')
     expect(fallbackReasonLabel('jev_unavailable')).toBe('Jev 不可达')
-    expect(fallbackReasonLabel('jev_rejected')).toBe('Jev 拒绝')
+    expect(fallbackReasonLabel('jev_rejected')).toBe('Jev 拒绝请求')
     expect(fallbackReasonLabel('jev_invalid_result')).toBe('Jev 结果无效')
     expect(fallbackReasonLabel('jev_canceled')).toBe('Jev 调用取消')
     expect(fallbackReasonLabel('truncated_evidence')).toBe('证据被截断')
@@ -118,6 +118,21 @@ describe('fallbackReasonLabel', () => {
   it('returns an empty string for a missing value', () => {
     expect(fallbackReasonLabel(null)).toBe('')
     expect(fallbackReasonLabel(undefined)).toBe('')
+  })
+})
+
+describe('operator descriptions', () => {
+  it('distinguishes usage extraction bounds from request or context failures', () => {
+    expect(usageStatusDescription('oversized')).toContain('不表示 Jev 或上游上下文超限')
+    expect(usageStatusDescription('observed')).toContain('真实的 0 显示为 0')
+    expect(usageStatusDescription('future_status')).toContain('未知用量状态')
+  })
+
+  it('describes local excerpts rather than a full conversation', () => {
+    expect(inputModeDescription('content')).toContain('整体摘要预算 16 KiB')
+    expect(inputModeDescription('redacted')).toContain('前 512 字节')
+    expect(inputModeDescription('features_only')).toContain('不发送用户或系统原文')
+    expect(inputModeDescription('future_mode')).toContain('未知输入模式')
   })
 })
 

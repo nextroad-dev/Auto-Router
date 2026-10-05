@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { api, pageURL, type LogEvent, type Page } from '@/lib/api'
-import { errorCodeDescription, errorNotice } from '@/lib/errors'
-import { enumLabel, fallbackReasonLabel, jevStatusLabel, logErrorCodeLabel } from '@/lib/labels'
+import { errorNotice } from '@/lib/errors'
+import { enumLabel, fallbackReasonLabel, jevStatusLabel, logErrorCodeLabel, usageStatusDescription } from '@/lib/labels'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfBadge from '@/components/JfBadge.vue'
 import JfButton from '@/components/JfButton.vue'
@@ -143,6 +143,16 @@ function formatDate(value: string | null | undefined) {
 
 function valueOrDash(value: string | number | boolean | null | undefined) {
   return value === null || value === undefined || value === '' ? '—' : String(value)
+}
+
+function jevConfidence(log: LogEvent) {
+  return log.jev_status === 'ok' && log.confidence != null
+    ? log.confidence.toFixed(2)
+    : '未产生推荐置信度'
+}
+
+function stageLatency(value: number | null | undefined, missing: string) {
+  return value == null ? missing : `${value} ms`
 }
 
 function statusColor(status: number): 'danger' | 'warning' | 'success' {
@@ -297,18 +307,18 @@ onMounted(() => { void fetchLogs(true) })
 
     <!-- Detailed Log Inspector Drawer -->
     <JfDrawer v-model:open="detailOpen" :title="`请求明细 · ${selectedLog?.request_id}`" size="lg">
-      <div v-if="selectedLog" class="grid gap-5">
+      <div v-if="selectedLog" class="grid min-w-0 grid-cols-1 gap-5">
         <!-- Overview Grid -->
-        <div class="grid gap-3 sm:grid-cols-2 rounded-[var(--jf-radius-control)] border border-line p-4">
+        <div class="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 rounded-[var(--jf-radius-control)] border border-line p-4">
           <div>
             <span class="jf-caption text-ink-secondary block">请求时间</span>
             <span class="jf-mono text-sm">{{ formatDate(selectedLog.started_at) }}</span>
           </div>
           <div>
-            <span class="jf-caption text-ink-secondary block">响应状态与耗时</span>
+            <span class="jf-caption text-ink-secondary block">HTTP 状态 / 请求总耗时</span>
             <span class="jf-mono text-sm font-medium">
-              <JfBadge :tone="statusColor(selectedLog.status)">{{ selectedLog.status }}</JfBadge>
-              <span class="ml-2">{{ selectedLog.duration_ms }} ms</span>
+              <JfBadge :tone="statusColor(selectedLog.status)">HTTP {{ selectedLog.status }}</JfBadge>
+              <span class="ml-2">· {{ selectedLog.duration_ms }} ms</span>
             </span>
           </div>
           <div>
@@ -317,25 +327,65 @@ onMounted(() => { void fetchLogs(true) })
               {{ protocolLabel(selectedLog.protocol) }} · {{ enumLabel('routingMode', selectedLog.routing_mode) }}
             </span>
           </div>
-          <div>
+          <div v-if="selectedLog.requested_model">
             <span class="jf-caption text-ink-secondary block">客户端请求模型</span>
             <code class="font-mono text-sm">{{ selectedLog.requested_model }}</code>
           </div>
-          <div>
+          <div v-if="selectedLog.provider || selectedLog.effective_model">
             <span class="jf-caption text-ink-secondary block">最终分派提供商 / 模型</span>
             <span class="font-mono text-sm font-medium">
               {{ selectedLog.provider || '—' }} · {{ selectedLog.effective_model || '—' }}
             </span>
           </div>
-          <div>
-            <span class="jf-caption text-ink-secondary block">决策方式</span>
+          <div v-if="selectedLog.selection_mode">
+            <span class="jf-caption text-ink-secondary block">模型选择规则</span>
             <span class="text-sm">{{ enumLabel('selectionMode', selectedLog.selection_mode) }}</span>
+          </div>
+          <template v-if="selectedLog.routing_mode === 'auto'">
+            <div>
+              <span class="jf-caption text-ink-secondary block">Jev 任务组推荐状态</span>
+              <span class="text-sm">{{ jevStatusLabel(selectedLog.jev_status) || '—' }}</span>
+            </div>
+            <div>
+              <span class="jf-caption text-ink-secondary block">Jev 选组置信度 / 默认组兜底原因</span>
+              <span class="text-sm">{{ jevConfidence(selectedLog) }}<template v-if="selectedLog.fallback_reason"> · {{ fallbackReasonLabel(selectedLog.fallback_reason) }}</template></span>
+            </div>
+            <div>
+              <span class="jf-caption text-ink-secondary block">最终任务组</span>
+              <span class="text-sm">{{ enumLabel('group', selectedLog.attempts?.at(-1)?.group_name ?? selectedLog.jev_trace?.selected_group) || '未记录' }}</span>
+            </div>
+            <div>
+              <span class="jf-caption text-ink-secondary block">Jev 调用耗时 / 路由总耗时</span>
+              <span class="jf-mono text-sm">{{ stageLatency(selectedLog.jev_latency_ms, '未调用或未记录') }} / {{ stageLatency(selectedLog.routing_latency_ms, '未执行或未记录') }}</span>
+            </div>
+            <p class="jf-caption text-ink-secondary sm:col-span-2">Jev 负责选任务组，模型按组内配置顺序选择。“组内按配置顺序选模型”与 Jev 推荐成功可以同时出现。</p>
+          </template>
+          <div>
+            <span class="jf-caption text-ink-secondary block">已发送给客户端的响应字节数</span>
+            <span class="jf-mono text-sm">{{ selectedLog.bytes_written.toLocaleString() }} B</span>
+          </div>
+          <div v-if="selectedLog.client_ip">
+            <span class="jf-caption text-ink-secondary block">客户端 IP（已启用记录）</span>
+            <code class="jf-mono text-sm jf-anywhere">{{ selectedLog.client_ip }}</code>
+          </div>
+          <div v-if="selectedLog.upstream_status != null && selectedLog.upstream_status !== selectedLog.status">
+            <span class="jf-caption text-ink-secondary block">上游 HTTP 状态（与客户端不同）</span>
+            <JfBadge :tone="statusColor(selectedLog.upstream_status)">{{ selectedLog.upstream_status }}</JfBadge>
+          </div>
+          <div v-if="selectedLog.error_code" class="sm:col-span-2">
+            <span class="jf-caption text-ink-secondary block">请求失败原因</span>
+            <span class="text-sm text-danger">{{ errorCodeTitleOrRaw(selectedLog.error_code) }}</span>
+            <code class="jf-caption jf-mono ml-2 jf-anywhere">{{ selectedLog.error_code }}</code>
           </div>
         </div>
 
         <!-- Token Usage -->
-        <div v-if="selectedLog.input_tokens != null || selectedLog.output_tokens != null || selectedLog.total_tokens != null" class="rounded-[var(--jf-radius-control)] border border-line p-4">
-          <h3 class="jf-module-title mb-2">Token 统计</h3>
+        <div class="rounded-[var(--jf-radius-control)] border border-line p-4">
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <h3 class="jf-module-title">上游模型 Token 用量</h3>
+            <JfBadge tone="neutral">{{ enumLabel('usageStatus', selectedLog.usage_status) }}</JfBadge>
+          </div>
+          <p class="jf-caption mb-3 text-ink-secondary">{{ usageStatusDescription(selectedLog.usage_status) }}</p>
           <div class="grid grid-cols-3 gap-2 jf-mono text-sm">
             <div>
               <span class="jf-caption text-ink-secondary block">输入 Token</span>
@@ -352,11 +402,57 @@ onMounted(() => { void fetchLogs(true) })
           </div>
         </div>
 
-        <!-- Raw Log JSON payload -->
-        <div>
-          <h3 class="jf-module-title mb-2">原始事件载荷 (Raw JSON)</h3>
+        <section v-if="selectedLog.attempts?.length || selectedLog.gateway_attempts > 0" aria-label="上游尝试记录" class="min-w-0 rounded-[var(--jf-radius-control)] border border-line p-4">
+          <h3 class="jf-module-title mb-2">上游尝试记录</h3>
+          <p class="jf-caption mb-3 text-ink-secondary">共 {{ selectedLog.gateway_attempts }} 次尝试 · {{ selectedLog.failover_used ? '已使用故障转移' : '未使用故障转移' }}。以下为已持久化记录；旧日志可能缺少逐次明细。</p>
+          <ol v-if="selectedLog.attempts?.length" class="grid gap-3">
+            <li v-for="attempt in selectedLog.attempts" :key="attempt.id" class="min-w-0 rounded-[var(--jf-radius-control)] bg-tonal p-3">
+              <div class="flex flex-wrap items-center gap-2 text-sm">
+                <span>第 {{ attempt.attempt_index }} 次</span>
+                <JfBadge v-if="attempt.status != null" :tone="statusColor(attempt.status)">HTTP {{ attempt.status }}</JfBadge>
+                <JfBadge tone="neutral">{{ enumLabel('usageStatus', attempt.usage_status) }}</JfBadge>
+              </div>
+              <p class="jf-caption jf-mono mt-2 jf-anywhere">{{ valueOrDash(attempt.provider) }} / {{ valueOrDash(attempt.model_id) }}<template v-if="attempt.group_name"> · {{ enumLabel('group', attempt.group_name) }}</template></p>
+              <p class="jf-caption mt-1 text-ink-secondary">开始 {{ formatDate(attempt.started_at) }}<template v-if="attempt.completed_at"> · 完成 {{ formatDate(attempt.completed_at) }}</template></p>
+              <p v-if="attempt.error_code" class="jf-caption mt-2 text-danger jf-anywhere">{{ errorCodeTitleOrRaw(attempt.error_code) }} · {{ attempt.error_code }}</p>
+              <p v-if="attempt.error_detail" class="jf-caption mt-1 jf-anywhere">{{ attempt.error_detail }}</p>
+              <p v-if="attempt.input_tokens != null || attempt.output_tokens != null || attempt.total_tokens != null" class="jf-caption jf-mono mt-2">Token 输入 {{ valueOrDash(attempt.input_tokens) }} / 输出 {{ valueOrDash(attempt.output_tokens) }} / 总计 {{ valueOrDash(attempt.total_tokens) }}</p>
+            </li>
+          </ol>
+        </section>
+
+        <details v-if="selectedLog.diagnostics || selectedLog.jev_trace" :key="`diagnostics-${selectedLog.id}`" class="min-w-0 rounded-[var(--jf-radius-control)] border border-line p-4">
+          <summary class="jf-module-title cursor-pointer">诊断信息（按需展开）</summary>
+          <p class="jf-caption my-3 text-ink-secondary">指纹用于核对决策元数据，不是提示词哈希，也不参与选模型。历史分档仅保留用于核对旧记录。</p>
+          <dl class="grid gap-3 text-sm">
+            <div v-if="selectedLog.diagnostics?.evidence_hash">
+              <dt class="jf-caption text-ink-secondary">决策元数据指纹</dt>
+              <dd class="jf-mono jf-anywhere">{{ selectedLog.diagnostics.evidence_hash }}</dd>
+            </div>
+            <div v-if="selectedLog.diagnostics?.legacy_confidence_band || selectedLog.diagnostics?.legacy_trace_confidence_band">
+              <dt class="jf-caption text-ink-secondary">历史置信度分档</dt>
+              <dd>{{ enumLabel('confidenceBand', selectedLog.diagnostics.legacy_confidence_band) || '未记录' }}<template v-if="selectedLog.diagnostics.legacy_trace_confidence_band"> · 历史追踪分档 {{ enumLabel('confidenceBand', selectedLog.diagnostics.legacy_trace_confidence_band) }}</template></dd>
+            </div>
+            <div v-if="selectedLog.jev_trace">
+              <dt class="jf-caption text-ink-secondary">Jev 输入模式 / 候选数量</dt>
+              <dd>{{ enumLabel('inputMode', selectedLog.jev_trace.input_mode) }} · {{ selectedLog.jev_trace.candidate_count }} 个提供商/模型候选 · {{ selectedLog.jev_trace.candidate_groups.length }} 个任务组</dd>
+            </div>
+            <div v-if="selectedLog.jev_trace?.recommended_group">
+              <dt class="jf-caption text-ink-secondary">Jev 原始推荐组（兜底前）</dt>
+              <dd>{{ enumLabel('group', selectedLog.jev_trace.recommended_group) }}</dd>
+            </div>
+            <div v-if="selectedLog.jev_trace?.failure_reason">
+              <dt class="jf-caption text-ink-secondary">Jev 失败详情</dt>
+              <dd>{{ fallbackReasonLabel(selectedLog.jev_trace.failure_reason) }}</dd>
+            </div>
+          </dl>
+        </details>
+
+        <details :key="`json-${selectedLog.id}`" class="min-w-0 rounded-[var(--jf-radius-control)] border border-line p-4">
+          <summary class="jf-module-title cursor-pointer">结构化路由日志（JSON）</summary>
+          <p class="jf-caption my-3 text-ink-secondary">只包含路由、耗时、逐次尝试和用量，不包含原始请求正文、响应正文或 Jev 提示词；失败尝试可能含有界限内脱敏错误摘录。未知或不适用的字段会省略；“—”及旧日志的 null 不代表 0。</p>
           <pre class="max-h-96 overflow-auto rounded-[var(--jf-radius-control)] bg-tonal p-3.5 font-mono text-xs leading-relaxed jf-anywhere">{{ JSON.stringify(selectedLog, null, 2) }}</pre>
-        </div>
+        </details>
       </div>
 
       <template #footer>

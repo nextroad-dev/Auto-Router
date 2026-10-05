@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, ApiError, type SettingsDocument } from '@/lib/api'
 import { createDebouncedSave, createSerialAutosaveQueue, retryOnceOnConflict } from '@/lib/autosave'
 import { errorNotice } from '@/lib/errors'
-import { enumLabel } from '@/lib/labels'
+import { enumLabel, inputModeDescription } from '@/lib/labels'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import JfAlert from '@/components/JfAlert.vue'
 import JfButton from '@/components/JfButton.vue'
@@ -461,7 +461,7 @@ onMounted(() => { void loadSettings() })
             />
           </JfField>
 
-          <JfField inline label="截断证据时拒绝路由" name="policy-refuse-truncated">
+          <JfField inline label="请求分析不完整时拒绝自动路由" name="policy-refuse-truncated" help="请求超过解析字节数、条目数或嵌套边界时，默认拒绝自动路由。正常的 Jev 文本截取不触发此规则；关闭后可能依据不完整信息筛选模型。">
             <JfSwitch
               :model-value="value('routing.policy.refuse_truncated_evidence', true)"
               :disabled="loading || !mutable('routing.policy.refuse_truncated_evidence')"
@@ -473,16 +473,17 @@ onMounted(() => { void loadSettings() })
       </div>
     </JfCard>
 
-    <!-- 3. Jev 推荐服务集成 -->
-    <JfCard title="Jev 推荐服务集成">
+    <!-- 3. Jev 任务组选取 -->
+    <JfCard title="Jev 任务组推荐">
       <div class="grid gap-6">
+        <p class="jf-caption text-ink-secondary">Jev 判断任务复杂度并推荐任务组；实际模型按组内配置顺序选择。发送给 Jev 的文本由本地截取和统计生成，不是完整会话或模型生成的语义摘要。</p>
         <JfAlert
           v-if="!value('jev.enabled', false)"
           tone="info"
-          title="Jev 未启用：自动路由统一使用默认组，以下设置和置信度阈值在启用 Jev 后才生效。启用前需先填写服务地址、模型和认证密钥。"
+          title="Jev 未启用：自动路由使用默认组。启用前需先填写服务地址、模型和认证密钥；启用后仅有一个可用任务组时会跳过推荐。"
         />
         <div class="grid gap-5 sm:grid-cols-2">
-          <JfField inline label="启用 Jev 智能推荐" name="jev-enabled">
+          <JfField inline label="启用 Jev 任务组推荐" name="jev-enabled">
             <JfSwitch
               :model-value="value('jev.enabled', false)"
               :disabled="loading || !mutable('jev.enabled')"
@@ -490,7 +491,7 @@ onMounted(() => { void loadSettings() })
             />
           </JfField>
 
-          <JfField label="Jev 请求分析模式" name="jev-input-mode">
+          <JfField label="发送给 Jev 的内容" name="jev-input-mode" :help="inputModeDescription(String(value('jev.input_mode', 'redacted')))">
             <JfSelect
               :model-value="value('jev.input_mode', 'redacted')"
               :items="inputModes"

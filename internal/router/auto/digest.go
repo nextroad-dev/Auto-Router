@@ -15,14 +15,14 @@ import (
 // deployment, and a change to it must be a reviewable code change.
 //
 // The routing question is "how hard is the turn being asked for", and the
-// evidence for that is the latest user prompt plus the shape of the work around
+// evidence for that is the latest retained user prompt plus the shape of the work around
 // it. Assistant turns and tool outputs — in an agent conversation, almost all of
 // the bytes — are summarized as counts, so a Jev request stays small however
 // long the conversation grows.
 const (
 	// digestBudgetBytes bounds the text of one digest: system excerpt, messages
 	// and tool names together. Earlier user turns are dropped, oldest first,
-	// until the digest fits; the latest user turn always stays.
+	// until the digest fits; the latest user turn available in the view stays.
 	digestBudgetBytes = 16 << 10
 	// digestLatestUserBytes bounds the latest user turn.
 	digestLatestUserBytes = 8 << 10
@@ -32,7 +32,7 @@ const (
 	digestEarlierUserTurns = 3
 	// digestSystemBytes bounds the system prompt excerpt. Agent instructions are
 	// long and identical on every request; the opening says what kind of client
-	// this is, which is all the routing question needs from them.
+	// this is. Content mode keeps both ends; redacted mode keeps a redacted prefix.
 	digestSystemBytes = 1 << 10
 	// digestAssistantExcerptBytes bounds the excerpt of the last assistant text
 	// in one summarized run of non-user turns.
@@ -47,8 +47,8 @@ type shapeFunc func(text string, limit int) string
 
 func contentShape(text string, limit int) string { return excerpt(text, limit) }
 
-// redactedShape applies the redacted mode's own per-block contract, which
-// already bounds each block more tightly than any digest limit.
+// redactedShape applies the redacted mode's own 512-byte per-block contract,
+// independently of content-mode limits (including the 256-byte assistant excerpt).
 func redactedShape(text string, _ int) string { return strings.TrimSpace(redactText(text)) }
 
 // digestSegment is one kept user turn followed by the summary of the non-user

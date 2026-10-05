@@ -105,13 +105,13 @@ func TestLogsAPIReportsGroupLevelJevTrace(t *testing.T) {
 	if err := storage.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	confidence := 0.8
+	confidence, policyConfidence := 0.8, 0.6
 	store := storage.NewRoutingLog(db)
 	if err := store.Insert(ctx, []logging.Event{{
 		RequestID: "group-api-trace", StartedAt: time.Now().UTC(), Protocol: "chat_completions",
 		RoutingMode: logging.RoutingModeAuto, SelectionMode: logging.SelectionModeFirstEligible,
 		RequestedModel: "auto", EffectiveModel: "model-b", Status: http.StatusOK, GatewayAttempts: 1,
-		JevStatus: logging.JevStatusOK, Confidence: &confidence, ConfidenceBand: logging.ConfidenceBandHigh,
+		JevStatus: logging.JevStatusOK, Confidence: &policyConfidence, ConfidenceBand: logging.ConfidenceBandHigh,
 		FallbackReason: logging.FallbackReasonNone, Usage: logging.Usage{Status: logging.UsageStatusAbsent},
 		Jev: &logging.JevTrace{
 			Status: logging.JevStatusOK, InputMode: logging.InputModeContent,
@@ -132,9 +132,9 @@ func TestLogsAPIReportsGroupLevelJevTrace(t *testing.T) {
 	}
 	var page struct {
 		Items []struct {
-			Trace *struct {
+			Confidence float64 `json:"confidence"`
+			Trace      *struct {
 				CandidateGroups    []string `json:"candidate_groups"`
-				GroupCount         int      `json:"group_count"`
 				RecommendedGroup   *string  `json:"recommended_group"`
 				SelectedGroup      *string  `json:"selected_group"`
 				GroupProbabilities []struct {
@@ -150,7 +150,96 @@ func TestLogsAPIReportsGroupLevelJevTrace(t *testing.T) {
 		t.Fatalf("log trace missing: %s", response.Body.String())
 	}
 	trace := page.Items[0].Trace
-	if trace.GroupCount != 2 || len(trace.CandidateGroups) != 2 || trace.RecommendedGroup == nil || *trace.RecommendedGroup != "medium" || trace.SelectedGroup == nil || *trace.SelectedGroup != "medium" || len(trace.GroupProbabilities) != 2 {
+	if page.Items[0].Confidence != confidence {
+		t.Fatalf("API returned historical blended confidence instead of original recommendation: %s", response.Body.String())
+	}
+	if len(trace.CandidateGroups) != 2 || trace.RecommendedGroup == nil || *trace.RecommendedGroup != "medium" || trace.SelectedGroup == nil || *trace.SelectedGroup != "medium" || len(trace.GroupProbabilities) != 2 {
 		t.Fatalf("API group trace = %+v", trace)
+	}
+	for _, removed := range []string{"candidate_models", "model_count", "selected_model", "probabilities", "group_count", "confidence_band"} {
+		if strings.Contains(response.Body.String(), `"`+removed+`":`) {
+			t.Fatalf("empty legacy field %s still appears in group-mode logs: %s", removed, response.Body.String())
+		}
+	}
+	var rawPage struct {
+		Items []struct {
+			Trace map[string]json.RawMessage `json:"jev_trace"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &rawPage); err != nil {
+		t.Fatal(err)
+	}
+	for _, duplicate := range []string{"status", "latency_ms", "confidence", "confidence_band", "fallback_reason", "evidence_hash", "failure_reason"} {
+		if _, ok := rawPage.Items[0].Trace[duplicate]; ok {
+			t.Errorf("empty/duplicated trace field %s still exposed: %s", duplicate, response.Body.String())
+		}
+	}
+}
+
+func TestLogsPayloadOmitsUnknownFieldsButKeepsZeroAndDiagnostics(t *testing.T) {
+	zero := int64(0)
+	zeroConfidence := 0.0
+	for _, status := range []string{logging.JevStatusOK, logging.JevStatusDisabled, logging.JevStatusSkippedSingleModel, "failure:jev_timeout"} {
+		t.Run(status, func(t *testing.T) {
+			entry := storage.StoredEvent{Event: logging.Event{
+				JevStatus: status, Confidence: &zeroConfidence, ConfidenceBand: "low", EvidenceHash: "fingerprint",
+				Usage: logging.Usage{Status: logging.UsageStatusObserved, InputTokens: &zero}, JevLatencyMS: &zero,
+			}}
+			encoded, err := json.Marshal(logEventPayloadOf(entry))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatal(err)
+			}
+			for _, omitted := range []string{"client_ip", "error_code", "usage_source", "output_tokens", "total_tokens", "confidence_band", "evidence_hash", "routing_latency_ms", "upstream_status"} {
+				if _, ok := payload[omitted]; ok {
+					t.Errorf("%s should be omitted: %s", omitted, encoded)
+				}
+			}
+			if string(payload["input_tokens"]) != "0" || string(payload["jev_latency_ms"]) != "0" {
+				t.Errorf("real zero lost: %s", encoded)
+			}
+			_, present := payload["confidence"]
+			if present != (status == logging.JevStatusOK) {
+				t.Errorf("confidence presence=%t: %s", present, encoded)
+			}
+			if !strings.Contains(string(payload["diagnostics"]), `"evidence_hash":"fingerprint"`) || !strings.Contains(string(payload["diagnostics"]), `"legacy_confidence_band":"low"`) {
+				t.Errorf("historical diagnostics lost: %s", encoded)
+			}
+		})
+	}
+}
+
+func TestLogAttemptPayloadPreservesFailureAndZeroWithoutNulls(t *testing.T) {
+	zero := int64(0)
+	encoded, err := json.Marshal(logAttemptPayload{ErrorCode: optionalString("upstream_unavailable"), ErrorDetail: optionalString("redacted failure"), InputTokens: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"error_code":"upstream_unavailable"`, `"error_detail":"redacted failure"`, `"input_tokens":0`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Errorf("failure/zero lost: %s", encoded)
+		}
+	}
+	if strings.Contains(string(encoded), ":null") {
+		t.Errorf("unknown attempt fields emitted: %s", encoded)
+	}
+}
+
+func TestLogsPayloadPreservesHistoricalModelTrace(t *testing.T) {
+	encoded, err := json.Marshal(jevTracePayloadOf(&logging.JevTrace{
+		Status: logging.JevStatusOK, InputMode: logging.InputModeContent,
+		CandidateModels: []string{"old-model"}, ModelCount: 1, Selected: "old-model",
+		Probabilities: []logging.ModelProbability{{Model: "old-model", Probability: 1}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"candidate_models":["old-model"]`, `"model_count":1`, `"selected_model":"old-model"`, `"probabilities":[{"model":"old-model","probability":1}]`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("historical trace field lost: %s in %s", field, encoded)
+		}
 	}
 }

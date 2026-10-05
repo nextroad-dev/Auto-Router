@@ -76,8 +76,6 @@ func featuresMessage(features analyzer.Features, envelopes []modelEnvelope) stri
 	fmt.Fprintf(&builder, "multimodal: images=%t image_url=%t base64_image=%t file=%t audio=%t\n",
 		features.ImageCount > 0, features.HasImageURL, features.HasBase64Image, features.HasFile, features.HasAudio)
 	fmt.Fprintf(&builder, "stream_requested: %t\n", features.StreamRequested)
-	fmt.Fprintf(&builder, "reasoning_likely: %t\n", features.ReasoningLikely)
-	fmt.Fprintf(&builder, "code_likely: %t\n", features.HasCode)
 	fmt.Fprintf(&builder, "truncated_analysis: %t\n", features.Truncated)
 	builder.WriteString("candidate_count: ")
 	fmt.Fprintf(&builder, "%d\n", len(envelopes))

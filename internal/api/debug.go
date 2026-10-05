@@ -159,10 +159,8 @@ type debugAnalyzeFeatures struct {
 	ToolsTruncated   bool     `json:"tools_truncated"`
 	ForcedToolChoice bool     `json:"forced_tool_choice"`
 
-	HasCode         bool `json:"has_code"`
-	ReasoningLikely bool `json:"reasoning_likely"`
-	ChainedToolUse  bool `json:"chained_tool_use"`
-	FileSearchUsed  bool `json:"file_search_used"`
+	ChainedToolUse bool `json:"chained_tool_use"`
+	FileSearchUsed bool `json:"file_search_used"`
 
 	StreamRequested          bool `json:"stream_requested"`
 	MaxOutputTokensRequested *int `json:"max_output_tokens_requested"`
@@ -215,8 +213,6 @@ func presentFeatures(features analyzer.Features) debugAnalyzeFeatures {
 		ToolNames:                names,
 		ToolsTruncated:           features.ToolsTruncated,
 		ForcedToolChoice:         features.ForcedToolChoice,
-		HasCode:                  features.HasCode,
-		ReasoningLikely:          features.ReasoningLikely,
 		ChainedToolUse:           features.ChainedToolUse,
 		FileSearchUsed:           features.FileSearchUsed,
 		StreamRequested:          features.StreamRequested,

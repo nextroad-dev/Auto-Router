@@ -2286,7 +2286,8 @@ components:
       name: confidence_band
       in: query
       required: false
-      description: The coarse band of the recommendation confidence.
+      deprecated: true
+      description: Historical-record filter only. Current logs do not populate confidence bands; legacy values are exposed under diagnostics.
       schema:
         type: string
         enum: [high, medium, low]
@@ -2305,8 +2306,10 @@ components:
       in: query
       required: false
       description: |
-        How passive usage observation ended. There is deliberately no "zero" member: an unknown token
-        count is stored as NULL, never as 0.
+        How extraction of the serving model's upstream token usage ended, independently of HTTP
+        success and Jev recommendation status. `oversized` is an extraction bound, not a model-context
+        error. Older builds stopped on SSE events above 16 KiB or after 4096 events; current incremental
+        readers bound a captured usage value to 4 KiB. Unknown token counts are NULL, never fabricated 0.
       schema:
         type: string
         enum: [observed, absent, malformed, oversized, interrupted]
@@ -2643,7 +2646,10 @@ components:
       description: |
         The normalized, protocol-independent facts the analyzer extracted. Every field is derived from
         the request body, and the same bytes always produce the same
-        features. Counts and booleans only: no prompt text and no inline payload ever appears here.
+        features. No prompt text or inline payload appears here; media references are bounded,
+        and inline payloads and opaque file IDs are redacted (URLs can remain in debug output).
+        Prose keyword guesses (`has_code`, `reasoning_likely`) have been removed. Provider
+        reasoning controls are forwarded upstream but are not interpreted as task-difficulty signals.
       properties:
         system_prompt_present: {type: boolean}
         system_prompt_bytes:
@@ -2665,6 +2671,7 @@ components:
           description: A crude `ceil(bytes/4)` heuristic for classification only. It is never a billing or usage number.
         length:
           type: string
+          description: 'Byte-based estimate buckets: short < 2000, medium < 32000, long < 128000, otherwise very_long. Not measured model tokens.'
           enum: [short, medium, long, very_long]
         truncated:
           type: boolean
@@ -2706,10 +2713,8 @@ components:
         forced_tool_choice:
           type: boolean
           description: The client named the tool to call. `auto`, `required` and `none` do not count.
-        has_code: {type: boolean}
-        reasoning_likely: {type: boolean}
-        chained_tool_use: {type: boolean}
-        file_search_used: {type: boolean}
+        chained_tool_use: {type: boolean, description: A tool/function call was encountered in the parsed request.}
+        file_search_used: {type: boolean, description: A file-search tool or call was encountered; this is a structural signal.}
         stream_requested: {type: boolean}
         max_output_tokens_requested:
           type: [integer, 'null']
@@ -2751,7 +2756,7 @@ components:
             selected_group:
               type: string
               enum: [simple, medium, complex]
-            selection_mode: {type: string, description: 'The policy origin; `first_eligible` for group routing.'}
+            selection_mode: {type: string, description: 'The model-selection rule. Current group routing uses `first_eligible`: administrator order within the selected group. Jev may have selected that group successfully.'}
             max_attempts: {type: integer, description: The failover attempt budget in effect.}
         jev:
           oneOf:
@@ -2770,6 +2775,7 @@ components:
         failure_reason: {type: string}
         input_mode:
           type: string
+          description: 'content: original-text excerpts and count summaries (16 KiB text budget); redacted: default, with pattern redaction and a 512-byte prefix per block; features_only: structural facts, without client text. Locally generated, not a model-generated semantic summary.'
           enum: [content, redacted, features_only]
         candidate_groups:
           type: array
@@ -3231,10 +3237,11 @@ components:
     LogEvent:
       type: object
       description: |
-        One stored routing event. Every nullable field is a column that can be NULL, and NULL is
-        reported as JSON `null` rather than as a zero: "the upstream did not report this" is not
-        "zero". Requests that never reached the forwarding path are deliberately absent from this
-        table.
+        One stored routing event. Unknown or inapplicable optional fields are omitted, never
+        synthesized as zero. Real zero counts and sub-millisecond phase latencies remain 0.
+        Nullable types tolerate older responses; current responses omit absent values.
+        Requests that never reached the forwarding path are deliberately absent from this table.
+        Audit metadata is nested under diagnostics; stored historical rows are not rewritten.
       required: [id, request_id, started_at, duration_ms, protocol, status, stream, bytes_written, gateway_attempts, failover_used, usage_status]
       properties:
         id: {type: integer, format: int64}
@@ -3249,6 +3256,7 @@ components:
           enum: [explicit, auto, null]
         selection_mode:
           type: [string, 'null']
+          description: 'Current automatic routing uses first_eligible for administrator order within the selected task group; this does not mean Jev was skipped. jev, blend and default_model are retained for historical logs.'
           enum: [explicit, jev, blend, default_model, first_eligible, null]
         requested_model:
           type: [string, 'null']
@@ -3270,23 +3278,22 @@ components:
             The failure recorded for this request. Codes are read back from storage, so a value
             written by an older build may no longer be a member of the current vocabulary.
         stream: {type: boolean}
-        bytes_written: {type: integer, format: int64}
+        bytes_written: {type: integer, format: int64, description: Response bytes sent to the client; not request size or Jev prompt size.}
         client_ip:
           type: [string, 'null']
           description: Present only when `routing.log.store_client_ip` is enabled.
         jev_status:
           type: [string, 'null']
-          description: One of the five literal statuses, or `failure:<reason>`.
+          description: 'Jev group-recommendation status, independently of upstream usage. ok means a valid recommendation was received; fallback_reason shows whether it was used. skipped_single_model now means only one task group was eligible. Historical literals remain readable.'
         confidence:
           type: [number, 'null']
           format: double
-        confidence_band:
-          type: [string, 'null']
-          enum: [high, medium, low, null]
+          description: Jev's original recommendation confidence, including a real 0. Omitted unless jev_status is ok. Historical traces take precedence over blended policy values.
         fallback_reason: {type: [string, 'null']}
-        evidence_hash:
-          type: [string, 'null']
-          description: A digest of the decision's inputs. It never covers request text.
+        diagnostics:
+          description: Optional audit-only metadata. Not used to select a group or model.
+          allOf:
+            - $ref: '#/components/schemas/LogDiagnostics'
         gateway_attempts:
           type: integer
           description: How many upstream attempts were made. Automatic retries are bounded by the configured total-attempt limit (1–8).
@@ -3294,21 +3301,22 @@ components:
         routing_latency_ms:
           type: [integer, 'null']
           format: int64
-          description: NULL when no decision happened, 0 when one happened within the same millisecond.
-        jev_latency_ms: {type: [integer, 'null'], format: int64}
-        input_tokens: {type: [integer, 'null'], format: int64}
-        output_tokens: {type: [integer, 'null'], format: int64}
+          description: Omitted when no decision happened; 0 when one happened within the same millisecond.
+        jev_latency_ms: {type: [integer, 'null'], format: int64, description: Omitted when no call was recorded; 0 is a recorded sub-millisecond call.}
+        input_tokens: {type: [integer, 'null'], format: int64, description: Input tokens reported by the serving upstream model; omitted when unknown. Excludes Jev usage.}
+        output_tokens: {type: [integer, 'null'], format: int64, description: Output tokens reported by the serving upstream model; omitted when unknown. Excludes Jev usage.}
         total_tokens:
           type: [integer, 'null']
           format: int64
-          description: Never synthesized from the other two counts.
+          description: Omitted when unknown. Never synthesized from the other two counts.
         usage_status:
           type: string
+          description: 'Upstream usage extraction result. oversized means an extraction bound, not Jev or upstream context overflow; it can accompany HTTP 200 and jev_status ok. Current incremental scanners capture at most 4 KiB per usage value.'
           enum: [observed, absent, malformed, oversized, interrupted]
         usage_source:
           type: [string, 'null']
           enum: [chat_completions, responses, stream_chat_completions, stream_responses, null]
-          description: Where a usage object was read. Only meaningful when usage was observed.
+          description: Where OpenAI-protocol usage was read. Omitted if unknown or for native Anthropic/Gemini usage, which has no source literal even when counts were observed.
         jev_trace:
           description: Present only when a trace was stored for this request. Omitted otherwise.
           allOf:
@@ -3318,8 +3326,17 @@ components:
           description: Present when upstream attempts were recorded for this request.
           items: {$ref: '#/components/schemas/LogAttempt'}
 
+    LogDiagnostics:
+      type: object
+      description: Audit metadata, omitted when empty. It does not contain prompt text or affect routing.
+      properties:
+        evidence_hash: {type: string, description: A fingerprint of decision metadata, not a hash of the prompt or request text.}
+        legacy_confidence_band: {type: string, enum: [high, medium, low], description: Historical policy band, retained only for old records. New logs do not populate it.}
+        legacy_trace_confidence_band: {type: string, enum: [high, medium, low], description: Historical trace band when different from the stored policy band.}
+
     LogAttempt:
       type: object
+      description: One upstream try. Unknown or inapplicable optional fields are omitted; real zero token counts remain 0.
       required: [id, attempt_index, started_at, usage_status]
       properties:
         id: {type: integer, format: int64}
@@ -3341,45 +3358,43 @@ components:
           description: |
             For an attempt the upstream answered with a non-2xx status, a bounded excerpt of the upstream
             error message with URLs, email addresses, credentials and long opaque strings redacted. It is
-            null for a successful attempt and when the error body carried no readable message.
+            omitted for a successful attempt and when the error body carried no readable message.
         input_tokens: {type: [integer, 'null'], format: int64}
         output_tokens: {type: [integer, 'null'], format: int64}
         total_tokens: {type: [integer, 'null'], format: int64}
         usage_status:
           type: string
+          description: 'Usage extraction for this upstream attempt, independently of its HTTP status. oversized means extraction exceeded its bound, not model-context overflow.'
           enum: [observed, absent, malformed, oversized, interrupted]
 
     JevTrace:
       type: object
       description: |
-        The optional diagnostic trace of one Jev call. It carries identifiers, counts, durations and the
-        normalized distribution, and it has no field for a prompt, a system message, a tool description
-        or raw bytes, so enabling it cannot leak a conversation.
-      required: [status, input_mode, candidate_count, candidate_models, model_count, candidate_groups, group_count, recommended_group, selected_group, group_probabilities, probabilities]
+        Optional group-recommendation details, including skipped calls. It carries identifiers,
+        candidate counts and distributions, never prompt text or tool descriptions. Status,
+        latency, confidence and fallback are reported once on LogEvent, not duplicated here.
+        Empty distributions and absent recommendations are omitted. Historical model data remains readable.
+      required: [input_mode, candidate_count, candidate_groups]
       properties:
-        status: {type: string}
         failure_reason: {type: [string, 'null']}
         input_mode:
           type: string
+          description: 'content: original-text excerpts and count summaries (16 KiB text budget); redacted: default, pattern redaction and a 512-byte prefix per block; features_only: structural facts without client text. The trace records the configured mode, not prompt text.'
           enum: [content, redacted, features_only]
-        latency_ms:
-          type: [integer, 'null']
-          format: int64
-          description: "`null` when no call was made."
         candidate_count: {type: integer, description: How many hard-filtered provider/model pairs were eligible across the candidate groups.}
         candidate_models:
           type: array
-          description: Legacy model-mode trace field. Empty for current group-level routing.
+          deprecated: true
+          description: Legacy model-mode candidates, returned only when non-empty historical data exists. Omitted for current group-level routing.
           items: {type: string}
-        model_count: {type: integer, description: Always the length of `candidate_models`; zero for group-level routing.}
-        selected_model: {type: [string, 'null'], description: Legacy model-mode recommendation; null for group-level routing.}
+        model_count: {type: integer, deprecated: true, description: Legacy count of candidate_models. Omitted when zero and for current group-level routing.}
+        selected_model: {type: [string, 'null'], deprecated: true, description: Legacy model-mode recommendation. Omitted when absent and for current group-level routing.}
         candidate_groups:
           type: array
           description: Ordered non-empty groups presented to Jev. The array order is simple, medium, complex.
           items:
             type: string
             enum: [simple, medium, complex]
-        group_count: {type: integer, description: Always the length of `candidate_groups`.}
         recommended_group:
           type: [string, 'null']
           enum: [simple, medium, complex, null]
@@ -3397,13 +3412,10 @@ components:
             properties:
               group: {type: string, enum: [simple, medium, complex]}
               probability: {type: number, format: double}
-        confidence: {type: [number, 'null'], format: double}
-        confidence_band: {type: [string, 'null']}
-        fallback_reason: {type: [string, 'null']}
-        evidence_hash: {type: [string, 'null']}
         probabilities:
           type: array
-          description: The normalized distribution, ordered by descending probability with model ID ascending as the tie-break.
+          deprecated: true
+          description: Legacy model-mode distribution, ordered by descending probability with model ID ascending as the tie-break. Omitted when empty and for current group-level routing; use group_probabilities instead.
           items:
             type: object
             required: [model, probability]

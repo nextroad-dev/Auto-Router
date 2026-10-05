@@ -116,8 +116,10 @@ const (
 	// UsageStatusMalformed means a usage object was present but unusable
 	// (wrong type, negative, fractional).
 	UsageStatusMalformed = "malformed"
-	// UsageStatusOversized means observation stopped at its bound before usage
-	// could be seen.
+	// UsageStatusOversized means usage extraction hit a bound. It is independent
+	// of Jev status, model context capacity and HTTP success. Older builds could
+	// stop on a large SSE event or event count; current scanners bound a captured
+	// usage value to 4 KiB.
 	UsageStatusOversized = "oversized"
 	// UsageStatusInterrupted means the relay ended in an error or a cancellation
 	// before usage was seen.
@@ -143,7 +145,8 @@ type Usage struct {
 	TotalTokens  *int64
 	// Status is one of the UsageStatus constants.
 	Status string
-	// Source is one of the UsageSource constants, empty when nothing was read.
+	// Source is one of the UsageSource constants. It is empty when nothing was
+	// read, and for native Anthropic/Gemini usage, which has no source literal.
 	Source string
 }
 
@@ -241,7 +244,8 @@ type JevTrace struct {
 	FailureReason string
 	// InputMode is the configured jev.input_mode.
 	InputMode string
-	// Selected is the recommended logical model, empty unless Status is ok.
+	// Selected is the legacy recommended logical model. It is empty for current
+	// group-level routing; RecommendedGroup is the recommendation instead.
 	Selected string
 	// ConfidenceBand and FallbackReason mirror the decision the recommendation
 	// contributed to.
@@ -366,11 +370,9 @@ func (t JevTrace) Valid() error {
 	return nil
 }
 
-// Event is one routing log row: everything that happened to exactly one request
-// that reached the forwarding path. The field names match the columns of
-// routing_events and the structured process log one-to-one, with a single
-// deliberate exception: there is no routing_model column, because it is
-// identically equal to RequestedModel on the automatic path.
+// Event is one durable row for a request that reached the forwarding path.
+// It mirrors the SQLite columns, including historical columns retained for
+// compatibility. API/CLI views omit absent facts and separate audit diagnostics.
 type Event struct {
 	RequestID string
 	// StartedAt is when the request entered the forwarding handler. Storage
@@ -403,11 +405,16 @@ type Event struct {
 	// otherwise.
 	ClientIP string
 
-	JevStatus      string
+	JevStatus string
+	// ConfidenceBand is historical only; current request producers leave it empty.
 	ConfidenceBand string
 	FallbackReason string
-	EvidenceHash   string
-	Confidence     *float64
+	// EvidenceHash fingerprints decision metadata, not prompt text. Presentation
+	// places it under diagnostics; it is not used to select a destination.
+	EvidenceHash string
+	// Confidence is the original Jev recommendation, absent for skipped/failed
+	// calls. Historical policy placeholders are hidden by RecommendationConfidence.
+	Confidence *float64
 
 	// GatewayAttempts is a historical SQLite/JSON field name; it counts
 	// attempts against the selected Provider, not a Gateway.

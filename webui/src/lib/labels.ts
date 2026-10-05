@@ -4,7 +4,7 @@ import { errorCodeTitle } from './errors'
 /** A closed enum vocabulary rendered for display. Unknown members fall back to the raw value. */
 export type LabelNamespace = 'protocol' | 'routingMode' | 'selectionMode'
   | 'confidenceBand' | 'usageStatus' | 'statusClass' | 'inputMode'
-  | 'jevStatus' | 'fallbackReason'
+  | 'jevStatus' | 'fallbackReason' | 'group'
 
 function t(key: string, named?: Record<string, string | number>): string {
   return named ? i18n.global.t(key, named) : i18n.global.t(key)
@@ -30,6 +30,17 @@ export function enumLabel(namespace: LabelNamespace, value: string | null | unde
   if (value === null || value === undefined || value === '') return ''
   const key = labelKey(namespace, value)
   return hasKey(key) ? t(key) : value
+}
+
+/** Operator guidance is shared by settings and request details. */
+export function inputModeDescription(value: string): string {
+  const key = `routingInputDescriptions.${value}`
+  return hasKey(key) ? t(key) : '未知输入模式，请核对管理台与服务端版本。'
+}
+
+export function usageStatusDescription(value: string): string {
+  const key = `usageDescriptions.${value}`
+  return hasKey(key) ? t(key) : '未知用量状态，请核对运行版本和结构化日志。'
 }
 
 /** Jev status is the closed set plus the `failure:<reason>` form. */

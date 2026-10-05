@@ -145,8 +145,6 @@ func writeAnalyzeReport(output io.Writer, protocol providers.Protocol, source st
 	fmt.Fprintf(output, "tools:                    %d (truncated=%t forced=%t file_search=%t)\n",
 		features.ToolCount, features.ToolsTruncated, features.ForcedToolChoice, features.FileSearchUsed)
 	fmt.Fprintf(output, "tool_names:               %s\n", formatStrings(features.ToolNames))
-	fmt.Fprintf(output, "has_code:                 %t\n", features.HasCode)
-	fmt.Fprintf(output, "reasoning_likely:         %t\n", features.ReasoningLikely)
 	fmt.Fprintf(output, "chained_tool_use:         %t\n", features.ChainedToolUse)
 	fmt.Fprintf(output, "stream_requested:         %t\n", features.StreamRequested)
 	fmt.Fprintf(output, "max_output_tokens:        %s\n", formatOptionalInt(features.MaxOutputTokensRequested))

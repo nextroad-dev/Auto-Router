@@ -15,9 +15,8 @@ import (
 // predictable, and a deployment that could raise a bound could make one large
 // response cost more memory than the response itself.
 const (
-	// maxObservedResponseBytes bounds how much of a non-streaming body is
-	// accumulated for usage extraction. A body larger than this is reported as
-	// oversized and observation stops; the client still receives every byte.
+	// maxObservedResponseBytes bounds the non-streaming body buffer. Larger
+	// bodies are scanned incrementally for their usage metadata.
 	maxObservedResponseBytes = 1 << 20
 	// maxObservedSSEEventBytes bounds how much of one SSE event is buffered. A
 	// larger event can still carry usage — a Responses "response.completed" event
@@ -29,7 +28,7 @@ const (
 	// larger than this is not read, and the observation reports oversized.
 	maxCapturedUsageBytes = 4 << 10
 	// maxUsageKeyBytes bounds the object key a scanner keeps for comparison. It
-	// only needs to recognize "usage" and "response".
+	// only needs to recognize the usage keys and their outer containers.
 	maxUsageKeyBytes = 16
 	// eventSeparator is the blank line that ends one SSE event.
 	eventSeparator = "\n\n"
@@ -62,6 +61,8 @@ const (
 type usageObserver struct {
 	// stream selects the incremental SSE reader.
 	stream bool
+	// native selects Anthropic/Gemini usage fields and the message container.
+	native bool
 	// source is the usage source recorded once something has been read. It is
 	// derived from the protocol and the framing, never from the payload.
 	source string
@@ -108,6 +109,16 @@ func newUsageObserver(protocol providers.Protocol, contentType string, stream bo
 	return &usageObserver{stream: framed, source: source, usage: logging.Usage{Status: logging.UsageStatusAbsent}}
 }
 
+// newNativeUsageObserver shares the bounded reader with the OpenAI protocols.
+// Native usage has no source literal in the logging contract.
+func newNativeUsageObserver(contentType string, stream bool) *usageObserver {
+	return &usageObserver{
+		stream: stream || strings.Contains(strings.ToLower(contentType), "text/event-stream"),
+		native: true,
+		usage:  logging.Usage{Status: logging.UsageStatusAbsent},
+	}
+}
+
 // observe feeds one chunk of response bytes. It must be called with the bytes the
 // client has already been given.
 func (o *usageObserver) observe(chunk []byte) {
@@ -126,7 +137,7 @@ func (o *usageObserver) observe(chunk []byte) {
 	if o.body == nil && len(o.buffer)+len(chunk) > maxObservedResponseBytes {
 		// The body is larger than the buffer. The client still gets every byte;
 		// the rest of the body is scanned for its usage instead of held.
-		o.body = newUsageScanner(o.recordUsage)
+		o.body = newUsageScanner(o.recordUsage, o.native)
 		o.body.feed(o.buffer)
 		o.buffer = nil
 	}
@@ -174,7 +185,7 @@ func (o *usageObserver) observeStream(chunk []byte) {
 				// the scanner expects to start.
 				pending := o.buffer
 				o.buffer = nil
-				o.event = newSSEUsageScanner(o.recordUsage)
+				o.event = newSSEUsageScanner(o.recordUsage, o.native)
 				o.observeStream(pending)
 			}
 			return
@@ -220,9 +231,8 @@ func (o *usageObserver) recordEventPayloads(event []byte) {
 }
 
 // recordPayload reads the usage of one JSON payload. It looks in both places a
-// usage object can appear: a chat-completions chunk carries a top-level "usage",
-// and a Responses event carries "response.usage". Trying both is safe because they
-// can never occur in the same payload.
+// usage object can appear: a top-level "usage", or "response.usage" in Responses.
+// Native protocols also use "usageMetadata" or "message.usage".
 //
 // strict selects what a payload that is not JSON means. For a whole non-streaming
 // body it is malformed: the two APIs this router speaks answer with a JSON object,
@@ -241,7 +251,15 @@ func (o *usageObserver) recordPayload(payload []byte, strict bool) {
 		o.recordUsage(raw)
 		return
 	}
-	if raw, ok := decoded["response"]; ok {
+	container := "response"
+	if o.native {
+		if raw, ok := decoded["usageMetadata"]; ok {
+			o.recordUsage(raw)
+			return
+		}
+		container = "message"
+	}
+	if raw, ok := decoded[container]; ok {
 		var nested map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &nested); err != nil {
 			return
@@ -264,29 +282,35 @@ func (o *usageObserver) recordUsage(raw json.RawMessage) {
 	// The source is recorded once, when a usage object is actually reached, so a
 	// response without one reports no source rather than a guessed one.
 	o.usage.Source = o.source
-	o.usage.InputTokens = o.readCount(fields, usageInputTokensKey, usagePromptKey, o.usage.InputTokens)
-	o.usage.OutputTokens = o.readCount(fields, usageOutputTokensKey, usageCompletionKey, o.usage.OutputTokens)
-	o.usage.TotalTokens = o.readCount(fields, usageTotalTokensKey, "", o.usage.TotalTokens)
+	if o.native {
+		o.usage.InputTokens = o.readCount(fields, o.usage.InputTokens, usageInputTokensKey, "promptTokenCount", usagePromptKey)
+		o.usage.OutputTokens = o.readCount(fields, o.usage.OutputTokens, usageOutputTokensKey, "candidatesTokenCount", usageCompletionKey)
+		o.usage.TotalTokens = o.readCount(fields, o.usage.TotalTokens, usageTotalTokensKey, "totalTokenCount")
+		return
+	}
+	o.usage.InputTokens = o.readCount(fields, o.usage.InputTokens, usageInputTokensKey, usagePromptKey)
+	o.usage.OutputTokens = o.readCount(fields, o.usage.OutputTokens, usageOutputTokensKey, usageCompletionKey)
+	o.usage.TotalTokens = o.readCount(fields, o.usage.TotalTokens, usageTotalTokensKey)
 }
 
 // readCount reads one count from a usage object, falling back to the alternative
 // spelling. A present but unusable value marks the observation malformed; an
 // absent key leaves the previous value untouched, so a later event or a later
 // field can still supply it.
-func (o *usageObserver) readCount(fields map[string]json.RawMessage, key, fallbackKey string, previous *int64) *int64 {
-	raw, ok := fields[key]
-	if !ok && fallbackKey != "" {
-		raw, ok = fields[fallbackKey]
+func (o *usageObserver) readCount(fields map[string]json.RawMessage, previous *int64, keys ...string) *int64 {
+	for _, key := range keys {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		value, ok := decodeCount(raw)
+		if !ok {
+			o.malformed = true
+			return previous
+		}
+		return &value
 	}
-	if !ok {
-		return previous
-	}
-	value, ok := decodeCount(raw)
-	if !ok {
-		o.malformed = true
-		return previous
-	}
-	return &value
+	return previous
 }
 
 // decodeCount accepts a non-negative whole number, and nothing else. A float, a
@@ -359,15 +383,16 @@ func (o *usageObserver) finish(interrupted bool) logging.Usage {
 // usageScanner finds the usage object of one JSON payload without holding the
 // payload. It tracks only what that needs — nesting depth, string state and the
 // keys of the two outer object levels — to recognize "usage" in the same two
-// places recordPayload looks: at the top level, and under a top-level "response"
-// object. Only that value is copied, up to maxCapturedUsageBytes, and handed to
-// emit once it is complete.
+// places recordPayload looks. Native mode recognizes "usageMetadata" and
+// "message.usage" instead of "response.usage". Only the usage value is copied,
+// up to maxCapturedUsageBytes, and handed to emit once it is complete.
 //
 // It is a recognizer, not a validator: a payload that is not JSON simply yields
 // nothing, except that notObject records a payload that does not open with an
 // object, for callers that treat that as malformed.
 type usageScanner struct {
-	emit func(raw json.RawMessage)
+	emit   func(raw json.RawMessage)
+	native bool
 
 	started   bool
 	notObject bool
@@ -383,8 +408,8 @@ type usageScanner struct {
 	keyString bool
 	key       []byte
 	keyLong   bool
-	// inResponse is true while the top-level value being read is "response".
-	inResponse bool
+	// inContainer is true inside the protocol's top-level usage carrier.
+	inContainer bool
 
 	capturing    bool
 	captureDepth int
@@ -393,14 +418,14 @@ type usageScanner struct {
 	overflow bool
 }
 
-func newUsageScanner(emit func(raw json.RawMessage)) *usageScanner {
-	return &usageScanner{emit: emit}
+func newUsageScanner(emit func(raw json.RawMessage), native bool) *usageScanner {
+	return &usageScanner{emit: emit, native: native}
 }
 
 // reset prepares the scanner for a new payload. A capture still open belonged
 // to the previous payload and is dropped; overflow is sticky.
 func (s *usageScanner) reset() {
-	*s = usageScanner{emit: s.emit, key: s.key[:0], captured: s.captured[:0], overflow: s.overflow}
+	*s = usageScanner{emit: s.emit, native: s.native, key: s.key[:0], captured: s.captured[:0], overflow: s.overflow}
 }
 
 func (s *usageScanner) feed(data []byte) {
@@ -478,9 +503,13 @@ func (s *usageScanner) colon() {
 		return
 	}
 	if s.depth == 1 {
-		s.inResponse = s.keyIs("response")
+		s.inContainer = s.keyIs("response")
+		if s.native {
+			s.inContainer = s.keyIs("message")
+		}
 	}
-	if !s.keyIs(usageKey) || (s.depth == 2 && !s.inResponse) {
+	isUsage := s.keyIs(usageKey) || (s.native && s.depth == 1 && s.keyIs("usageMetadata"))
+	if !isUsage || (s.depth == 2 && !s.inContainer) {
 		return
 	}
 	s.capturing = true
@@ -514,8 +543,8 @@ type sseUsageScanner struct {
 	data      bool
 }
 
-func newSSEUsageScanner(emit func(raw json.RawMessage)) *sseUsageScanner {
-	return &sseUsageScanner{json: usageScanner{emit: emit}, lineStart: true}
+func newSSEUsageScanner(emit func(raw json.RawMessage), native bool) *sseUsageScanner {
+	return &sseUsageScanner{json: usageScanner{emit: emit, native: native}, lineStart: true}
 }
 
 const sseDataField = "data:"

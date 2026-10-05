@@ -1015,10 +1015,9 @@ func WriteError(w http.ResponseWriter, status int, errorType, code, message stri
 	}})
 }
 
-// requestLog is the request record. Field names are chosen to become the routing
-// log schema in stage 8; nothing here is persisted yet. Every routing field is an
-// identifier, a count, a duration or a closed enumeration: the record can carry
-// the whole automatic-routing explanation without ever carrying request text.
+// requestLog holds the facts used by the process log and durable request log.
+// Routing metadata consists of identifiers, counts, durations and enumerations;
+// it never carries prompt text. Missing optional facts are not fabricated.
 type requestLog struct {
 	RequestID      string
 	Protocol       string
@@ -1028,12 +1027,10 @@ type requestLog struct {
 	UpstreamModel  string
 	Status         int
 	ErrorCode      string
-	// The automatic routing fields. They stay zero or empty on the
-	// specified-model path, which is how a routing log distinguishes a direct
-	// forward from a routed one without a second event type.
+	// Routing and selection modes distinguish automatic decisions from direct
+	// forwarding. Jev fields remain absent on the specified-model path.
 	RoutingMode   string
 	SelectionMode string
-	RoutingModel  string
 	// EffectiveModel is the logical model that actually took effect: the resolved
 	// logical model on the explicit path and the decision's model on the automatic
 	// path. It is empty until a destination resolved, which is how the routing log
@@ -1042,13 +1039,11 @@ type requestLog struct {
 	EffectiveModel  string
 	JevStatus       string
 	Confidence      *float64
-	ConfidenceBand  string
 	FallbackReason  string
 	EvidenceHash    string
 	GatewayAttempts int
 	FailoverUsed    bool
 	RoutingLatency  time.Duration
-	JevLatency      time.Duration
 	// protocol and stream are the request's own protocol and stream flag. They are
 	// stored on the record rather than passed around because the usage observer
 	// needs both and is built inside the relay.
@@ -1079,11 +1074,8 @@ type requestLog struct {
 	canceledFlag        bool
 }
 
-// recordEvent converts the request record into a routing log event. The mapping is
-// total and one-directional: every stored column has exactly one source field, and
-// the only field the record holds that is deliberately not stored is RoutingModel,
-// which is identically equal to RequestedModel on the automatic path and is
-// distinguished by RoutingMode.
+// recordEvent converts the request facts into a durable event. Phase latencies
+// are recorded only for phases that ran; legacy confidence bands stay empty.
 func (l *requestLog) recordEvent(started time.Time, duration time.Duration) logging.Event {
 	event := logging.Event{
 		RequestID:       l.RequestID,
@@ -1101,7 +1093,6 @@ func (l *requestLog) recordEvent(started time.Time, duration time.Duration) logg
 		Stream:          l.stream,
 		ClientIP:        l.ClientIP,
 		JevStatus:       l.JevStatus,
-		ConfidenceBand:  l.ConfidenceBand,
 		FallbackReason:  l.FallbackReason,
 		EvidenceHash:    l.EvidenceHash,
 		Confidence:      l.Confidence,
@@ -1166,20 +1157,26 @@ func (l *requestLog) finalStatus() int {
 func (l *requestLog) applyRoutingDecision(target auto.Target) {
 	l.Provider = target.ProviderKey
 	l.UpstreamModel = target.UpstreamModel
-	l.RoutingModel = target.RoutingModel
 	// The effective model is the decision's logical model, not the client's
 	// requested value: on the automatic path the client asked for "auto", and the
 	// fact worth recording is which model that resolved to.
 	l.EffectiveModel = target.Model
 	l.SelectionMode = target.SelectionMode
-	l.Confidence = floatPointer(target.Decision.Confidence)
-	l.ConfidenceBand = string(target.Decision.ConfidenceBand)
+	l.Confidence = nil
+	if target.JevStatus == logging.JevStatusOK {
+		// A policy's default zero is not a Jev recommendation. Preserve real
+		// zero values and use the original recommendation rather than a blend.
+		if target.JevTrace != nil && target.JevTrace.Confidence != nil {
+			l.Confidence = floatPointer(*target.JevTrace.Confidence)
+		} else {
+			l.Confidence = floatPointer(target.Decision.Confidence)
+		}
+	}
 	l.FallbackReason = string(target.Decision.Fallback.Reason)
 	l.EvidenceHash = target.Decision.EvidenceHash
 	l.JevStatus = target.JevStatus
 	l.GatewayAttempts = target.Attempts
 	l.RoutingLatency = target.RoutingLatency
-	l.JevLatency = target.JevLatency
 	l.jevFailureStatus = target.JevFailureStatus
 	l.jevFailureDetail = target.JevFailureDetail
 	l.routed = true
@@ -1192,7 +1189,8 @@ func (l *requestLog) applyRoutingDecision(target auto.Target) {
 // jevTrace converts the orchestration layer's trace into the logging record's own
 // type. The two are separate types on purpose: internal/proxy must not make the
 // routing log depend on the router, and internal/logging must not import it
-// either. The mapping is total and field-for-field.
+// either. Current traces do not populate historical confidence bands or repeat
+// the event's evidence hash; historical columns remain readable in storage.
 func jevTrace(target auto.Target) *logging.JevTrace {
 	if target.JevTrace == nil {
 		return nil
@@ -1202,9 +1200,7 @@ func jevTrace(target auto.Target) *logging.JevTrace {
 		Status:           source.Status,
 		FailureReason:    source.FailureReason,
 		InputMode:        source.InputMode,
-		ConfidenceBand:   source.ConfidenceBand,
 		FallbackReason:   source.FallbackReason,
-		EvidenceHash:     source.EvidenceHash,
 		LatencyMS:        source.LatencyMS,
 		CandidateCount:   source.CandidateCount,
 		CandidateGroups:  make([]string, 0, len(source.CandidateGroups)),
@@ -1256,34 +1252,38 @@ func (l *requestLog) emit(logger *slog.Logger, started time.Time) {
 	attributes := []any{
 		"request_id", l.RequestID,
 		"protocol", l.Protocol,
-		"requested_model", l.RequestedModel,
-		"provider", l.Provider,
-		"upstream_model", l.UpstreamModel,
 		"status", status,
 		"stream", l.stream,
 		"bytes_written", l.BytesWritten,
 		"latency_ms", time.Since(started).Milliseconds(),
 	}
+	for _, field := range []struct{ name, value string }{
+		{"requested_model", l.RequestedModel}, {"provider", l.Provider},
+		{"upstream_model", l.UpstreamModel}, {"effective_model", l.EffectiveModel},
+		{"selection_mode", l.SelectionMode}, {"jev_status", l.JevStatus},
+		{"fallback_reason", l.FallbackReason},
+	} {
+		if field.value != "" {
+			attributes = append(attributes, field.name, field.value)
+		}
+	}
 	if l.RoutingMode != "" {
-		// The routing trace is one block: it is only meaningful together, and a
-		// routing log reader should be able to query it as a unit.
 		attributes = append(attributes,
 			"routing_mode", l.RoutingMode,
-			"selection_mode", l.SelectionMode,
-			"routing_model", l.RoutingModel,
-			"jev_status", l.JevStatus,
-			"confidence_band", l.ConfidenceBand,
-			"fallback_reason", l.FallbackReason,
-			"evidence_hash", l.EvidenceHash,
 			"gateway_attempts", l.GatewayAttempts,
 			"failover_used", l.FailoverUsed,
-			"routing_latency_ms", l.RoutingLatency.Milliseconds(),
 		)
+		if l.routed {
+			attributes = append(attributes, "routing_latency_ms", l.RoutingLatency.Milliseconds())
+		}
+		if l.EvidenceHash != "" {
+			attributes = append(attributes, slog.Group("diagnostics", "evidence_hash", l.EvidenceHash))
+		}
 		if l.Confidence != nil {
 			attributes = append(attributes, "confidence", *l.Confidence)
 		}
-		if l.JevLatency != 0 {
-			attributes = append(attributes, "jev_latency_ms", l.JevLatency.Milliseconds())
+		if l.jevTrace != nil && l.jevTrace.LatencyMS != nil {
+			attributes = append(attributes, "jev_latency_ms", *l.jevTrace.LatencyMS)
 		}
 		if l.jevFailureStatus != 0 {
 			attributes = append(attributes, "jev_failure_status", l.jevFailureStatus)

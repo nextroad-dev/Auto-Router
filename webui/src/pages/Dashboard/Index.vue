@@ -545,7 +545,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
             <span class="jf-caption mt-2 text-center text-ink-secondary">自动路由占比</span>
           </div>
 
-          <!-- 仪表 2: Jev 调用成功率 -->
+          <!-- 仪表 2: Jev 推荐成功请求占自动路由请求的比例，不是调用成功率 -->
           <div class="flex flex-col items-center">
             <div class="relative flex h-20 w-20 items-center justify-center">
               <svg aria-hidden="true" class="h-full w-full -rotate-90" viewBox="0 0 80 80">
@@ -564,7 +564,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
               </svg>
               <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('jev_invocation_rate')?.value) }}</span>
             </div>
-            <span class="jf-caption mt-2 text-center text-ink-secondary">Jev 调用成功率</span>
+            <span class="jf-caption mt-2 text-center text-ink-secondary" title="Jev 返回有效推荐的次数 ÷ 自动路由请求数；跳过调用的请求也计入分母。">Jev 成功推荐占比</span>
           </div>
 
           <!-- 仪表 3: 自动决策成功率 -->
@@ -589,7 +589,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
             <span class="jf-caption mt-2 text-center text-ink-secondary">自动决策成功率</span>
           </div>
 
-          <!-- 仪表 4: Jev Top-1 采纳率 -->
+          <!-- 仪表 4: 成功推荐中未发生默认组兜底的比例 -->
           <div class="flex flex-col items-center">
             <div class="relative flex h-20 w-20 items-center justify-center">
               <svg aria-hidden="true" class="h-full w-full -rotate-90" viewBox="0 0 80 80">
@@ -608,7 +608,7 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
               </svg>
               <span class="absolute font-mono text-sm font-medium">{{ rate(summaryRate('jev_group_adoption_rate')?.value) }}</span>
             </div>
-            <span class="jf-caption mt-2 text-center text-ink-secondary">Jev 选组采纳率</span>
+            <span class="jf-caption mt-2 text-center text-ink-secondary" title="采用 Jev 推荐组且未兜底的次数 ÷ Jev 返回有效推荐的次数。">Jev 选组采纳率</span>
           </div>
         </div>
       </JfCard>
@@ -617,8 +617,9 @@ const latencySourceLabel = computed(() => latencyMetrics.value.source === 'auto'
     <!-- 3. 流量构成对比条：Token 构成比例 + 路由模式占比 + 延迟基准对比 -->
     <section class="grid gap-4 lg:grid-cols-2">
       <!-- Token 吞吐构成与模式分配 -->
-      <JfCard title="流量与 Token 构成">
+      <JfCard title="请求与上游 Token 用量">
         <div class="flex flex-col gap-4">
+          <p class="jf-caption text-ink-secondary">Token 来自上游响应中已提取的用量，不包含 Jev 调用用量；未读取到的计数不按 0 补齐，用量异常不等同于请求失败。</p>
           <!-- Token 构成比例条 -->
           <div>
             <div class="mb-1.5 flex items-center justify-between text-xs">

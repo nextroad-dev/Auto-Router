@@ -54,21 +54,18 @@ function logEvent() {
     provider: 'openai',
     upstream_model: 'gpt-4o-mini',
     status: 503,
-    upstream_status: null,
     error_code: 'no_eligible_candidate',
     stream: false,
     bytes_written: 0,
     gateway_attempts: 1,
     failover_used: false,
     usage_status: 'absent',
-    routing_preference: 'balanced',
-    preference_source: 'default',
     jev_status: 'failure:jev_timeout',
-    confidence_band: 'low',
+    diagnostics: { legacy_confidence_band: 'low', evidence_hash: 'historical-fingerprint' },
     fallback_reason: 'not_eligible:vision',
     attempts: [{
       id: 1, attempt_index: 1, group_name: 'simple', provider: 'openai', model_id: 'gpt-small',
-      started_at: '2026-09-24T00:00:00Z', status: 503, error_code: 'upstream_unavailable', usage_status: 'absent',
+      started_at: '2026-09-24T00:00:00Z', status: 503, error_code: 'upstream_unavailable', error_detail: 'redacted upstream error excerpt', usage_status: 'absent',
     }],
   }
 }
@@ -311,6 +308,9 @@ test('settings auto-save, status multi-select, shared toast and global reset', a
   await expect(page.getByText('管理员会话有效时长')).toHaveCount(0)
   await expect(page.getByText('models.dev 同步范围覆盖')).toHaveCount(0)
   await expect(page.getByText('Jev 不可用或低置信度时的默认组')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Jev 任务组推荐', exact: true })).toBeVisible()
+  await expect(page.getByText(/每个保留的文本块.*取脱敏后的前 512 字节/)).toBeVisible()
+  await expect(page.getByRole('combobox', { name: '发送给 Jev 的内容' })).toHaveAttribute('aria-describedby', 'jev-input-mode-help')
   for (const label of [
     '全局默认路由偏好',
     '高置信度阈值',
@@ -444,9 +444,106 @@ test('the request log renders localized error codes and enum labels beside the r
 
   // The detail panel uses contract-backed fields and keeps the complete event available as JSON.
   await expect(page.getByText('openai · gpt-small')).toBeVisible()
-  await expect(page.getByText('混合决策')).toBeVisible()
+  await expect(page.getByText('旧版：混合决策', { exact: true })).toBeVisible()
+  const detail = page.getByRole('dialog')
+  await expect(detail.getByRole('region', { name: '上游尝试记录' })).toContainText('upstream_unavailable')
+  await expect(detail.getByText('redacted upstream error excerpt', { exact: true })).toBeVisible()
+  await expect(detail.locator('pre')).not.toBeVisible()
+  await detail.locator('summary').filter({ hasText: '结构化路由日志（JSON）' }).click()
   await expect(page.getByText(/"fallback_reason": "not_eligible:vision"/)).toBeVisible()
   await expect(page.getByText(/"error_code": "upstream_unavailable"/)).toBeVisible()
+})
+
+test('successful Responses logs explain oversized even when all token counts are unknown', async ({ page }, testInfo) => {
+  await installApiMocks(page)
+  await page.route('**/admin/v1/logs?**', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      items: [{
+        ...logEvent(), id: 1097, request_id: '1b82f423923b8ebe35fdf155addd943a',
+        started_at: '2026-10-05T09:03:24.178420389Z',
+        protocol: 'responses', selection_mode: 'first_eligible', status: 200, upstream_status: 200,
+        error_code: null, stream: true, duration_ms: 24434, bytes_written: 430415,
+        provider: '0x567', effective_model: 'gpt-6-sol', upstream_model: 'gpt-6-sol',
+        jev_status: 'ok', confidence: 0.95, fallback_reason: 'none', diagnostics: { evidence_hash: '0727c6a9d5d24ad5c62c60a6b1f88ae4' },
+        jev_latency_ms: 250, routing_latency_ms: 263,
+        usage_status: 'oversized',
+        attempts: [{ id: 966, attempt_index: 1, group_name: 'medium', provider: '0x567', model_id: 'gpt-6-sol', started_at: '2026-10-05T09:03:24.456Z', completed_at: '2026-10-05T09:03:48.612Z', status: 200, usage_status: 'oversized' }],
+      }], next_cursor: null,
+    }),
+  }))
+  const pageErrors: string[] = []
+  page.on('pageerror', error => pageErrors.push(error.message))
+  await page.goto('/admin/logs')
+  await page.getByRole('button', { name: '查看明细' }).click()
+  const detail = page.getByRole('dialog')
+  await expect(detail.getByText('HTTP 200', { exact: true })).toHaveCount(2)
+  await expect(detail.getByText('· 24434 ms', { exact: true })).toBeVisible()
+  await expect(detail.getByText('Jev 推荐成功', { exact: true })).toBeVisible()
+  await expect(detail.getByText('组内按配置顺序选模型', { exact: true })).toBeVisible()
+  await expect(detail.getByText('中等任务组', { exact: true })).toHaveCount(1)
+  await expect(detail.getByRole('heading', { name: '上游模型 Token 用量' })).toBeVisible()
+  await expect(detail.getByText('用量提取超限', { exact: true })).toHaveCount(2)
+  await expect(detail.getByText(/不表示 Jev 或上游上下文超限/)).toBeVisible()
+  await expect(detail.locator('strong')).toHaveText(['—', '—', '—'])
+  await expect(detail.getByText('430,415 B', { exact: true })).toBeVisible()
+  await expect(detail.locator('summary').filter({ hasText: '结构化路由日志（JSON）' })).toBeVisible()
+  await expect(detail.locator('pre')).not.toBeVisible()
+  await expect(detail.getByText('决策元数据指纹', { exact: true })).not.toBeVisible()
+  await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+  await expect(detail).toHaveCSS('transform', 'none')
+  expect(await detail.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true)
+  const detailBody = detail.locator('.jf-drawer-body')
+  expect(await detailBody.evaluate(body => body.scrollWidth <= body.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('usage-detail-desktop.png') })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await detail.getByRole('heading', { name: '上游模型 Token 用量' }).locator('../..').scrollIntoViewIfNeeded()
+  expect(await detail.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true)
+  expect(await detailBody.evaluate(body => body.scrollWidth <= body.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('usage-detail-mobile.png') })
+  await detail.locator('summary').filter({ hasText: '诊断信息（按需展开）' }).click()
+  await expect(detail.getByText('0727c6a9d5d24ad5c62c60a6b1f88ae4', { exact: true })).toBeVisible()
+  await detail.locator('summary').filter({ hasText: '结构化路由日志（JSON）' }).click()
+  await expect(detail.locator('pre')).toBeVisible()
+  expect(await detailBody.evaluate(body => body.scrollWidth <= body.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('diagnostics-detail-mobile.png') })
+  expect(pageErrors).toEqual([])
+})
+
+test('request usage displays a reported zero separately from an unknown count', async ({ page }) => {
+  await installApiMocks(page)
+  await page.route('**/admin/v1/logs?**', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ items: [{ ...logEvent(), input_tokens: 0, output_tokens: 12, total_tokens: null, usage_status: 'observed' }], next_cursor: null }),
+  }))
+  await page.goto('/admin/logs')
+  await page.getByRole('button', { name: '查看明细' }).click()
+  const detail = page.getByRole('dialog')
+  await expect(detail.getByText('已提取上游用量', { exact: true })).toBeVisible()
+  await expect(detail.locator('strong')).toHaveText(['0', '12', '—'])
+})
+
+test('skipped Jev hides historical zero confidence while successful zero remains a real recommendation', async ({ page }) => {
+  await installApiMocks(page)
+  let jevStatus = 'skipped_single_model'
+  await page.route('**/admin/v1/logs?**', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ items: [{ ...logEvent(), status: 200, error_code: undefined, jev_status: jevStatus, confidence: 0, fallback_reason: 'not_requested', jev_latency_ms: jevStatus === 'ok' ? 0 : undefined, routing_latency_ms: 0 }], next_cursor: null }),
+  }))
+  await page.goto('/admin/logs')
+  await page.getByRole('button', { name: '查看明细' }).click()
+  const detail = page.getByRole('dialog')
+  await expect(detail.getByText(/未产生推荐置信度/)).toBeVisible()
+  await expect(detail.getByText('未调用或未记录 / 0 ms', { exact: true })).toBeVisible()
+  await expect(detail.getByText('客户端 IP（已启用记录）', { exact: true })).toHaveCount(0)
+  await expect(detail.getByText('请求失败原因', { exact: true })).toHaveCount(0)
+  await detail.getByRole('contentinfo').getByRole('button', { name: '关闭', exact: true }).click()
+  jevStatus = 'ok'
+  await page.getByRole('button', { name: '刷新日志' }).click()
+  await page.getByRole('button', { name: '查看明细' }).click()
+  await expect(detail.getByText(/未产生推荐置信度/)).toHaveCount(0)
+  await expect(detail.getByText(/^0\.00 ·/)).toBeVisible()
+  await expect(detail.getByText('0 ms / 0 ms', { exact: true })).toBeVisible()
 })
 
 test('sidebar account details are replaced by a logout button', async ({ page }) => {
@@ -692,7 +789,10 @@ test('model groups roll back a rejected save', async ({ page }) => {
   await page.goto('/admin/groups')
 
   const checkbox = page.getByRole('checkbox', { name: 'provider-a · model-a' }).first()
-  await checkbox.check()
+  // A rejected save can roll back before Playwright's check() postcondition;
+  // assert the API-driven final state instead of requiring a transient check.
+  await expect(checkbox).not.toBeChecked()
+  await checkbox.click()
   await expect(page.getByText('模型分组配置无效')).toBeVisible()
   await expect(checkbox).not.toBeChecked()
 })
@@ -737,7 +837,9 @@ test('dashboard separates health from operational routing summary', async ({ pag
   await expect(page.getByText('服务运行正常')).toBeVisible()
   await expect(page.getByRole('heading', { name: '请求状态分布' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '智能路由决策效能' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '流量与 Token 构成' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '请求与上游 Token 用量' })).toBeVisible()
+  await expect(page.getByText('Jev 成功推荐占比', { exact: true })).toHaveAttribute('title', /自动路由请求数/)
+  await expect(page.getByText('Jev 选组采纳率', { exact: true })).toHaveAttribute('title', /Jev 返回有效推荐的次数/)
   await expect(page.getByText('自动路由: 6 (60.0%)')).toBeVisible()
   await page.getByRole('combobox').first().click()
   await page.getByRole('option', { name: /最近 7 天/ }).click()
